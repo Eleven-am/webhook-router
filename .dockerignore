@@ -1,0 +1,30 @@
+# Ignore build artifacts
+webhook-router
+webhook_router.db
+
+# Ignore Docker files
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Ignore version control
+.git
+.gitignore
+
+# Ignore documentation
+README.md
+*.md
+
+# Ignore IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Ignore test files
+*_test.go
+test/
+
+# Ignore temporary files
+*.tmp
+*.log

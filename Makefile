@@ -49,12 +49,11 @@ deps:
 	$(GOMOD) download
 	$(GOMOD) tidy
 
-# Setup development environment
+# Setup development environment (simplified - no web/static needed)
 setup: deps
 	@echo "Setting up development environment..."
-	@mkdir -p web/static
-	@touch webhook_router.db
 	@echo "Development environment ready!"
+	@echo "Note: Web assets are embedded in the binary"
 
 # Build for Linux
 build-linux:
@@ -65,7 +64,7 @@ docker-build:
 	docker build -t webhook-router .
 
 docker-run: docker-build
-	docker run -p 8080:8080 webhook-router
+	docker run -p 8080:8080 -v webhook_data:/data webhook-router
 
 # Multi-architecture Docker build setup
 docker-setup:
@@ -227,8 +226,10 @@ load-test:
 		echo "wrk not installed. Install with your package manager"; \
 	fi
 
-# Create example route
+# Create example route (needs authentication)
 example-route:
+	@echo "Note: This requires authentication. Login to admin interface first."
+	@echo "Creating example route via API..."
 	curl -X POST http://localhost:8080/api/routes \
 		-H "Content-Type: application/json" \
 		-d '{ \
@@ -239,7 +240,7 @@ example-route:
 			"routing_key": "github.events", \
 			"filters": "{\"headers\": {\"X-GitHub-Event\": \"push\"}}", \
 			"active": true \
-		}'
+		}' || echo "Failed - make sure you're logged in to admin interface"
 
 # Test webhook
 test-webhook:
@@ -247,6 +248,12 @@ test-webhook:
 		-H "Content-Type: application/json" \
 		-H "X-GitHub-Event: push" \
 		-d '{"repository": {"name": "test-repo"}, "action": "opened"}'
+
+# Test default webhook endpoint
+test-webhook-default:
+	curl -X POST http://localhost:8080/webhook \
+		-H "Content-Type: application/json" \
+		-d '{"test": "data", "timestamp": "'$(shell date -Iseconds)'"}'
 
 # Docker cleanup
 docker-clean:
@@ -263,9 +270,56 @@ docker-info:
 	@echo "Available platforms:"
 	@docker buildx inspect --bootstrap | grep Platforms || echo "No builder found"
 
+# Quick start for development
+quick-start:
+	@echo "🚀 Starting Webhook Router..."
+	@echo "1. Building application..."
+	@make build
+	@echo "2. Starting server..."
+	@echo "📡 Server will be available at: http://localhost:8080"
+	@echo "🔐 Default login: admin/admin"
+	@echo "⚠️  You'll be prompted to change the password on first login"
+	@echo ""
+	@./$(BINARY_NAME)
+
+# Show available endpoints
+show-endpoints:
+	@echo "📡 Available Endpoints:"
+	@echo ""
+	@echo "🔐 Authentication:"
+	@echo "  GET  /login              - Login page"
+	@echo "  POST /login              - Login form"
+	@echo "  GET  /logout             - Logout"
+	@echo "  GET  /change-password    - Change password page"
+	@echo "  POST /change-password    - Change password form"
+	@echo ""
+	@echo "📊 Admin Interface:"
+	@echo "  GET  /admin              - Main admin dashboard"
+	@echo "  GET  /                   - Redirects to admin"
+	@echo ""
+	@echo "🔧 API Endpoints (require authentication):"
+	@echo "  GET    /api/routes       - List all routes"
+	@echo "  POST   /api/routes       - Create new route"
+	@echo "  PUT    /api/routes/{id}  - Update route"
+	@echo "  DELETE /api/routes/{id}  - Delete route"
+	@echo "  POST   /api/routes/{id}/test - Test route"
+	@echo "  GET    /api/stats        - Get statistics"
+	@echo "  GET    /api/settings     - Get settings"
+	@echo "  POST   /api/settings     - Update settings"
+	@echo ""
+	@echo "📥 Webhook Endpoints:"
+	@echo "  *    /webhook            - Default webhook endpoint"
+	@echo "  *    /webhook/{endpoint} - Custom webhook endpoint"
+	@echo ""
+	@echo "🏥 Health Check:"
+	@echo "  GET  /health             - System health status"
+
 # Show help
 help:
 	@echo "Available commands:"
+	@echo ""
+	@echo "🚀 Quick Start:"
+	@echo "  quick-start   - Build and run with helpful info"
 	@echo ""
 	@echo "Development:"
 	@echo "  build         - Build the application"
@@ -305,13 +359,16 @@ help:
 	@echo "  lint          - Run golangci-lint"
 	@echo "  install-tools - Install development tools"
 	@echo ""
-	@echo "Testing:"
-	@echo "  health        - Check service health"
-	@echo "  example-route - Create an example route"
-	@echo "  test-webhook  - Send a test webhook"
-	@echo "  load-test     - Run load test"
+	@echo "Testing & Info:"
+	@echo "  health            - Check service health"
+	@echo "  example-route     - Create an example route"
+	@echo "  test-webhook      - Send a test webhook to custom endpoint"
+	@echo "  test-webhook-default - Send a test webhook to default endpoint"
+	@echo "  show-endpoints    - Show all available endpoints"
+	@echo "  load-test         - Run load test"
 	@echo ""
 	@echo "Usage Examples:"
+	@echo "  make quick-start"
 	@echo "  make docker-push DOCKER_IMAGE_NAME=username/webhook-router"
 	@echo "  make docker-push-tags DOCKER_IMAGE_NAME=username/webhook-router TAGS='latest dev v1.0'"
 	@echo "  DOCKER_IMAGE_NAME=username/webhook-router make docker-push"

@@ -1,18 +1,19 @@
 # 🔗 Webhook Router
 
-A powerful, configurable webhook routing system built with Go that receives webhooks and intelligently routes them to different RabbitMQ queues based on configurable rules.
+A powerful, self-contained webhook routing system built with Go that receives webhooks and intelligently routes them to different RabbitMQ queues based on configurable rules.
 
 ## ✨ Features
 
-- **Dynamic Routing**: Route webhooks to different queues based on endpoint, method, and custom filters
-- **Web UI**: Beautiful, responsive admin interface for managing routes
-- **SQLite Database**: Persistent storage for route configurations and webhook logs
-- **RabbitMQ Integration**: Reliable message queuing with connection pooling
-- **Real-time Stats**: Monitor webhook traffic and route performance
-- **Filtering System**: Advanced filtering based on headers and body content
-- **Health Monitoring**: Built-in health checks and system status
-- **Multi-Architecture Support**: Available for AMD64 and ARM64 architectures
-- **Docker Ready**: Complete containerized setup with Docker Compose
+- **🔐 Built-in Authentication**: Secure admin interface with session management
+- **🎯 Dynamic Routing**: Route webhooks to different queues based on endpoint, method, and custom filters
+- **💻 Web UI**: Beautiful, responsive admin interface for managing routes and settings
+- **📦 Self-Contained**: Single binary with embedded web assets and persistent SQLite database
+- **🐰 RabbitMQ Integration**: Reliable message queuing with connection pooling and dynamic configuration
+- **📊 Real-time Stats**: Monitor webhook traffic and route performance
+- **🔍 Filtering System**: Advanced filtering based on headers and body content
+- **🏥 Health Monitoring**: Built-in health checks and system status
+- **🌐 Multi-Architecture Support**: Available for AMD64 and ARM64 architectures
+- **🐳 Docker Ready**: Complete containerized setup with Docker Compose
 
 ## 🚀 Quick Start
 
@@ -24,7 +25,7 @@ version: '3.8'
 
 services:
   webhook-router:
-    image: elevenam/webhook-router:v0.1.0
+    image: elevenam/webhook-router:latest
     ports:
       - "8080:8080"
     environment:
@@ -61,8 +62,13 @@ docker-compose up -d
 ```
 
 3. **Access the applications**:
-   - **Webhook Router**: http://localhost:8080
+   - **Webhook Router**: http://localhost:8080 (login: `admin/admin`)
    - **RabbitMQ Management**: http://localhost:15672 (admin/password)
+
+4. **First Login**:
+   - Use default credentials: `admin/admin`
+   - You'll be prompted to change your password on first login
+   - Configure RabbitMQ connection through the Settings page
 
 ### Using with External RabbitMQ
 
@@ -73,11 +79,10 @@ version: '3.8'
 
 services:
   webhook-router:
-    image: elevenam/webhook-router:v0.1.0
+    image: elevenam/webhook-router:latest
     ports:
       - "8080:8080"
     environment:
-      - RABBITMQ_URL=amqp://your-user:your-password@your-rabbitmq-host:5672/
       - DATABASE_PATH=/data/webhook_router.db
       - DEFAULT_QUEUE=webhooks
       - LOG_LEVEL=info
@@ -89,6 +94,8 @@ volumes:
   webhook_data:
 ```
 
+**Note**: Configure RabbitMQ connection through the web interface Settings page after first login.
+
 ### Development Setup with Make
 
 This project includes a comprehensive Makefile for development and deployment:
@@ -98,6 +105,18 @@ This project includes a comprehensive Makefile for development and deployment:
 # Install Go 1.24+
 # Install Docker with BuildX support
 # Install make
+```
+
+#### Quick Development Start
+
+```bash
+# Setup and run in one command
+make quick-start
+
+# This will:
+# - Build the application
+# - Show helpful information
+# - Start the server with default settings
 ```
 
 #### Development Commands
@@ -119,6 +138,9 @@ make test
 make fmt
 make vet
 make lint
+
+# Show all available endpoints
+make show-endpoints
 ```
 
 #### Docker Commands
@@ -173,9 +195,8 @@ make setup
 go mod download
 ```
 
-2. **Set Environment Variables**:
+2. **Set Environment Variables** (Optional):
 ```bash
-export RABBITMQ_URL="amqp://guest:guest@localhost:5672/"
 export DATABASE_PATH="./webhook_router.db"
 export PORT="8080"
 export DEFAULT_QUEUE="webhooks"
@@ -189,24 +210,57 @@ make run
 go run main.go
 ```
 
+4. **Access Admin Interface**:
+   - Visit: http://localhost:8080
+   - Login: `admin/admin`
+   - Change password when prompted
+   - Configure RabbitMQ in Settings if needed
+
+## 🔐 Authentication & Security
+
+### Default Credentials
+- **Username**: `admin`
+- **Password**: `admin`
+
+### Security Features
+- **Forced Password Change**: Must change default credentials on first login
+- **Session Management**: 24-hour session expiry with automatic cleanup
+- **Secure Logout**: Proper session invalidation
+- **Protected Routes**: All admin and API endpoints require authentication
+
+### Changing Credentials
+1. Login with default credentials
+2. You'll be automatically redirected to change password
+3. Set secure username and password
+4. Login with new credentials
+
 ## 📡 API Endpoints
 
-### Webhook Endpoints
+### 🔐 Authentication Endpoints
+- `GET /login` - Login page
+- `POST /login` - Login form submission
+- `GET /logout` - Logout and clear session
+- `GET /change-password` - Change password page (for default users)
+- `POST /change-password` - Change password form submission
+
+### 📊 Admin Interface
+- `GET /admin` - Main admin dashboard
+- `GET /` - Redirects to admin (requires authentication)
+
+### 📥 Webhook Endpoints (No Authentication Required)
 - `POST /webhook/{endpoint}` - Receive webhooks for specific endpoint
 - `POST /webhook` - Receive webhooks for default endpoint
+- `GET /health` - Health check endpoint
 
-### Management API
+### 🔧 Management API (Requires Authentication)
 - `GET /api/routes` - List all routes
 - `POST /api/routes` - Create new route
-- `GET /api/routes/{id}` - Get specific route
 - `PUT /api/routes/{id}` - Update route
 - `DELETE /api/routes/{id}` - Delete route
 - `POST /api/routes/{id}/test` - Test route
-
-### Monitoring
 - `GET /api/stats` - Get system statistics
-- `GET /api/stats/route/{id}` - Get route-specific stats
-- `GET /health` - Health check endpoint
+- `GET /api/settings` - Get system settings
+- `POST /api/settings` - Update system settings
 
 ## 🎯 Configuration
 
@@ -215,10 +269,11 @@ go run main.go
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP server port |
-| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection URL |
 | `DATABASE_PATH` | `./webhook_router.db` | SQLite database file path |
 | `DEFAULT_QUEUE` | `webhooks` | Default queue for unmatched webhooks |
 | `LOG_LEVEL` | `info` | Logging level |
+
+**Note**: RabbitMQ URL is configured through the web interface Settings page, not environment variables.
 
 ### Route Configuration
 
@@ -248,6 +303,21 @@ Routes can be configured through the web UI or API with the following options:
 - **Body Contains**: Check if body contains specific strings
 - **Method**: HTTP method matching (POST, GET, PUT, DELETE, PATCH, *)
 - **Endpoint**: Endpoint matching (specific name or * for wildcard)
+
+### RabbitMQ Configuration
+
+Configure RabbitMQ through the web interface:
+
+1. **Login to admin interface**
+2. **Click Settings** or use the sidebar
+3. **Enter RabbitMQ URL**: `amqp://user:pass@host:port/`
+4. **Set Default Queue**: Queue name for unmatched webhooks
+5. **Test Connection**: System validates before saving
+
+The system supports:
+- **Dynamic reconfiguration**: Update settings without restart
+- **Connection testing**: Validates before saving
+- **Graceful degradation**: Works without RabbitMQ (logs only)
 
 ## 📊 Webhook Payload Format
 
@@ -307,7 +377,9 @@ The application maintains a pool of RabbitMQ connections for optimal performance
 The built-in web interface provides:
 - Real-time statistics and metrics
 - Route management and testing
+- RabbitMQ connection status
 - System health monitoring
+- Settings management
 - Export/import functionality
 
 ### Health Checks
@@ -323,13 +395,14 @@ The application logs:
 - All webhook requests and responses
 - Route matching and filtering decisions
 - RabbitMQ publishing status
+- Authentication events
 - System health and errors
 
 ## 🐳 Docker Deployment
 
 ### Multi-Architecture Support
 
-The Docker image `elevenam/webhook-router:v0.1.0` is built for multiple architectures:
+The Docker image `elevenam/webhook-router:latest` is built for multiple architectures:
 - `linux/amd64` (Intel/AMD 64-bit)
 - `linux/arm64` (ARM 64-bit, including Apple Silicon and ARM servers)
 
@@ -342,10 +415,12 @@ For production, customize the docker-compose.yml:
 ```yaml
 services:
   webhook-router:
-    image: elevenam/webhook-router:v0.1.0
+    image: elevenam/webhook-router:latest
     environment:
-      - RABBITMQ_URL=amqp://user:pass@your-rabbitmq:5672/
       - DATABASE_PATH=/data/webhook_router.db
+      - PORT=8080
+      - DEFAULT_QUEUE=webhooks
+      - LOG_LEVEL=info
     volumes:
       - /host/data:/data
     restart: always
@@ -381,14 +456,14 @@ spec:
     spec:
       containers:
       - name: webhook-router
-        image: elevenam/webhook-router:v0.1.0
+        image: elevenam/webhook-router:latest
         ports:
         - containerPort: 8080
         env:
-        - name: RABBITMQ_URL
-          value: "amqp://user:pass@rabbitmq-service:5672/"
         - name: DATABASE_PATH
           value: "/data/webhook_router.db"
+        - name: DEFAULT_QUEUE
+          value: "webhooks"
         volumeMounts:
         - name: data
           mountPath: /data
@@ -408,13 +483,14 @@ docker-compose up -d --scale webhook-router=3
 
 Add a load balancer (nginx, traefik) in front for distribution.
 
-## 🔒 Security Considerations
+## 🔒 Additional Security Considerations
 
-1. **Authentication**: Add authentication middleware for production use
+1. **Change Default Credentials**: System forces password change on first login
 2. **HTTPS**: Use TLS/SSL certificates for secure communication
-3. **Rate Limiting**: Implement rate limiting to prevent abuse
-4. **Input Validation**: Validate webhook payloads and headers
+3. **Rate Limiting**: Implement rate limiting at reverse proxy level
+4. **Input Validation**: System validates webhook payloads and headers
 5. **Network Security**: Use proper firewall rules and network segmentation
+6. **Session Security**: 24-hour session expiry with secure cookies
 
 ## 🧪 Testing
 
@@ -424,17 +500,21 @@ Add a load balancer (nginx, traefik) in front for distribution.
 # Run all tests
 make test
 
-# Create an example route
+# Create an example route (requires authentication)
 make example-route
 
-# Send a test webhook
+# Send test webhooks
 make test-webhook
+make test-webhook-default
 
 # Check application health
 make health
 
 # Run load tests (requires wrk)
 make load-test
+
+# Show all endpoints
+make show-endpoints
 ```
 
 ### Manual Testing
@@ -450,10 +530,12 @@ curl -X POST http://localhost:8080/webhook/github \
 
 ### Route Testing
 
-Use the built-in test functionality:
+Use the built-in test functionality through the web interface or API:
 
 ```bash
-curl -X POST http://localhost:8080/api/routes/1/test
+# Through API (requires authentication)
+curl -X POST http://localhost:8080/api/routes/1/test \
+  -H "Cookie: session=your-session-cookie"
 ```
 
 ## 🔄 Migration and Backup
@@ -464,7 +546,7 @@ curl -X POST http://localhost:8080/api/routes/1/test
 # Backup database
 make db-backup
 
-# Reset database
+# Reset database (removes all data including users)
 make db-reset
 ```
 
@@ -480,10 +562,12 @@ cp webhook_router_backup.db webhook_router.db
 
 ### Configuration Export/Import
 
-Export routes via the web interface or API:
+Export routes via the web interface Export button or API:
 
 ```bash
-curl http://localhost:8080/api/routes > routes_backup.json
+# Export routes (requires authentication)
+curl http://localhost:8080/api/routes \
+  -H "Cookie: session=your-session-cookie" > routes_backup.json
 ```
 
 ## 🛠️ Development
@@ -513,6 +597,9 @@ make docker-push-tags DOCKER_IMAGE_NAME=your-username/webhook-router TAGS="lates
 # Setup development environment
 make setup
 
+# Quick start with helpful info
+make quick-start
+
 # Run with hot reload
 make dev
 
@@ -541,11 +628,12 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 For support and questions:
 - Check the [Issues](https://github.com/your-repo/issues) page
 - Review the documentation
-- Check RabbitMQ and SQLite logs for troubleshooting
+- Check application logs and health endpoint
+- Verify RabbitMQ connection in Settings
 
 ## 🗺️ Roadmap
 
-- [ ] Authentication and authorization
+- [x] Authentication and authorization
 - [ ] Prometheus metrics integration
 - [ ] Webhook signature validation
 - [ ] Rate limiting and throttling
@@ -553,3 +641,5 @@ For support and questions:
 - [ ] Webhook replay functionality
 - [ ] Advanced filtering with regex support
 - [ ] Real-time WebSocket dashboard updates
+- [ ] LDAP/OAuth integration
+- [ ] Webhook delivery retry mechanisms
