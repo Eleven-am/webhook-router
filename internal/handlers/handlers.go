@@ -197,12 +197,39 @@ func (h *Handlers) HandleChangePassword(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/login?message=credentials-updated", http.StatusFound)
 }
 
-// Settings handlers
 func (h *Handlers) GetSettings(w http.ResponseWriter, r *http.Request) {
-	settings, err := h.db.GetAllSettings()
+	dbSettings, err := h.db.GetAllSettings()
 	if err != nil {
-		http.Error(w, "Failed to get settings", http.StatusInternalServerError)
-		return
+		log.Printf("Warning: Failed to get database settings: %v", err)
+		dbSettings = make(map[string]string)
+	}
+
+	settings := make(map[string]string)
+
+	envRabbitMQ := os.Getenv("RABBITMQ_URL")
+	if envRabbitMQ != "" {
+		settings["rabbitmq_url"] = envRabbitMQ
+		settings["rabbitmq_source"] = "environment"
+	} else {
+		if rmqURL, exists := dbSettings["rabbitmq_url"]; exists && rmqURL != "" {
+			settings["rabbitmq_url"] = rmqURL
+			settings["rabbitmq_source"] = "database"
+		} else {
+			settings["rabbitmq_url"] = ""
+			settings["rabbitmq_source"] = "none"
+		}
+	}
+
+	if defaultQueue, exists := dbSettings["default_queue"]; exists && defaultQueue != "" {
+		settings["default_queue"] = defaultQueue
+	} else {
+		settings["default_queue"] = "webhooks"
+	}
+
+	for key, value := range dbSettings {
+		if key != "rabbitmq_url" && key != "default_queue" {
+			settings[key] = value
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
