@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webhook Router</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.3/cdn.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.2/axios.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #1a1a1a;
+            --primary-light: #2a2a2a;
+            --secondary: #404040;
+            --accent: #ffffff;
+            --muted: #888888;
+            --border: #303030;
+            --surface: #161616;
+            --success: #00ff88;
+            --error: #ff4757;
+            --warning: #ffa502;
+            --text-primary: #ffffff;
+            --text-secondary: #cccccc;
+            --text-muted: #888888;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            font-size: 14px;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            overflow-x: hidden;
+            font-weight: 400;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        .app {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .topbar {
+            border-bottom: 1px solid var(--border);
+            padding: 0 2rem;
+            height: 4rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            background: var(--primary);
+            backdrop-filter: blur(20px);
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 1.125rem;
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.error { background: var(--error); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .main {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            gap: 1px;
+            background: var(--border);
+        }
+
+        .content {
+            background: var(--primary);
+            padding: 2rem;
+            overflow-y: auto;
+        }
+
+        .sidebar {
+            background: var(--surface);
+            padding: 2rem 1.5rem;
+            border-left: 1px solid var(--border);
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 3rem;
+        }
+
+        .stat {
+            padding: 1.5rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 500;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.5rem;
+        }
+
+        .section-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-decoration: none;
+            font-family: inherit;
+        }
+
+        .btn:hover {
+            background: var(--primary-light);
+            border-color: var(--secondary);
+        }
+
+        .btn:active {
+            transform: translateY(1px);
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: var(--primary);
+            border-color: var(--accent);
+        }
+
+        .btn-primary:hover {
+            background: var(--text-secondary);
+            border-color: var(--text-secondary);
+        }
+
+        .btn-danger {
+            color: var(--error);
+            border-color: var(--error);
+        }
+
+        .btn-danger:hover {
+            background: var(--error);
+            color: var(--accent);
+        }
+
+        .btn-success {
+            color: var(--success);
+            border-color: var(--success);
+        }
+
+        .btn-success:hover {
+            background: var(--success);
+            color: var(--primary);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .routes {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .route {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+            transition: all 0.15s ease;
+        }
+
+        .route:hover {
+            border-color: var(--secondary);
+        }
+
+        .route.inactive {
+            opacity: 0.6;
+        }
+
+        .route-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+
+        .route-name {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .route-endpoint {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+        }
+
+        .route-status {
+            padding: 0.125rem 0.5rem;
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-radius: 0.25rem;
+        }
+
+        .route-status.active {
+            background: rgba(0, 255, 136, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(0, 255, 136, 0.2);
+        }
+
+        .route-status.inactive {
+            background: rgba(255, 71, 87, 0.1);
+            color: var(--error);
+            border: 1px solid rgba(255, 71, 87, 0.2);
+        }
+
+        .route-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .route-meta-item {
+            font-size: 0.75rem;
+        }
+
+        .route-meta-label {
+            color: var(--text-muted);
+            margin-bottom: 0.125rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 500;
+        }
+
+        .route-meta-value {
+            color: var(--text-secondary);
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+        }
+
+        .route-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .route-actions .btn {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.75rem;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+        }
+
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--primary);
+            border: 1px solid var(--border);
+            border-radius: 0.375rem;
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            font-family: inherit;
+            transition: all 0.15s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+        }
+
+        .form-control::placeholder {
+            color: var(--text-muted);
+        }
+
+        textarea.form-control {
+            resize: vertical;
+            min-height: 80px;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+            font-size: 0.75rem;
+        }
+
+        select.form-control {
+            cursor: pointer;
+        }
+
+        .checkbox {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+        }
+
+        .checkbox input {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
+        }
+
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 2rem;
+        }
+
+        .modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 2rem;
+            width: 100%;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 2rem;
+            justify-content: flex-end;
+        }
+
+        .alert {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            padding: 1rem 1.5rem;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            z-index: 2000;
+            min-width: 300px;
+            border: 1px solid;
+            backdrop-filter: blur(20px);
+        }
+
+        .alert-success {
+            background: rgba(0, 255, 136, 0.1);
+            border-color: rgba(0, 255, 136, 0.2);
+            color: var(--success);
+        }
+
+        .alert-error {
+            background: rgba(255, 71, 87, 0.1);
+            border-color: rgba(255, 71, 87, 0.2);
+            color: var(--error);
+        }
+
+        .loading {
+            width: 14px;
+            height: 14px;
+            border: 2px solid transparent;
+            border-top: 2px solid currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .sidebar-section {
+            margin-bottom: 2rem;
+        }
+
+        .sidebar-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .sidebar-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-secondary);
+        }
+
+        .sidebar-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.75rem;
+        }
+
+        .sidebar-item:last-child {
+            border-bottom: none;
+        }
+
+        .sidebar-label {
+            color: var(--text-muted);
+        }
+
+        .sidebar-value {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .quick-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .quick-actions .btn {
+            justify-content: center;
+            width: 100%;
+        }
+
+        @media (max-width: 1024px) {
+            .main {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .topbar {
+                padding: 0 1rem;
+            }
+
+            .content {
+                padding: 1rem;
+            }
+
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 0.75rem;
+                margin-bottom: 2rem;
+            }
+
+            .route-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.5rem;
+            }
+
+            .route-actions {
+                width: 100%;
+                flex-wrap: wrap;
+            }
+
+            .route-actions .btn {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .modal {
+                padding: 1rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .stats {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--primary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--secondary);
+        }
+
+        /* Selection */
+        ::selection {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+<div class="app" x-data="webhookRouter()">
+    <!-- Top Bar -->
+    <div class="topbar">
+        <div class="logo">Webhook Router</div>
+        <div class="status-indicator">
+            <div class="status-dot" :class="{ 'error': healthStatus !== 'healthy' }"></div>
+            <span x-text="healthStatus === 'healthy' ? 'System Online' : 'System Offline'"></span>
+        </div>
+    </div>
+
+    <div class="main">
+        <!-- Main Content -->
+        <div class="content">
+            <!-- Stats -->
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-value" x-text="stats.total_requests || 0"></div>
+                    <div class="stat-label">Total Requests</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" x-text="stats.success_requests || 0"></div>
+                    <div class="stat-label">Successful</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" x-text="stats.failed_requests || 0"></div>
+                    <div class="stat-label">Failed</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" x-text="stats.active_routes || 0"></div>
+                    <div class="stat-label">Active Routes</div>
+                </div>
+            </div>
+
+            <!-- Routes Section -->
+            <div class="section-header">
+                <div class="section-title">Routes</div>
+                <button class="btn btn-primary" @click="showCreateModal = true">
+                    Add Route
+                </button>
+            </div>
+
+            <div x-show="loading" class="empty-state">
+                <div class="loading" style="margin: 0 auto 1rem;"></div>
+                <div>Loading routes...</div>
+            </div>
+
+            <div x-show="!loading">
+                <div class="routes" x-show="routes.length > 0">
+                    <template x-for="route in routes" :key="route.id">
+                        <div class="route" :class="{ 'inactive': !route.active }">
+                            <div class="route-header">
+                                <div>
+                                    <div class="route-name" x-text="route.name"></div>
+                                    <div class="route-endpoint">
+                                        <span x-text="route.method"></span>
+                                        /webhook/<span x-text="route.endpoint"></span>
+                                    </div>
+                                </div>
+                                <div class="route-status" :class="route.active ? 'active' : 'inactive'" x-text="route.active ? 'Active' : 'Inactive'"></div>
+                            </div>
+
+                            <div class="route-meta">
+                                <div class="route-meta-item">
+                                    <div class="route-meta-label">Queue</div>
+                                    <div class="route-meta-value" x-text="route.queue"></div>
+                                </div>
+                                <div class="route-meta-item" x-show="route.exchange">
+                                    <div class="route-meta-label">Exchange</div>
+                                    <div class="route-meta-value" x-text="route.exchange"></div>
+                                </div>
+                                <div class="route-meta-item">
+                                    <div class="route-meta-label">Routing Key</div>
+                                    <div class="route-meta-value" x-text="route.routing_key"></div>
+                                </div>
+                            </div>
+
+                            <div class="route-actions">
+                                <button class="btn" @click="editRoute(route)">Edit</button>
+                                <button class="btn btn-success" @click="testRoute(route.id)">Test</button>
+                                <button class="btn btn-danger" @click="deleteRoute(route.id)" :disabled="deletingRoute === route.id">
+                                    <span x-show="deletingRoute === route.id" class="loading"></span>
+                                    <span x-show="deletingRoute !== route.id">Delete</span>
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <div x-show="routes.length === 0" class="empty-state">
+                    <div class="empty-state-icon">⚡</div>
+                    <div>No routes configured</div>
+                    <div style="margin-top: 0.5rem; font-size: 0.875rem;">Add your first route to start routing webhooks</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-title">System Info</div>
+                <div class="sidebar-item">
+                    <span class="sidebar-label">Status</span>
+                    <span class="sidebar-value" x-text="healthStatus || 'Unknown'"></span>
+                </div>
+                <div class="sidebar-item">
+                    <span class="sidebar-label">Active Routes</span>
+                    <span class="sidebar-value" x-text="stats.active_routes || 0"></span>
+                </div>
+                <div class="sidebar-item">
+                    <span class="sidebar-label">Success Rate</span>
+                    <span class="sidebar-value" x-text="getSuccessRate()"></span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-title">Quick Actions</div>
+                <div class="quick-actions">
+                    <button class="btn" @click="refreshData()">
+                        <span x-show="!refreshing">Refresh</span>
+                        <span x-show="refreshing" class="loading"></span>
+                    </button>
+                    <button class="btn" @click="exportRoutes()">Export</button>
+                    <button class="btn" @click="checkHealth()">Health Check</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create/Edit Modal -->
+    <div class="modal" :class="{ 'show': showCreateModal || showEditModal }">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title" x-text="showEditModal ? 'Edit Route' : 'Create Route'"></div>
+            </div>
+
+            <form @submit.prevent="showEditModal ? updateRoute() : createRoute()">
+                <div class="form-group">
+                    <label class="form-label">Name</label>
+                    <input type="text" class="form-control" x-model="currentRoute.name" placeholder="GitHub Webhooks" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Endpoint</label>
+                    <input type="text" class="form-control" x-model="currentRoute.endpoint" placeholder="github" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Method</label>
+                    <select class="form-control" x-model="currentRoute.method">
+                        <option value="POST">POST</option>
+                        <option value="GET">GET</option>
+                        <option value="PUT">PUT</option>
+                        <option value="DELETE">DELETE</option>
+                        <option value="PATCH">PATCH</option>
+                        <option value="*">Any</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Queue</label>
+                    <input type="text" class="form-control" x-model="currentRoute.queue" placeholder="github-events" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Exchange <span style="color: var(--text-muted);">(optional)</span></label>
+                    <input type="text" class="form-control" x-model="currentRoute.exchange" placeholder="webhooks">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Routing Key</label>
+                    <input type="text" class="form-control" x-model="currentRoute.routing_key" placeholder="github.events">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Filters <span style="color: var(--text-muted);">(JSON)</span></label>
+                    <textarea class="form-control" x-model="currentRoute.filters" placeholder='{"headers": {"X-Event": "push"}}'></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label class="checkbox">
+                        <input type="checkbox" x-model="currentRoute.active">
+                        <span>Active</span>
+                    </label>
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="btn" @click="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" :disabled="submitting">
+                        <span x-show="submitting" class="loading"></span>
+                        <span x-text="showEditModal ? 'Update' : 'Create'"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Alert -->
+    <div x-show="alert.show" class="alert" :class="`alert-${alert.type}`" x-text="alert.message"></div>
+</div>
+
+<script>
+    function webhookRouter() {
+        return {
+            routes: [],
+            stats: {},
+            loading: true,
+            submitting: false,
+            refreshing: false,
+            deletingRoute: null,
+            healthStatus: 'unknown',
+            showCreateModal: false,
+            showEditModal: false,
+            currentRoute: {
+                name: '',
+                endpoint: '',
+                method: 'POST',
+                queue: '',
+                exchange: '',
+                routing_key: '',
+                filters: '{}',
+                active: true
+            },
+            alert: {
+                show: false,
+                type: 'success',
+                message: ''
+            },
+
+            init() {
+                this.loadRoutes();
+                this.loadStats();
+                this.checkHealth();
+
+                setInterval(() => {
+                    this.loadStats();
+                }, 30000);
+            },
+
+            async loadRoutes() {
+                try {
+                    this.loading = true;
+                    const response = await axios.get('/api/routes');
+                    this.routes = response.data || [];
+                } catch (error) {
+                    console.error('Error loading routes:', error);
+                    this.showAlert('Failed to load routes', 'error');
+                } finally {
+                    this.loading = false;
+                }
+            },
+
+            async loadStats() {
+                try {
+                    const response = await axios.get('/api/stats');
+                    this.stats = response.data || {};
+                } catch (error) {
+                    console.error('Error loading stats:', error);
+                }
+            },
+
+            async checkHealth() {
+                try {
+                    const response = await axios.get('/health');
+                    this.healthStatus = response.data.status || 'unknown';
+                } catch (error) {
+                    this.healthStatus = 'unhealthy';
+                }
+            },
+
+            async createRoute() {
+                try {
+                    this.submitting = true;
+
+                    if (this.currentRoute.filters) {
+                        try {
+                            JSON.parse(this.currentRoute.filters);
+                        } catch (e) {
+                            this.showAlert('Invalid JSON in filters', 'error');
+                            return;
+                        }
+                    }
+
+                    if (!this.currentRoute.routing_key) {
+                        this.currentRoute.routing_key = this.currentRoute.queue;
+                    }
+
+                    const response = await axios.post('/api/routes', this.currentRoute);
+                    this.routes.unshift(response.data);
+                    this.showAlert('Route created', 'success');
+                    this.closeModal();
+                    this.loadStats();
+                } catch (error) {
+                    const message = error.response?.data || 'Failed to create route';
+                    this.showAlert(message, 'error');
+                } finally {
+                    this.submitting = false;
+                }
+            },
+
+            async updateRoute() {
+                try {
+                    this.submitting = true;
+
+                    if (this.currentRoute.filters) {
+                        try {
+                            JSON.parse(this.currentRoute.filters);
+                        } catch (e) {
+                            this.showAlert('Invalid JSON in filters', 'error');
+                            return;
+                        }
+                    }
+
+                    const response = await axios.put(`/api/routes/${this.currentRoute.id}`, this.currentRoute);
+                    const index = this.routes.findIndex(r => r.id === this.currentRoute.id);
+                    if (index !== -1) {
+                        this.routes[index] = response.data;
+                    }
+                    this.showAlert('Route updated', 'success');
+                    this.closeModal();
+                    this.loadStats();
+                } catch (error) {
+                    const message = error.response?.data || 'Failed to update route';
+                    this.showAlert(message, 'error');
+                } finally {
+                    this.submitting = false;
+                }
+            },
+
+            async deleteRoute(routeId) {
+                if (!confirm('Delete this route?')) return;
+
+                try {
+                    this.deletingRoute = routeId;
+                    await axios.delete(`/api/routes/${routeId}`);
+                    this.routes = this.routes.filter(r => r.id !== routeId);
+                    this.showAlert('Route deleted', 'success');
+                    this.loadStats();
+                } catch (error) {
+                    this.showAlert('Failed to delete route', 'error');
+                } finally {
+                    this.deletingRoute = null;
+                }
+            },
+
+            async testRoute(routeId) {
+                try {
+                    const response = await axios.post(`/api/routes/${routeId}/test`);
+                    if (response.data.success) {
+                        this.showAlert('Test successful', 'success');
+                    } else {
+                        this.showAlert(`Test failed: ${response.data.error}`, 'error');
+                    }
+                } catch (error) {
+                    const message = error.response?.data?.error || 'Test failed';
+                    this.showAlert(message, 'error');
+                }
+            },
+
+            editRoute(route) {
+                this.currentRoute = { ...route };
+                this.showEditModal = true;
+            },
+
+            closeModal() {
+                this.showCreateModal = false;
+                this.showEditModal = false;
+                this.currentRoute = {
+                    name: '',
+                    endpoint: '',
+                    method: 'POST',
+                    queue: '',
+                    exchange: '',
+                    routing_key: '',
+                    filters: '{}',
+                    active: true
+                };
+            },
+
+            async refreshData() {
+                this.refreshing = true;
+                await Promise.all([
+                    this.loadRoutes(),
+                    this.loadStats(),
+                    this.checkHealth()
+                ]);
+                this.refreshing = false;
+                this.showAlert('Data refreshed', 'success');
+            },
+
+            exportRoutes() {
+                const dataStr = JSON.stringify(this.routes, null, 2);
+                const dataBlob = new Blob([dataStr], {type: 'application/json'});
+                const url = URL.createObjectURL(dataBlob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'webhook-routes.json';
+                link.click();
+                URL.revokeObjectURL(url);
+                this.showAlert('Routes exported', 'success');
+            },
+
+            getSuccessRate() {
+                const total = this.stats.total_requests || 0;
+                const success = this.stats.success_requests || 0;
+                if (total === 0) return '0%';
+                return Math.round((success / total) * 100) + '%';
+            },
+
+            showAlert(message, type = 'success') {
+                this.alert = {
+                    show: true,
+                    message,
+                    type
+                };
+
+                setTimeout(() => {
+                    this.alert.show = false;
+                }, 4000);
+            }
+        }
+    }
+</script>
+</body>
+</html>
