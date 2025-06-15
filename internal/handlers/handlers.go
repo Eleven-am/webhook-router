@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,15 +13,18 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"webhook-router/internal/auth"
 	"webhook-router/internal/config"
 	"webhook-router/internal/database"
 	"webhook-router/internal/rabbitmq"
 )
 
 type Handlers struct {
-	db     *database.DB
+	db      *database.DB
 	rmqPool *rabbitmq.ConnectionPool
-	config *config.Config
+	config  *config.Config
+	webFS   embed.FS
+	auth    *auth.Auth
 }
 
 type WebhookPayload struct {
@@ -33,14 +37,223 @@ type WebhookPayload struct {
 	RouteName string              `json:"route_name,omitempty"`
 }
 
-func New(db *database.DB, rmqPool *rabbitmq.ConnectionPool, cfg *config.Config) *Handlers {
+func New(db *database.DB, rmqPool *rabbitmq.ConnectionPool, cfg *config.Config, webFS embed.FS, authHandler *auth.Auth) *Handlers {
 	return &Handlers{
 		db:      db,
 		rmqPool: rmqPool,
 		config:  cfg,
+		webFS:   webFS,
+		auth:    authHandler,
 	}
 }
 
+// Auth handlers
+func (h *Handlers) ServeLogin(w http.ResponseWriter, r *http.Request) {
+	content, err := h.webFS.ReadFile("web/login.html")
+	if err != nil {
+		http.Error(w, "Login page not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(content)
+}
+
+func (h *Handlers) HandleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+
+	sessionID, session, err := h.auth.Login(username, password)
+	if err != nil {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	// Set session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session",
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false, // Set to true in production with HTTPS
+		SameSite: http.SameSiteStrictMode,
+		Expires:  session.ExpiresAt,
+	})
+
+	// If default user, redirect to change password page
+	if session.IsDefault {
+		http.Redirect(w, r, "/change-password", http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+func (h *Handlers) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("session")
+	if err == nil {
+		h.auth.Logout(cookie.Value)
+	}
+
+	// Clear session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+
+	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+func (h *Handlers) ServeChangePassword(w http.ResponseWriter, r *http.Request) {
+	content, err := h.webFS.ReadFile("web/change-password.html")
+	if err != nil {
+		http.Error(w, "Change password page not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(content)
+}
+
+func (h *Handlers) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userIDStr := r.Header.Get("X-User-ID")
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil {
+		http.Error(w, "Invalid user session", http.StatusBadRequest)
+		return
+	}
+
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	confirmPassword := r.FormValue("confirm_password")
+
+	if password != confirmPassword {
+		http.Error(w, "Passwords do not match", http.StatusBadRequest)
+		return
+	}
+
+	if len(password) < 6 {
+		http.Error(w, "Password must be at least 6 characters", http.StatusBadRequest)
+		return
+	}
+
+	err = h.db.UpdateUserCredentials(userID, username, password)
+	if err != nil {
+		http.Error(w, "Failed to update credentials", http.StatusInternalServerError)
+		return
+	}
+
+	// Logout and redirect to login with new credentials
+	cookie, _ := r.Cookie("session")
+	if cookie != nil {
+		h.auth.Logout(cookie.Value)
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+
+	http.Redirect(w, r, "/login?message=credentials-updated", http.StatusFound)
+}
+
+// Settings handlers
+func (h *Handlers) GetSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.db.GetAllSettings()
+	if err != nil {
+		http.Error(w, "Failed to get settings", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(settings)
+}
+
+func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var settings map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Test RabbitMQ connection if URL is being updated
+	if rmqURL, exists := settings["rabbitmq_url"]; exists {
+		if err := h.testRabbitMQConnection(rmqURL); err != nil {
+			response := map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("RabbitMQ connection test failed: %v", err),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+	}
+
+	// Save settings
+	for key, value := range settings {
+		if err := h.db.SetSetting(key, value); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to save setting %s", key), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Settings updated successfully",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *Handlers) testRabbitMQConnection(rmqURL string) error {
+	// Create temporary connection pool to test
+	testPool, err := rabbitmq.NewConnectionPool(rmqURL, 1)
+	if err != nil {
+		return err
+	}
+	defer testPool.Close()
+
+	// Try to get a client
+	client, err := testPool.NewClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	// Try to declare a test queue
+	_, err = client.QueueDeclare("test-connection", false, true, false, false, nil)
+	return err
+}
+
+func (h *Handlers) ServeSettings(w http.ResponseWriter, r *http.Request) {
+	content, err := h.webFS.ReadFile("web/settings.html")
+	if err != nil {
+		http.Error(w, "Settings page not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(content)
+}
+
+// Existing webhook handler (unchanged)
 func (h *Handlers) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	endpoint := vars["endpoint"]
@@ -64,9 +277,13 @@ func (h *Handlers) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(routes) == 0 {
-		// No matching routes, use default
-		h.publishToDefault(r, body, endpoint)
-		h.logWebhook(0, r, body, endpoint, 200, "")
+		// No matching routes, use default if RabbitMQ is configured
+		if h.rmqPool != nil {
+			h.publishToDefault(r, body, endpoint)
+			h.logWebhook(0, r, body, endpoint, 200, "")
+		} else {
+			h.logWebhook(0, r, body, endpoint, 500, "RabbitMQ not configured")
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 		return
@@ -101,17 +318,20 @@ func (h *Handlers) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Publish to RabbitMQ
-		err = h.publishToQueue(route, payloadBytes)
-		if err != nil {
-			log.Printf("Error publishing to queue for route %s: %v", route.Name, err)
-			lastError = err
-			h.logWebhook(route.ID, r, body, endpoint, 500, err.Error())
-			continue
+		// Publish to RabbitMQ if configured
+		if h.rmqPool != nil {
+			err = h.publishToQueue(route, payloadBytes)
+			if err != nil {
+				log.Printf("Error publishing to queue for route %s: %v", route.Name, err)
+				lastError = err
+				h.logWebhook(route.ID, r, body, endpoint, 500, err.Error())
+				continue
+			}
+			successCount++
+			h.logWebhook(route.ID, r, body, endpoint, 200, "")
+		} else {
+			h.logWebhook(route.ID, r, body, endpoint, 500, "RabbitMQ not configured")
 		}
-
-		successCount++
-		h.logWebhook(route.ID, r, body, endpoint, 200, "")
 	}
 
 	if successCount == 0 && lastError != nil {
@@ -361,6 +581,17 @@ func (h *Handlers) TestRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to publish
+	if h.rmqPool == nil {
+		response := map[string]interface{}{
+			"success": false,
+			"error":   "RabbitMQ not configured",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
 	err = h.publishToQueue(route, payloadBytes)
 	if err != nil {
 		response := map[string]interface{}{
@@ -411,30 +642,57 @@ func (h *Handlers) GetRouteStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
-	// Check database connection
-	if err := h.db.Ping(); err != nil {
-		http.Error(w, "Database unhealthy", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Check RabbitMQ connection
-	client, err := h.rmqPool.NewClient()
-	if err != nil {
-		http.Error(w, "RabbitMQ unhealthy", http.StatusServiceUnavailable)
-		return
-	}
-	client.Close()
-
 	health := map[string]interface{}{
 		"status":    "healthy",
 		"timestamp": time.Now(),
 		"version":   "1.0.0",
 	}
 
+	// Check database connection
+	if err := h.db.Ping(); err != nil {
+		health["status"] = "unhealthy"
+		health["database"] = "error: " + err.Error()
+	} else {
+		health["database"] = "connected"
+	}
+
+	// Check RabbitMQ connection if configured
+	if h.rmqPool != nil {
+		client, err := h.rmqPool.NewClient()
+		if err != nil {
+			health["rabbitmq"] = "error: " + err.Error()
+			if health["status"] == "healthy" {
+				health["status"] = "degraded"
+			}
+		} else {
+			client.Close()
+			health["rabbitmq"] = "connected"
+		}
+	} else {
+		health["rabbitmq"] = "not configured"
+		if health["status"] == "healthy" {
+			health["status"] = "degraded"
+		}
+	}
+
+	statusCode := http.StatusOK
+	if health["status"] == "unhealthy" {
+		statusCode = http.StatusServiceUnavailable
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(health)
 }
 
 func (h *Handlers) ServeFrontend(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "./web/index.html")
+	// Read the index.html file from embedded filesystem
+	content, err := h.webFS.ReadFile("web/index.html")
+	if err != nil {
+		http.Error(w, "Frontend not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(content)
 }

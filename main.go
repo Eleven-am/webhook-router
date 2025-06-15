@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -13,11 +15,16 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+	"webhook-router/internal/auth"
 	"webhook-router/internal/config"
 	"webhook-router/internal/database"
 	"webhook-router/internal/handlers"
 	"webhook-router/internal/rabbitmq"
 )
+
+// Embed the web directory
+//go:embed web/*
+var webFS embed.FS
 
 func main() {
 	// Set up CPU usage
@@ -29,32 +36,57 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
-	// Initialize database
-	db, err := database.Init(cfg.DatabasePath)
+	// Initialize in-memory database (self-contained)
+	db, err := database.Init(":memory:")
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
-	// Initialize RabbitMQ connection pool
-	rmqPool, err := rabbitmq.NewConnectionPool(cfg.RabbitMQURL, 5)
-	if err != nil {
-		log.Fatalf("Failed to initialize RabbitMQ connection pool: %v", err)
-	}
-	defer rmqPool.Close()
+	// Initialize auth
+	authHandler := auth.New(db)
 
-	// Initialize handlers
-	h := handlers.New(db, rmqPool, cfg)
+	// Initialize RabbitMQ connection pool (optional)
+	var rmqPool *rabbitmq.ConnectionPool
+	rmqURL, err := db.GetSetting("rabbitmq_url")
+	if err == nil && rmqURL != "" {
+		rmqPool, err = rabbitmq.NewConnectionPool(rmqURL, 5)
+		if err != nil {
+			log.Printf("Warning: Failed to initialize RabbitMQ connection pool: %v", err)
+			log.Println("RabbitMQ can be configured later through the admin interface")
+		} else {
+			defer rmqPool.Close()
+		}
+	} else {
+		log.Println("RabbitMQ not configured. Configure it through the admin interface.")
+	}
+
+	// Initialize handlers with embedded filesystem
+	h := handlers.New(db, rmqPool, cfg, webFS, authHandler)
 
 	// Set up routes
 	router := mux.NewRouter()
 
-	// Webhook endpoints
+	// Auth routes (no auth required)
+	router.HandleFunc("/login", h.ServeLogin).Methods("GET")
+	router.HandleFunc("/login", h.HandleLogin).Methods("POST")
+	router.HandleFunc("/logout", h.HandleLogout).Methods("POST", "GET")
+	router.HandleFunc("/change-password", h.ServeChangePassword).Methods("GET")
+	router.HandleFunc("/change-password", h.HandleChangePassword).Methods("POST")
+
+	// Health check (no auth required)
+	router.HandleFunc("/health", h.HealthCheck).Methods("GET")
+
+	// Webhook endpoints (no auth required)
 	router.HandleFunc("/webhook/{endpoint}", h.HandleWebhook).Methods("POST", "PUT", "PATCH", "DELETE", "GET")
 	router.HandleFunc("/webhook", h.HandleWebhook).Methods("POST", "PUT", "PATCH", "DELETE", "GET")
 
-	// API endpoints for route management
-	api := router.PathPrefix("/api").Subrouter()
+	// Protected routes - require authentication
+	protected := router.NewRoute().Subrouter()
+	protected.Use(authHandler.RequireAuth)
+
+	// API endpoints for route management (protected)
+	api := protected.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/routes", h.GetRoutes).Methods("GET")
 	api.HandleFunc("/routes", h.CreateRoute).Methods("POST")
 	api.HandleFunc("/routes/{id}", h.GetRoute).Methods("GET")
@@ -62,17 +94,34 @@ func main() {
 	api.HandleFunc("/routes/{id}", h.DeleteRoute).Methods("DELETE")
 	api.HandleFunc("/routes/{id}/test", h.TestRoute).Methods("POST")
 
-	// Statistics endpoint
+	// Settings endpoints (protected)
+	api.HandleFunc("/settings", h.GetSettings).Methods("GET")
+	api.HandleFunc("/settings", h.UpdateSettings).Methods("POST")
+
+	// Statistics endpoints (protected)
 	api.HandleFunc("/stats", h.GetStats).Methods("GET")
 	api.HandleFunc("/stats/route/{id}", h.GetRouteStats).Methods("GET")
 
-	// Health check
-	router.HandleFunc("/health", h.HealthCheck).Methods("GET")
+	// Serve static files from embedded filesystem (protected)
+	staticFS, err := fs.Sub(webFS, "web/static")
+	if err != nil {
+		log.Fatalf("Failed to create static filesystem: %v", err)
+	}
+	protected.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 
-	// Serve static files and frontend
-	router.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static/"))))
-	router.HandleFunc("/", h.ServeFrontend).Methods("GET")
-	router.HandleFunc("/admin", h.ServeFrontend).Methods("GET")
+	// Frontend routes (protected)
+	protected.HandleFunc("/", h.ServeFrontend).Methods("GET")
+	protected.HandleFunc("/admin", h.ServeFrontend).Methods("GET")
+	protected.HandleFunc("/settings", h.ServeSettings).Methods("GET")
+
+	// Start session cleanup routine
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			authHandler.CleanupExpiredSessions()
+		}
+	}()
 
 	// Set up HTTP server
 	srv := &http.Server{
@@ -105,5 +154,5 @@ func main() {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
-	fmt.Println("Server exited")
+	fmt.Println("✅ Server exited")
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type DB struct {
@@ -39,6 +40,21 @@ type WebhookLog struct {
 	ProcessedAt time.Time `json:"processed_at"`
 }
 
+type User struct {
+	ID           int       `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"-"` // Don't expose in JSON
+	IsDefault    bool      `json:"is_default"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type Setting struct {
+	Key       string    `json:"key"`
+	Value     string    `json:"value"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type Stats struct {
 	TotalRequests   int `json:"total_requests"`
 	SuccessRequests int `json:"success_requests"`
@@ -59,6 +75,11 @@ func Init(dbPath string) (*DB, error) {
 	dbWrapper := &DB{db}
 	if err := dbWrapper.migrate(); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	}
+
+	// Create default user if none exists
+	if err := dbWrapper.createDefaultUser(); err != nil {
+		return nil, fmt.Errorf("failed to create default user: %w", err)
 	}
 
 	return dbWrapper, nil
@@ -92,6 +113,19 @@ func (db *DB) migrate() error {
 			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (route_id) REFERENCES routes (id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			is_default BOOLEAN DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_routes_endpoint ON routes(endpoint)`,
 		`CREATE INDEX IF NOT EXISTS idx_routes_active ON routes(active)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_logs_route_id ON webhook_logs(route_id)`,
@@ -107,6 +141,105 @@ func (db *DB) migrate() error {
 	return nil
 }
 
+func (db *DB) createDefaultUser() error {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
+	if err != nil {
+		return err
+	}
+
+	if count == 0 {
+		// Create default user with username "admin" and password "admin"
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("failed to hash default password: %w", err)
+		}
+
+		_, err = db.Exec(`INSERT INTO users (username, password_hash, is_default) VALUES (?, ?, ?)`,
+			"admin", string(hashedPassword), true)
+		if err != nil {
+			return fmt.Errorf("failed to create default user: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Auth methods
+func (db *DB) ValidateUser(username, password string) (*User, error) {
+	user := &User{}
+	err := db.QueryRow(`SELECT id, username, password_hash, is_default, created_at, updated_at 
+						FROM users WHERE username = ?`, username).Scan(
+		&user.ID, &user.Username, &user.PasswordHash, &user.IsDefault, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
+	if err != nil {
+		return nil, fmt.Errorf("invalid password")
+	}
+
+	return user, nil
+}
+
+func (db *DB) UpdateUserCredentials(userID int, username, password string) error {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	_, err = db.Exec(`UPDATE users SET username = ?, password_hash = ?, is_default = 0, updated_at = CURRENT_TIMESTAMP 
+					 WHERE id = ?`, username, string(hashedPassword), userID)
+	if err != nil {
+		return fmt.Errorf("failed to update user credentials: %w", err)
+	}
+
+	return nil
+}
+
+func (db *DB) IsDefaultUser(userID int) (bool, error) {
+	var isDefault bool
+	err := db.QueryRow("SELECT is_default FROM users WHERE id = ?", userID).Scan(&isDefault)
+	return isDefault, err
+}
+
+// Settings methods
+func (db *DB) GetSetting(key string) (string, error) {
+	var value string
+	err := db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil // Setting doesn't exist
+	}
+	return value, err
+}
+
+func (db *DB) SetSetting(key, value string) error {
+	_, err := db.Exec(`INSERT OR REPLACE INTO settings (key, value, updated_at) 
+					  VALUES (?, ?, CURRENT_TIMESTAMP)`, key, value)
+	return err
+}
+
+func (db *DB) GetAllSettings() (map[string]string, error) {
+	rows, err := db.Query("SELECT key, value FROM settings")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	settings := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		settings[key] = value
+	}
+
+	return settings, nil
+}
+
+// Existing route methods
 func (db *DB) CreateRoute(route *Route) error {
 	query := `INSERT INTO routes (name, endpoint, method, queue, exchange, routing_key, filters, headers, active)
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
