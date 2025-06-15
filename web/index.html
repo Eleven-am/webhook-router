@@ -600,9 +600,13 @@
     <!-- Top Bar -->
     <div class="topbar">
         <div class="logo">Webhook Router</div>
-        <div class="status-indicator">
-            <div class="status-dot" :class="{ 'error': healthStatus !== 'healthy' }"></div>
-            <span x-text="healthStatus === 'healthy' ? 'System Online' : 'System Offline'"></span>
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <div class="status-indicator">
+                <div class="status-dot" :class="{ 'error': healthStatus !== 'healthy' }"></div>
+                <span x-text="healthStatus === 'healthy' ? 'System Online' : 'System Offline'"></span>
+            </div>
+            <button class="btn" @click="showSettingsModal = true">Settings</button>
+            <a href="/logout" class="btn">Logout</a>
         </div>
     </div>
 
@@ -701,6 +705,10 @@
                     <span class="sidebar-value" x-text="healthStatus || 'Unknown'"></span>
                 </div>
                 <div class="sidebar-item">
+                    <span class="sidebar-label">RabbitMQ</span>
+                    <span class="sidebar-value" x-text="getRabbitMQStatus()"></span>
+                </div>
+                <div class="sidebar-item">
                     <span class="sidebar-label">Active Routes</span>
                     <span class="sidebar-value" x-text="stats.active_routes || 0"></span>
                 </div>
@@ -717,10 +725,45 @@
                         <span x-show="!refreshing">Refresh</span>
                         <span x-show="refreshing" class="loading"></span>
                     </button>
+                    <button class="btn" @click="showSettingsModal = true">Settings</button>
                     <button class="btn" @click="exportRoutes()">Export</button>
                     <button class="btn" @click="checkHealth()">Health Check</button>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal" :class="{ 'show': showSettingsModal }">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">Settings</div>
+            </div>
+
+            <form @submit.prevent="updateSettings()">
+                <div class="form-group">
+                    <label class="form-label">RabbitMQ URL</label>
+                    <input type="text" class="form-control" x-model="settings.rabbitmq_url"
+                           placeholder="amqp://guest:guest@localhost:5672/" required>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+                        Connection will be tested before saving
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Default Queue</label>
+                    <input type="text" class="form-control" x-model="settings.default_queue"
+                           placeholder="webhooks" required>
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="btn" @click="showSettingsModal = false">Cancel</button>
+                    <button type="submit" class="btn btn-primary" :disabled="submittingSettings">
+                        <span x-show="submittingSettings" class="loading"></span>
+                        <span x-show="!submittingSettings">Save Settings</span>
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -801,13 +844,20 @@
         return {
             routes: [],
             stats: {},
+            settings: {
+                rabbitmq_url: '',
+                default_queue: 'webhooks'
+            },
+            healthData: {},
             loading: true,
             submitting: false,
+            submittingSettings: false,
             refreshing: false,
             deletingRoute: null,
             healthStatus: 'unknown',
             showCreateModal: false,
             showEditModal: false,
+            showSettingsModal: false,
             currentRoute: {
                 name: '',
                 endpoint: '',
@@ -827,11 +877,51 @@
             init() {
                 this.loadRoutes();
                 this.loadStats();
+                this.loadSettings();
                 this.checkHealth();
+
+                // Check if user needs to change default password
+                this.checkDefaultUser();
 
                 setInterval(() => {
                     this.loadStats();
+                    this.checkHealth();
                 }, 30000);
+            },
+
+            async checkDefaultUser() {
+                // This would be handled by the server redirecting to change-password page
+                // if the user is still using default credentials
+            },
+
+            async loadSettings() {
+                try {
+                    const response = await axios.get('/api/settings');
+                    this.settings = { ...this.settings, ...response.data };
+                } catch (error) {
+                    console.error('Error loading settings:', error);
+                }
+            },
+
+            async updateSettings() {
+                try {
+                    this.submittingSettings = true;
+                    const response = await axios.post('/api/settings', this.settings);
+
+                    if (response.data.success) {
+                        this.showAlert('Settings updated successfully', 'success');
+                        this.showSettingsModal = false;
+                        // Refresh health status after settings update
+                        setTimeout(() => this.checkHealth(), 1000);
+                    } else {
+                        this.showAlert(response.data.error || 'Failed to update settings', 'error');
+                    }
+                } catch (error) {
+                    const message = error.response?.data?.error || 'Failed to update settings';
+                    this.showAlert(message, 'error');
+                } finally {
+                    this.submittingSettings = false;
+                }
             },
 
             async loadRoutes() {
@@ -859,10 +949,19 @@
             async checkHealth() {
                 try {
                     const response = await axios.get('/health');
+                    this.healthData = response.data;
                     this.healthStatus = response.data.status || 'unknown';
                 } catch (error) {
                     this.healthStatus = 'unhealthy';
+                    this.healthData = {};
                 }
+            },
+
+            getRabbitMQStatus() {
+                if (!this.healthData.rabbitmq) return 'Unknown';
+                if (this.healthData.rabbitmq === 'not configured') return 'Not Configured';
+                if (this.healthData.rabbitmq === 'connected') return 'Connected';
+                return 'Error';
             },
 
             async createRoute() {
@@ -979,6 +1078,7 @@
                 await Promise.all([
                     this.loadRoutes(),
                     this.loadStats(),
+                    this.loadSettings(),
                     this.checkHealth()
                 ]);
                 this.refreshing = false;

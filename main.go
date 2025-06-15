@@ -23,6 +23,7 @@ import (
 )
 
 // Embed the web directory
+//
 //go:embed web/*
 var webFS embed.FS
 
@@ -36,12 +37,18 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
-	// Initialize in-memory database (self-contained)
-	db, err := database.Init(":memory:")
+	// Initialize SQLite database (self-contained but persistent)
+	dbPath := "./webhook_router.db"
+	if cfg.DatabasePath != "./webhook_router.db" {
+		dbPath = cfg.DatabasePath
+	}
+
+	db, err := database.Init(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
+	fmt.Printf("Database: %s\n", dbPath)
 
 	// Initialize auth
 	authHandler := auth.New(db)
@@ -54,6 +61,7 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to initialize RabbitMQ connection pool: %v", err)
 			log.Println("RabbitMQ can be configured later through the admin interface")
+			rmqPool = nil // Ensure it's nil on failure
 		} else {
 			defer rmqPool.Close()
 		}

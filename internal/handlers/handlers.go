@@ -113,6 +113,26 @@ func (h *Handlers) HandleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) ServeChangePassword(w http.ResponseWriter, r *http.Request) {
+	// Check if user has valid session
+	cookie, err := r.Cookie("session")
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	session, valid := h.auth.ValidateSession(cookie.Value)
+	if !valid {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	// Check if user is using default credentials
+	if !session.IsDefault {
+		// User already changed password, redirect to admin
+		http.Redirect(w, r, "/admin", http.StatusFound)
+		return
+	}
+
 	content, err := h.webFS.ReadFile("web/change-password.html")
 	if err != nil {
 		http.Error(w, "Change password page not found", http.StatusNotFound)
@@ -129,10 +149,16 @@ func (h *Handlers) HandleChangePassword(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	userIDStr := r.Header.Get("X-User-ID")
-	userID, err := strconv.Atoi(userIDStr)
+	// Get user ID from session cookie instead of header
+	cookie, err := r.Cookie("session")
 	if err != nil {
-		http.Error(w, "Invalid user session", http.StatusBadRequest)
+		http.Error(w, "Invalid session", http.StatusUnauthorized)
+		return
+	}
+
+	session, valid := h.auth.ValidateSession(cookie.Value)
+	if !valid {
+		http.Error(w, "Invalid session", http.StatusUnauthorized)
 		return
 	}
 
@@ -150,17 +176,14 @@ func (h *Handlers) HandleChangePassword(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err = h.db.UpdateUserCredentials(userID, username, password)
+	err = h.db.UpdateUserCredentials(session.UserID, username, password)
 	if err != nil {
 		http.Error(w, "Failed to update credentials", http.StatusInternalServerError)
 		return
 	}
 
 	// Logout and redirect to login with new credentials
-	cookie, _ := r.Cookie("session")
-	if cookie != nil {
-		h.auth.Logout(cookie.Value)
-	}
+	h.auth.Logout(cookie.Value)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
@@ -211,6 +234,24 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if err := h.db.SetSetting(key, value); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to save setting %s", key), http.StatusInternalServerError)
 			return
+		}
+	}
+
+	// If RabbitMQ URL was updated, try to reinitialize the connection pool
+	if rmqURL, exists := settings["rabbitmq_url"]; exists && rmqURL != "" {
+		// Close existing pool if any
+		if h.rmqPool != nil {
+			h.rmqPool.Close()
+		}
+
+		// Try to create new pool
+		newPool, err := rabbitmq.NewConnectionPool(rmqURL, 5)
+		if err != nil {
+			log.Printf("Failed to reinitialize RabbitMQ pool: %v", err)
+			h.rmqPool = nil
+		} else {
+			h.rmqPool = newPool
+			log.Println("RabbitMQ connection pool reinitialized")
 		}
 	}
 
