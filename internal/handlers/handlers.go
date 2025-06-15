@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -215,8 +216,22 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Test RabbitMQ connection if URL is being updated
+	// Check if RabbitMQ URL is being updated and if environment variable exists
+	envRabbitMQ := os.Getenv("RABBITMQ_URL")
 	if rmqURL, exists := settings["rabbitmq_url"]; exists {
+		if envRabbitMQ != "" {
+			// Environment variable takes precedence
+			response := map[string]interface{}{
+				"success": false,
+				"error":   "RabbitMQ URL is set via environment variable and cannot be changed through the interface. Please update the RABBITMQ_URL environment variable instead.",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
+		// Test RabbitMQ connection if URL is being updated
 		if err := h.testRabbitMQConnection(rmqURL); err != nil {
 			response := map[string]interface{}{
 				"success": false,
@@ -229,16 +244,19 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Save settings
+	// Save settings to database
 	for key, value := range settings {
+		if key == "rabbitmq_source" {
+			continue // Skip metadata field
+		}
 		if err := h.db.SetSetting(key, value); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to save setting %s", key), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	// If RabbitMQ URL was updated, try to reinitialize the connection pool
-	if rmqURL, exists := settings["rabbitmq_url"]; exists && rmqURL != "" {
+	// If RabbitMQ URL was updated and no env var exists, try to reinitialize the connection pool
+	if rmqURL, exists := settings["rabbitmq_url"]; exists && envRabbitMQ == "" && rmqURL != "" {
 		// Close existing pool if any
 		if h.rmqPool != nil {
 			h.rmqPool.Close()

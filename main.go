@@ -48,20 +48,30 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
-	fmt.Printf("Database: %s\n", dbPath)
+	fmt.Printf("📁 Database: %s\n", dbPath)
 
 	// Initialize auth
 	authHandler := auth.New(db)
 
-	// Initialize RabbitMQ connection pool (optional)
+	// Initialize RabbitMQ connection pool (from env or database)
 	var rmqPool *rabbitmq.ConnectionPool
-	rmqURL, err := db.GetSetting("rabbitmq_url")
-	if err == nil && rmqURL != "" {
+
+	rmqURL := cfg.RabbitMQURL
+	if rmqURL == "" || rmqURL == "amqp://guest:guest@localhost:5672/" {
+		if dbURL, err := db.GetSetting("rabbitmq_url"); err == nil && dbURL != "" {
+			rmqURL = dbURL
+			log.Println("Using RabbitMQ URL from database settings")
+		}
+	} else {
+		log.Println("Using RabbitMQ URL from environment variable")
+	}
+
+	if rmqURL != "" && rmqURL != "amqp://guest:guest@localhost:5672/" {
 		rmqPool, err = rabbitmq.NewConnectionPool(rmqURL, 5)
 		if err != nil {
 			log.Printf("Warning: Failed to initialize RabbitMQ connection pool: %v", err)
 			log.Println("RabbitMQ can be configured later through the admin interface")
-			rmqPool = nil // Ensure it's nil on failure
+			rmqPool = nil
 		} else {
 			defer rmqPool.Close()
 		}

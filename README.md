@@ -24,36 +24,36 @@ A powerful, self-contained webhook routing system built with Go that receives we
 version: '3.8'
 
 services:
-  webhook-router:
-    image: elevenam/webhook-router:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - RABBITMQ_URL=amqp://admin:password@rabbitmq:5672/
-      - DATABASE_PATH=/data/webhook_router.db
-      - DEFAULT_QUEUE=webhooks
-      - LOG_LEVEL=info
-    volumes:
-      - webhook_data:/data
-    depends_on:
-      - rabbitmq
-    restart: unless-stopped
+   webhook-router:
+      image: elevenam/webhook-router:latest
+      ports:
+         - "8080:8080"
+      environment:
+         - RABBITMQ_URL=amqp://admin:password@rabbitmq:5672/
+         - DATABASE_PATH=/data/webhook_router.db
+         - DEFAULT_QUEUE=webhooks
+         - LOG_LEVEL=info
+      volumes:
+         - webhook_data:/data
+      depends_on:
+         - rabbitmq
+      restart: unless-stopped
 
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      - RABBITMQ_DEFAULT_USER=admin
-      - RABBITMQ_DEFAULT_PASS=password
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    restart: unless-stopped
+   rabbitmq:
+      image: rabbitmq:3-management-alpine
+      ports:
+         - "5672:5672"
+         - "15672:15672"
+      environment:
+         - RABBITMQ_DEFAULT_USER=admin
+         - RABBITMQ_DEFAULT_PASS=password
+      volumes:
+         - rabbitmq_data:/var/lib/rabbitmq
+      restart: unless-stopped
 
 volumes:
-  webhook_data:
-  rabbitmq_data:
+   webhook_data:
+   rabbitmq_data:
 ```
 
 2. **Start the services**:
@@ -78,20 +78,20 @@ If you have an existing RabbitMQ instance (like in Kubernetes):
 version: '3.8'
 
 services:
-  webhook-router:
-    image: elevenam/webhook-router:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - DATABASE_PATH=/data/webhook_router.db
-      - DEFAULT_QUEUE=webhooks
-      - LOG_LEVEL=info
-    volumes:
-      - webhook_data:/data
-    restart: unless-stopped
+   webhook-router:
+      image: elevenam/webhook-router:latest
+      ports:
+         - "8080:8080"
+      environment:
+         - DATABASE_PATH=/data/webhook_router.db
+         - DEFAULT_QUEUE=webhooks
+         - LOG_LEVEL=info
+      volumes:
+         - webhook_data:/data
+      restart: unless-stopped
 
 volumes:
-  webhook_data:
+   webhook_data:
 ```
 
 **Note**: Configure RabbitMQ connection through the web interface Settings page after first login.
@@ -270,10 +270,32 @@ go run main.go
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP server port |
 | `DATABASE_PATH` | `./webhook_router.db` | SQLite database file path |
+| `RABBITMQ_URL` | `""` | RabbitMQ connection URL (optional - can use web interface) |
 | `DEFAULT_QUEUE` | `webhooks` | Default queue for unmatched webhooks |
 | `LOG_LEVEL` | `info` | Logging level |
 
-**Note**: RabbitMQ URL is configured through the web interface Settings page, not environment variables.
+### RabbitMQ Configuration Options
+
+You can configure RabbitMQ in two ways:
+
+#### Option 1: Environment Variable (Takes Precedence)
+```bash
+export RABBITMQ_URL="amqp://user:pass@host:port/"
+```
+- ✅ **Immutable**: Cannot be changed through web interface
+- ✅ **Container-friendly**: Perfect for Docker/Kubernetes
+- ✅ **Security**: Keeps credentials in environment/secrets
+
+#### Option 2: Web Interface (Database Setting)
+1. **Leave RABBITMQ_URL unset** or empty
+2. **Login to admin interface**
+3. **Click Settings** in the sidebar or top bar
+4. **Enter RabbitMQ URL**: `amqp://user:pass@host:port/`
+5. **Test and Save**: System validates before saving
+
+- ✅ **Dynamic**: Can be changed without restart
+- ✅ **User-friendly**: No need to manage environment variables
+- ✅ **Testing**: Built-in connection validation
 
 ### Route Configuration
 
@@ -306,17 +328,33 @@ Routes can be configured through the web UI or API with the following options:
 
 ### RabbitMQ Configuration
 
-Configure RabbitMQ through the web interface:
+#### Priority Order:
+1. **Environment Variable** (`RABBITMQ_URL`) - Takes precedence if set
+2. **Database Setting** - Used if no environment variable
 
-1. **Login to admin interface**
-2. **Click Settings** or use the sidebar
-3. **Enter RabbitMQ URL**: `amqp://user:pass@host:port/`
-4. **Set Default Queue**: Queue name for unmatched webhooks
+#### Through Environment Variable:
+```bash
+# Set before starting
+export RABBITMQ_URL="amqp://user:pass@host:port/"
+./webhook-router
+
+# Or with Docker
+docker run -e RABBITMQ_URL="amqp://user:pass@host:port/" webhook-router
+```
+
+#### Through Web Interface:
+1. **Leave RABBITMQ_URL unset** or empty
+2. **Login to admin interface**
+3. **Click Settings** (sidebar or top bar)
+4. **Configure RabbitMQ URL and Default Queue**
 5. **Test Connection**: System validates before saving
 
+**Note**: If environment variable is set, the web interface will show it as read-only.
+
 The system supports:
-- **Dynamic reconfiguration**: Update settings without restart
-- **Connection testing**: Validates before saving
+- **Precedence**: Environment variable overrides database setting
+- **Dynamic updates**: Database settings can be changed without restart
+- **Connection testing**: Validates before saving (web interface only)
 - **Graceful degradation**: Works without RabbitMQ (logs only)
 
 ## 📊 Webhook Payload Format
@@ -325,19 +363,19 @@ Webhooks are forwarded to RabbitMQ with the following JSON structure:
 
 ```json
 {
-  "method": "POST",
-  "url": {
-    "path": "/webhook/github",
-    "query": "param=value"
-  },
-  "headers": {
-    "Content-Type": ["application/json"],
-    "X-GitHub-Event": ["push"]
-  },
-  "body": "{\"repository\": {...}}",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "route_id": 1,
-  "route_name": "GitHub Webhooks"
+   "method": "POST",
+   "url": {
+      "path": "/webhook/github",
+      "query": "param=value"
+   },
+   "headers": {
+      "Content-Type": ["application/json"],
+      "X-GitHub-Event": ["push"]
+   },
+   "body": "{\"repository\": {...}}",
+   "timestamp": "2024-01-15T10:30:00Z",
+   "route_id": 1,
+   "route_name": "GitHub Webhooks"
 }
 ```
 
@@ -349,11 +387,11 @@ Create sophisticated routing rules using JSON filters:
 
 ```json
 {
-  "headers": {
-    "Content-Type": "application/json",
-    "X-Event-Type": "payment"
-  },
-  "body_contains": ["succeeded", "payment_intent"]
+   "headers": {
+      "Content-Type": "application/json",
+      "X-Event-Type": "payment"
+   },
+   "body_contains": ["succeeded", "payment_intent"]
 }
 ```
 
@@ -414,25 +452,25 @@ For production, customize the docker-compose.yml:
 
 ```yaml
 services:
-  webhook-router:
-    image: elevenam/webhook-router:latest
-    environment:
-      - DATABASE_PATH=/data/webhook_router.db
-      - PORT=8080
-      - DEFAULT_QUEUE=webhooks
-      - LOG_LEVEL=info
-    volumes:
-      - /host/data:/data
-    restart: always
-    deploy:
-      replicas: 3
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
+   webhook-router:
+      image: elevenam/webhook-router:latest
+      environment:
+         - DATABASE_PATH=/data/webhook_router.db
+         - PORT=8080
+         - DEFAULT_QUEUE=webhooks
+         - LOG_LEVEL=info
+      volumes:
+         - /host/data:/data
+      restart: always
+      deploy:
+         replicas: 3
+         resources:
+            limits:
+               cpus: '0.5'
+               memory: 512M
+            reservations:
+               cpus: '0.25'
+               memory: 256M
 ```
 
 ### Kubernetes Deployment
@@ -443,34 +481,34 @@ Example Kubernetes deployment:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: webhook-router
+   name: webhook-router
 spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: webhook-router
-  template:
-    metadata:
-      labels:
-        app: webhook-router
-    spec:
-      containers:
-      - name: webhook-router
-        image: elevenam/webhook-router:latest
-        ports:
-        - containerPort: 8080
-        env:
-        - name: DATABASE_PATH
-          value: "/data/webhook_router.db"
-        - name: DEFAULT_QUEUE
-          value: "webhooks"
-        volumeMounts:
-        - name: data
-          mountPath: /data
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: webhook-router-pvc
+   replicas: 2
+   selector:
+      matchLabels:
+         app: webhook-router
+   template:
+      metadata:
+         labels:
+            app: webhook-router
+      spec:
+         containers:
+            - name: webhook-router
+              image: elevenam/webhook-router:latest
+              ports:
+                 - containerPort: 8080
+              env:
+                 - name: DATABASE_PATH
+                   value: "/data/webhook_router.db"
+                 - name: DEFAULT_QUEUE
+                   value: "webhooks"
+              volumeMounts:
+                 - name: data
+                   mountPath: /data
+         volumes:
+            - name: data
+              persistentVolumeClaim:
+                 claimName: webhook-router-pvc
 ```
 
 ### Scaling

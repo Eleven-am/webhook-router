@@ -16,7 +16,7 @@ func Load() *Config {
 	return &Config{
 		Port:         getEnv("PORT", "8080"),
 		DatabasePath: getEnv("DATABASE_PATH", "./webhook_router.db"),
-		RabbitMQURL:  getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		RabbitMQURL:  getEnv("RABBITMQ_URL", ""),
 		DefaultQueue: getEnv("DEFAULT_QUEUE", "webhooks"),
 		LogLevel:     getEnv("LOG_LEVEL", "info"),
 	}
