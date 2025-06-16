@@ -739,14 +739,6 @@
                         <span x-show="!refreshing">Refresh</span>
                         <span x-show="refreshing" class="loading"></span>
                     </button>
-                    <button class="btn" @click="refreshData()">
-                        <span x-show="!refreshing">Refresh</span>
-                        <span x-show="refreshing" class="loading"></span>
-                    </button>
-                    <button class="btn" @click="openSettings()" :disabled="settings.rabbitmq_source === 'environment'">
-                        <span x-show="settings.rabbitmq_source === 'environment'">🔒</span>
-                        Settings
-                    </button>
                     <button class="btn" @click="exportRoutes()">Export</button>
                     <button class="btn" @click="checkHealth()">Health Check</button>
                 </div>
