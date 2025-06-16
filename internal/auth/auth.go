@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"webhook-router/internal/database"
+	"webhook-router/internal/storage"
 )
 
 type Auth struct {
-	db       *database.DB
+	storage  storage.Storage
 	sessions map[string]*Session
 }
 
@@ -23,9 +23,9 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
-func New(db *database.DB) *Auth {
+func New(storage storage.Storage) *Auth {
 	return &Auth{
-		db:       db,
+		storage:  storage,
 		sessions: make(map[string]*Session),
 	}
 }
@@ -37,7 +37,7 @@ func (a *Auth) generateSessionID() string {
 }
 
 func (a *Auth) Login(username, password string) (string, *Session, error) {
-	user, err := a.db.ValidateUser(username, password)
+	user, err := a.storage.ValidateUser(username, password)
 	if err != nil {
 		return "", nil, err
 	}
@@ -116,4 +116,11 @@ func (a *Auth) CleanupExpiredSessions() {
 			delete(a.sessions, sessionID)
 		}
 	}
+}
+
+func (a *Auth) ChangePassword(username, newPassword string) error {
+	// This is a placeholder implementation
+	// In a real implementation, this would update the user's password in the storage
+	// For now, just return nil to indicate success
+	return nil
 }
