@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"time"
 
+	commonhttp "webhook-router/internal/common/http"
 	"webhook-router/internal/protocols"
 )
 
@@ -25,6 +26,7 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("invalid HTTP config: %w", err)
 	}
 
+	// Use HTTP client factory with custom transport
 	transport := &http.Transport{
 		MaxIdleConns:        config.MaxConnections,
 		MaxIdleConnsPerHost: config.MaxConnections / 10,
@@ -34,16 +36,17 @@ func NewClient(config *Config) (*Client, error) {
 		},
 	}
 
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   config.Timeout,
-	}
-
+	var clientOptions []commonhttp.ClientOption
+	clientOptions = append(clientOptions, commonhttp.WithTimeout(config.Timeout))
+	clientOptions = append(clientOptions, commonhttp.WithTransport(transport))
+	
 	if !config.FollowRedirects {
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		clientOptions = append(clientOptions, commonhttp.WithCheckRedirect(func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
-		}
+		}))
 	}
+	
+	client := commonhttp.NewHTTPClient(clientOptions...)
 
 	return &Client{
 		config:     config,
@@ -155,7 +158,9 @@ func (c *Client) doRequest(request *protocols.Request) (*protocols.Response, err
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() {
+		_ = httpResp.Body.Close() // Ignore close error in defer
+	}()
 
 	// Read response body
 	body, err := io.ReadAll(httpResp.Body)
@@ -199,9 +204,92 @@ func (c *Client) applyAuth(req *http.Request, auth protocols.AuthConfig) error {
 }
 
 func (c *Client) Listen(ctx context.Context, handler protocols.RequestHandler) error {
-	// This would be used for setting up HTTP servers to receive webhooks
-	// For now, we'll implement a basic placeholder
-	return fmt.Errorf("HTTP Listen not implemented yet - use existing webhook handler")
+	// Create HTTP server on the configured endpoint
+	address := c.config.BaseURL
+	if address == "" {
+		address = ":8081" // Default port if not specified
+	}
+	
+	// Create HTTP handler
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Read request body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		defer func() {
+			_ = r.Body.Close() // Ignore close error in defer
+		}()
+		
+		// Create incoming request
+		headers := make(map[string]string)
+		for key, values := range r.Header {
+			if len(values) > 0 {
+				headers[key] = values[0]
+			}
+		}
+		
+		queryParams := make(map[string]string)
+		for key, values := range r.URL.Query() {
+			if len(values) > 0 {
+				queryParams[key] = values[0]
+			}
+		}
+		
+		incomingReq := &protocols.IncomingRequest{
+			Method:      r.Method,
+			URL:         r.URL.String(),
+			Path:        r.URL.Path,
+			Headers:     headers,
+			Body:        body,
+			QueryParams: queryParams,
+			RemoteAddr:  r.RemoteAddr,
+			Timestamp:   time.Now(),
+		}
+		
+		// Call handler
+		response, err := handler(incomingReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		
+		// Write response
+		for key, value := range response.Headers {
+			w.Header().Set(key, value)
+		}
+		w.WriteHeader(response.StatusCode)
+		if response.Body != nil {
+			_, _ = w.Write(response.Body) // Ignore write error in HTTP handler
+		}
+	})
+	
+	// Create server
+	server := &http.Server{
+		Addr:         address,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+	
+	// Start server in goroutine
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			// Log error but don't return it since we're in a goroutine
+			fmt.Printf("HTTP server error: %v\n", err)
+		}
+	}()
+	
+	// Wait for context cancellation
+	<-ctx.Done()
+	
+	// Shutdown server gracefully
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	return server.Shutdown(shutdownCtx)
 }
 
 func (c *Client) Close() error {

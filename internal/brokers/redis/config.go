@@ -3,15 +3,17 @@ package redis
 import (
 	"fmt"
 	"time"
+	"webhook-router/internal/common/config"
+	"webhook-router/internal/common/errors"
 )
 
 type Config struct {
+	config.BaseConnConfig
+	
 	Address    string
 	Password   string
 	DB         int
 	PoolSize   int
-	Timeout    time.Duration
-	RetryMax   int
 	StreamMaxLen int64 // Maximum length of streams (0 = no limit)
 	ConsumerGroup string
 	ConsumerName  string
@@ -19,7 +21,7 @@ type Config struct {
 
 func (c *Config) Validate() error {
 	if c.Address == "" {
-		return fmt.Errorf("Redis address is required")
+		return errors.ConfigError("Redis address is required")
 	}
 
 	// Set defaults
@@ -27,13 +29,8 @@ func (c *Config) Validate() error {
 		c.PoolSize = 10
 	}
 
-	if c.Timeout <= 0 {
-		c.Timeout = 5 * time.Second
-	}
-
-	if c.RetryMax <= 0 {
-		c.RetryMax = 3
-	}
+	// Set common connection defaults (Redis uses 5s timeout by default)
+	c.SetConnectionDefaults(5 * time.Second)
 
 	if c.StreamMaxLen < 0 {
 		c.StreamMaxLen = 0 // 0 means no limit
@@ -62,15 +59,15 @@ func (c *Config) GetConnectionString() string {
 }
 
 func DefaultConfig() *Config {
-	return &Config{
+	config := &Config{
 		Address:       "localhost:6379",
 		Password:      "",
 		DB:            0,
 		PoolSize:      10,
-		Timeout:       5 * time.Second,
-		RetryMax:      3,
 		StreamMaxLen:  0, // No limit
 		ConsumerGroup: "webhook-router-group",
 		ConsumerName:  "webhook-router-consumer",
 	}
+	config.SetConnectionDefaults(5 * time.Second)
+	return config
 }

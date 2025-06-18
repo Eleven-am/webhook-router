@@ -4,9 +4,13 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"webhook-router/internal/common/config"
+	"webhook-router/internal/common/errors"
 )
 
 type Config struct {
+	config.BaseConnConfig
+	
 	Brokers          []string
 	ClientID         string
 	GroupID          string
@@ -14,20 +18,18 @@ type Config struct {
 	SASLMechanism    string
 	SASLUsername     string
 	SASLPassword     string
-	Timeout          time.Duration
-	RetryMax         int
 	FlushFrequency   time.Duration
 }
 
 func (c *Config) Validate() error {
 	if len(c.Brokers) == 0 {
-		return fmt.Errorf("Kafka brokers are required")
+		return errors.ConfigError("Kafka brokers are required")
 	}
 
 	// Validate broker addresses
 	for _, broker := range c.Brokers {
 		if broker == "" {
-			return fmt.Errorf("empty Kafka broker address")
+			return errors.ConfigError("empty Kafka broker address")
 		}
 	}
 
@@ -40,13 +42,8 @@ func (c *Config) Validate() error {
 		c.GroupID = "webhook-router-group"
 	}
 
-	if c.Timeout <= 0 {
-		c.Timeout = 30 * time.Second
-	}
-
-	if c.RetryMax <= 0 {
-		c.RetryMax = 3
-	}
+	// Set common connection defaults
+	c.SetConnectionDefaults(30 * time.Second)
 
 	if c.FlushFrequency <= 0 {
 		c.FlushFrequency = 100 * time.Millisecond
@@ -66,7 +63,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if !valid {
-		return fmt.Errorf("invalid security protocol: %s", c.SecurityProtocol)
+		return errors.ConfigError(fmt.Sprintf("invalid security protocol: %s", c.SecurityProtocol))
 	}
 
 	// Validate SASL mechanism if SASL is used
@@ -84,11 +81,11 @@ func (c *Config) Validate() error {
 			}
 		}
 		if !valid {
-			return fmt.Errorf("invalid SASL mechanism: %s", c.SASLMechanism)
+			return errors.ConfigError(fmt.Sprintf("invalid SASL mechanism: %s", c.SASLMechanism))
 		}
 
 		if c.SASLUsername == "" || c.SASLPassword == "" {
-			return fmt.Errorf("SASL username and password are required for SASL authentication")
+			return errors.ConfigError("SASL username and password are required for SASL authentication")
 		}
 	}
 
@@ -104,13 +101,13 @@ func (c *Config) GetConnectionString() string {
 }
 
 func DefaultConfig() *Config {
-	return &Config{
+	config := &Config{
 		Brokers:          []string{"localhost:9092"},
 		ClientID:         "webhook-router",
 		GroupID:          "webhook-router-group",
 		SecurityProtocol: "PLAINTEXT",
-		Timeout:          30 * time.Second,
-		RetryMax:         3,
 		FlushFrequency:   100 * time.Millisecond,
 	}
+	config.SetConnectionDefaults(30 * time.Second)
+	return config
 }

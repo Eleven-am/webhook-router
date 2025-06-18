@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"webhook-router/internal/models"
 	"webhook-router/internal/routing"
 
 	"github.com/gorilla/mux"
@@ -20,7 +21,7 @@ import (
 // @Tags routing
 // @Produce json
 // @Security SessionAuth
-// @Success 200 {object} map[string]interface{} "List of routing rules"
+// @Success 200 {array} models.RouteRuleAPI "List of routing rules"
 // @Failure 503 {string} string "Router not initialized"
 // @Failure 500 {string} string "Internal server error"
 // @Router /routing/rules [get]
@@ -36,11 +37,14 @@ func (h *Handlers) GetRoutingRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert to API models
+	apiRules := make([]*models.RouteRuleAPI, len(rules))
+	for i, rule := range rules {
+		apiRules[i] = models.ToRouteRuleAPI(rule)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"rules": rules,
-		"count": len(rules),
-	})
+	json.NewEncoder(w).Encode(apiRules)
 }
 
 // GetRoutingRule returns a specific routing rule
@@ -50,7 +54,7 @@ func (h *Handlers) GetRoutingRules(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Security SessionAuth
 // @Param id path string true "Rule ID"
-// @Success 200 {object} routing.RouteRule "Routing rule"
+// @Success 200 {object} models.RouteRuleAPI "Routing rule"
 // @Failure 404 {string} string "Rule not found"
 // @Failure 503 {string} string "Router not initialized"
 // @Router /routing/rules/{id} [get]

@@ -6,441 +6,326 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
+	
+	"webhook-router/internal/common/base"
+	"webhook-router/internal/common/errors"
+	commonhttp "webhook-router/internal/common/http"
+	"webhook-router/internal/common/logging"
+	"webhook-router/internal/common/utils"
 	"webhook-router/internal/triggers"
 )
 
-// Trigger implements the scheduled trigger
+// Trigger implements the scheduled trigger using BaseTrigger
 type Trigger struct {
+	*base.BaseTrigger
 	config        *Config
-	handler       triggers.TriggerHandler
-	isRunning     bool
-	mu            sync.RWMutex
-	lastExecution *time.Time
 	nextExecution *time.Time
 	runCount      int
-	ctx           context.Context
-	cancel        context.CancelFunc
 	ticker        *time.Ticker
+	mu            sync.RWMutex
+	builder       *triggers.TriggerBuilder
+	httpClient    *http.Client
+	
+	// Distributed coordination
+	distributedExecutor func(triggerID int, taskID string, handler func() error) error
 }
 
 func NewTrigger(config *Config) *Trigger {
-	return &Trigger{
-		config:    config,
-		isRunning: false,
-		runCount:  0,
+	builder := triggers.NewTriggerBuilder("schedule", config)
+	
+	trigger := &Trigger{
+		config:     config,
+		runCount:   0,
+		builder:    builder,
+		httpClient: commonhttp.NewDefaultHTTPClient(),
+		// Default to direct execution (no distributed coordination)
+		distributedExecutor: func(triggerID int, taskID string, handler func() error) error {
+			return handler()
+		},
 	}
+	
+	// Initialize BaseTrigger
+	trigger.BaseTrigger = base.NewBaseTrigger("schedule", config, nil)
+	
+	return trigger
 }
 
-func (t *Trigger) Name() string {
-	return t.config.Name
+// SetDistributedExecutor sets the distributed execution function
+func (t *Trigger) SetDistributedExecutor(executor func(triggerID int, taskID string, handler func() error) error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.distributedExecutor = executor
 }
 
-func (t *Trigger) Type() string {
-	return "schedule"
-}
-
-func (t *Trigger) ID() int {
-	return t.config.ID
-}
-
-func (t *Trigger) Config() triggers.TriggerConfig {
-	return t.config
-}
-
-func (t *Trigger) IsRunning() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.isRunning
-}
-
-func (t *Trigger) LastExecution() *time.Time {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.lastExecution
-}
-
+// NextExecution returns the next scheduled execution time
 func (t *Trigger) NextExecution() *time.Time {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.nextExecution
 }
 
+// Start starts the scheduled trigger
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	if t.isRunning {
-		return triggers.ErrTriggerAlreadyRunning
-	}
-	
 	// Check if trigger has expired
 	if t.config.IsExpired() {
-		return fmt.Errorf("trigger has expired")
+		return errors.ValidationError("trigger has expired")
 	}
 	
 	// Check if max runs reached
 	if t.config.MaxRuns > 0 && t.runCount >= t.config.MaxRuns {
-		return fmt.Errorf("maximum runs (%d) reached", t.config.MaxRuns)
+		return errors.ValidationError(fmt.Sprintf("max runs (%d) already reached", t.config.MaxRuns))
 	}
 	
-	t.handler = handler
-	t.isRunning = true
-	t.ctx, t.cancel = context.WithCancel(ctx)
+	// Update BaseTrigger with the adapted handler
+	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
 	
-	// Calculate next execution
-	next, err := t.config.GetNextExecution(time.Now())
-	if err != nil {
-		t.isRunning = false
-		return fmt.Errorf("failed to calculate next execution: %w", err)
-	}
-	
-	if next == nil {
-		t.isRunning = false
-		return fmt.Errorf("no more executions scheduled")
-	}
-	
-	t.nextExecution = next
-	
-	// Start the scheduler
-	go t.run()
-	
-	log.Printf("Schedule trigger '%s' started, next execution: %s", t.config.Name, next.Format(time.RFC3339))
-	return nil
+	// Use the BaseTrigger's Start method with our run function
+	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
+		return t.run(ctx)
+	})
 }
 
-func (t *Trigger) Stop() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	if !t.isRunning {
-		return triggers.ErrTriggerNotRunning
-	}
-	
-	t.isRunning = false
-	if t.cancel != nil {
-		t.cancel()
-	}
-	if t.ticker != nil {
-		t.ticker.Stop()
-	}
-	
-	log.Printf("Schedule trigger '%s' stopped", t.config.Name)
-	return nil
-}
-
-func (t *Trigger) Health() error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	
-	if !t.isRunning {
-		return fmt.Errorf("trigger is not running")
-	}
-	
-	if t.config.IsExpired() {
-		return fmt.Errorf("trigger has expired")
-	}
-	
-	if t.config.MaxRuns > 0 && t.runCount >= t.config.MaxRuns {
-		return fmt.Errorf("maximum runs reached")
-	}
-	
-	return nil
-}
-
-func (t *Trigger) run() {
-	defer func() {
-		t.mu.Lock()
-		t.isRunning = false
-		t.mu.Unlock()
-	}()
-	
-	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		default:
-			// Calculate time until next execution
-			t.mu.RLock()
-			nextExec := t.nextExecution
-			t.mu.RUnlock()
-			
-			if nextExec == nil {
-				return // No more executions
-			}
-			
-			now := time.Now()
-			if nextExec.After(now) {
-				// Wait until next execution time
-				waitDuration := nextExec.Sub(now)
-				timer := time.NewTimer(waitDuration)
-				
-				select {
-				case <-timer.C:
-					t.execute()
-				case <-t.ctx.Done():
-					timer.Stop()
-					return
-				}
-			} else {
-				// Execution time has passed, execute immediately
-				t.execute()
-			}
-			
-			// Check if we should continue
-			t.mu.Lock()
-			if t.config.IsExpired() || (t.config.MaxRuns > 0 && t.runCount >= t.config.MaxRuns) {
-				t.isRunning = false
-				t.mu.Unlock()
-				return
-			}
-			
-			// Calculate next execution for recurring schedules
-			if t.config.ScheduleType != "once" {
-				next, err := t.config.GetNextExecution(time.Now())
-				if err != nil {
-					log.Printf("Error calculating next execution for trigger '%s': %v", t.config.Name, err)
-					t.isRunning = false
-					t.mu.Unlock()
-					return
-				}
-				t.nextExecution = next
-				if next == nil {
-					t.isRunning = false
-					t.mu.Unlock()
-					return
-				}
-			} else {
-				// For "once" schedules, stop after execution
-				t.nextExecution = nil
-				t.isRunning = false
-				t.mu.Unlock()
-				return
-			}
-			t.mu.Unlock()
-		}
-	}
-}
-
-func (t *Trigger) execute() {
-	t.executeWithRetry(1)
-}
-
-func (t *Trigger) executeWithRetry(attempt int) {
-	// Generate payload
-	payload, err := t.generatePayload()
-	if err != nil {
-		log.Printf("Error generating payload for trigger '%s': %v", t.config.Name, err)
-		if t.config.ShouldRetry(attempt) {
-			t.scheduleRetry(attempt)
-		}
-		return
-	}
-	
-	// Create trigger event
-	event := &triggers.TriggerEvent{
-		ID:          t.generateEventID(),
-		TriggerID:   t.config.ID,
-		TriggerName: t.config.Name,
-		Type:        "schedule",
-		Timestamp:   time.Now(),
-		Data:        payload,
-		Headers:     make(map[string]string),
-		Source: triggers.TriggerSource{
-			Type: "schedule",
-			Name: t.config.Name,
-		},
-	}
-	
-	// Add schedule-specific metadata
-	event.Headers["schedule_type"] = t.config.ScheduleType
-	event.Headers["run_count"] = fmt.Sprintf("%d", t.runCount+1)
-	if t.config.ScheduleType == "cron" {
-		event.Headers["cron_spec"] = t.config.CronSpec
-	}
-	
-	// Update execution tracking
-	t.mu.Lock()
+func (t *Trigger) run(ctx context.Context) error {
+	// Calculate initial delay
 	now := time.Now()
-	t.lastExecution = &now
-	t.runCount++
-	runCount := t.runCount
+	next := t.calculateNextExecution(now)
+	
+	t.mu.Lock()
+	t.nextExecution = &next
 	t.mu.Unlock()
 	
-	// Execute the trigger handler
-	if err := t.handler(event); err != nil {
-		log.Printf("Error executing schedule trigger '%s' (run %d): %v", t.config.Name, runCount, err)
-		if t.config.ShouldRetry(attempt) {
-			t.scheduleRetry(attempt)
-		}
-		return
+	t.builder.Logger().Info("Schedule trigger started",
+		logging.Field{"interval", t.config.GetInterval()},
+		logging.Field{"next_execution", next.Format(time.RFC3339)},
+	)
+	
+	// Create ticker with interval
+	t.ticker = time.NewTicker(t.config.GetInterval())
+	defer t.ticker.Stop()
+	
+	// Wait for initial delay
+	select {
+	case <-ctx.Done():
+		return nil
+	case <-time.After(time.Until(next)):
+		// Execute first run
+		t.execute(ctx)
 	}
 	
-	log.Printf("Schedule trigger '%s' executed successfully (run %d)", t.config.Name, runCount)
-}
-
-func (t *Trigger) scheduleRetry(attempt int) {
-	delay := t.config.GetRetryDelay(attempt)
-	log.Printf("Scheduling retry %d for trigger '%s' in %v", attempt, t.config.Name, delay)
-	
-	go func() {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		
+	// Continue with regular interval
+	for {
 		select {
-		case <-timer.C:
-			t.executeWithRetry(attempt + 1)
-		case <-t.ctx.Done():
-			return
+		case <-ctx.Done():
+			t.builder.Logger().Info("Schedule trigger stopped")
+			return nil
+			
+		case tickTime := <-t.ticker.C:
+			// Update next execution
+			next := t.calculateNextExecution(tickTime)
+			t.mu.Lock()
+			t.nextExecution = &next
+			t.mu.Unlock()
+			
+			// Check if trigger expired
+			if t.config.IsExpired() {
+				t.builder.Logger().Info("Schedule trigger expired")
+				return nil
+			}
+			
+			// Check max runs
+			if t.config.MaxRuns > 0 && t.runCount >= t.config.MaxRuns {
+				t.builder.Logger().Info("Schedule trigger reached max runs",
+					logging.Field{"max_runs", t.config.MaxRuns},
+				)
+				return nil
+			}
+			
+			// Execute
+			t.execute(ctx)
 		}
-	}()
+	}
 }
 
-func (t *Trigger) generatePayload() (map[string]interface{}, error) {
-	switch t.config.Payload.Type {
-	case "static":
-		// Return static data
-		result := make(map[string]interface{})
-		for k, v := range t.config.Payload.Data {
-			result[k] = v
+func (t *Trigger) execute(ctx context.Context) {
+	// Generate unique task ID for distributed coordination
+	taskID := utils.GenerateEventID("schedule", t.config.ID)
+	
+	// Use distributed executor to ensure only one instance runs
+	err := t.distributedExecutor(t.config.ID, taskID, func() error {
+		t.mu.Lock()
+		t.runCount++
+		currentRun := t.runCount
+		t.mu.Unlock()
+		
+		t.builder.Logger().Debug("Executing scheduled task",
+			logging.Field{"run_count", currentRun},
+		)
+		
+		// Fetch data if URL is configured
+		var fetchedData interface{}
+		if t.config.DataSource.URL != "" {
+			data, err := t.fetchData(ctx)
+			if err != nil {
+				t.builder.Logger().Error("Failed to fetch data", err)
+				if !t.config.ContinueOnError {
+					return err
+				}
+			} else {
+				fetchedData = data
+			}
 		}
-		return result, nil
 		
-	case "template":
-		// Process template
-		return t.processTemplate()
+		// Create trigger event
+		event := &triggers.TriggerEvent{
+			ID:          taskID,
+			TriggerID:   t.config.ID,
+			TriggerName: t.config.Name,
+			Type:        "schedule",
+			Timestamp:   time.Now(),
+			Data: map[string]interface{}{
+				"run_count":    currentRun,
+				"fetched_data": fetchedData,
+			},
+			Headers: make(map[string]string),
+			Source: triggers.TriggerSource{
+				Type: "schedule",
+				Name: t.config.Name,
+			},
+		}
 		
-	case "http_call":
-		// Make HTTP call to get data
-		return t.makeHTTPCall()
+		// Add custom data if configured
+		if t.config.CustomData != nil {
+			for k, v := range t.config.CustomData {
+				event.Data[k] = v
+			}
+		}
 		
-	default:
-		return nil, fmt.Errorf("unsupported payload type: %s", t.config.Payload.Type)
+		// Apply transformations
+		if t.config.DataTransform.Enabled {
+			t.applyTransformations(event)
+		}
+		
+		// Handle the event
+		return t.HandleEvent(event)
+	})
+	
+	if err != nil {
+		t.builder.Logger().Error("Failed to execute scheduled task", err,
+			logging.Field{"task_id", taskID},
+		)
 	}
 }
 
-func (t *Trigger) processTemplate() (map[string]interface{}, error) {
-	// Create template variables
-	vars := map[string]interface{}{
-		"trigger_name":    t.config.Name,
-		"trigger_id":      t.config.ID,
-		"timestamp":       time.Now(),
-		"run_count":       t.runCount + 1,
-		"schedule_type":   t.config.ScheduleType,
-	}
+func (t *Trigger) fetchData(ctx context.Context) (interface{}, error) {
+	config := t.config.DataSource
 	
-	// Add custom variables
-	for k, v := range t.config.Payload.Data {
-		vars[k] = v
-	}
-	
-	// Process template
-	tmpl, err := template.New("payload").Parse(t.config.Payload.Template)
+	req, err := http.NewRequestWithContext(ctx, config.Method, config.URL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse template: %w", err)
-	}
-	
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, vars); err != nil {
-		return nil, fmt.Errorf("failed to execute template: %w", err)
-	}
-	
-	// Try to parse as JSON
-	var result map[string]interface{}
-	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
-		// If not JSON, return as string
-		return map[string]interface{}{
-			"body": buf.String(),
-		}, nil
-	}
-	
-	return result, nil
-}
-
-func (t *Trigger) makeHTTPCall() (map[string]interface{}, error) {
-	client := &http.Client{
-		Timeout: t.config.Payload.HTTPCall.Timeout,
-	}
-	
-	// Prepare request
-	var body io.Reader
-	if t.config.Payload.HTTPCall.Body != "" {
-		body = strings.NewReader(t.config.Payload.HTTPCall.Body)
-	}
-	
-	req, err := http.NewRequest(t.config.Payload.HTTPCall.Method, t.config.Payload.HTTPCall.URL, body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, errors.InternalError("failed to create request", err)
 	}
 	
 	// Add headers
-	for key, value := range t.config.Payload.HTTPCall.Headers {
-		req.Header.Set(key, value)
+	for name, value := range config.Headers {
+		req.Header.Set(name, value)
 	}
 	
-	// Make request
-	resp, err := client.Do(req)
+	// Perform request
+	resp, err := t.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP call failed: %w", err)
+		return nil, errors.ConnectionError("failed to fetch data", err)
 	}
 	defer resp.Body.Close()
 	
-	// Read response
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	
 	// Check status code
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP call returned status %d: %s", resp.StatusCode, string(respBody))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, errors.InternalError(
+			fmt.Sprintf("fetch failed with status %d: %s", resp.StatusCode, string(body)),
+			nil,
+		)
 	}
 	
-	// Try to parse as JSON
-	var result map[string]interface{}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		// If not JSON, return as string with metadata
-		return map[string]interface{}{
-			"body":        string(respBody),
-			"status_code": resp.StatusCode,
-			"headers":     resp.Header,
-		}, nil
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, errors.InternalError("failed to read response", err)
 	}
 	
-	// Add metadata to JSON response
-	result["_metadata"] = map[string]interface{}{
-		"status_code": resp.StatusCode,
-		"headers":     resp.Header,
+	// Parse as JSON if content type indicates JSON
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		var data interface{}
+		if err := json.Unmarshal(body, &data); err != nil {
+			// Return raw string if JSON parsing fails
+			return string(body), nil
+		}
+		return data, nil
 	}
 	
-	return result, nil
+	return string(body), nil
 }
 
-func (t *Trigger) generateEventID() string {
-	return fmt.Sprintf("schedule-%d-%d", t.config.ID, time.Now().UnixNano())
-}
-
-// Factory for creating scheduled triggers
-type Factory struct{}
-
-func (f *Factory) Create(config triggers.TriggerConfig) (triggers.Trigger, error) {
-	scheduleConfig, ok := config.(*Config)
-	if !ok {
-		return nil, fmt.Errorf("invalid config type for schedule trigger")
+func (t *Trigger) applyTransformations(event *triggers.TriggerEvent) {
+	transform := t.config.DataTransform
+	
+	if transform.Template == "" {
+		return
 	}
 	
-	if err := scheduleConfig.Validate(); err != nil {
-		return nil, err
+	// Parse and execute template
+	tmpl, err := template.New("transform").Parse(transform.Template)
+	if err != nil {
+		t.builder.Logger().Error("Failed to parse transformation template", err)
+		return
 	}
 	
-	return NewTrigger(scheduleConfig), nil
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, event); err != nil {
+		t.builder.Logger().Error("Failed to execute transformation template", err)
+		return
+	}
+	
+	// Try to parse result as JSON
+	var transformedData interface{}
+	if err := json.Unmarshal(buf.Bytes(), &transformedData); err == nil {
+		event.Data["transformed"] = transformedData
+	} else {
+		event.Data["transformed"] = buf.String()
+	}
 }
 
-func (f *Factory) GetType() string {
-	return "schedule"
+func (t *Trigger) calculateNextExecution(from time.Time) time.Time {
+	// For simple interval-based scheduling
+	return from.Add(t.config.GetInterval())
 }
+
+// Health checks if the trigger is healthy
+func (t *Trigger) Health() error {
+	if !t.IsRunning() {
+		return errors.InternalError("trigger is not running", nil)
+	}
+	
+	// Check if we've missed too many executions
+	if next := t.NextExecution(); next != nil {
+		missedBy := time.Since(*next)
+		if missedBy > t.config.GetInterval()*2 {
+			return errors.InternalError(
+				fmt.Sprintf("missed execution by %v", missedBy),
+				nil,
+			)
+		}
+	}
+	
+	return nil
+}
+
+// Config returns the trigger configuration
+func (t *Trigger) Config() triggers.TriggerConfig {
+	return t.config
+}
+

@@ -1,21 +1,16 @@
 package kafka
 
 import (
-	"fmt"
 	"webhook-router/internal/brokers"
+	"webhook-router/internal/common/factory"
 )
 
-type Factory struct{}
-
-func (f *Factory) Create(config brokers.BrokerConfig) (brokers.Broker, error) {
-	kafkaConfig, ok := config.(*Config)
-	if !ok {
-		return nil, fmt.Errorf("invalid config type for Kafka broker, expected *kafka.Config")
-	}
-
-	return NewBroker(kafkaConfig)
-}
-
-func (f *Factory) GetType() string {
-	return "kafka"
+// GetFactory returns a Kafka broker factory using the generic factory pattern
+func GetFactory() brokers.BrokerFactory {
+	return factory.NewBrokerFactory[*Config](
+		"kafka",
+		func(config *Config) (brokers.Broker, error) {
+			return NewBroker(config)
+		},
+	)
 }

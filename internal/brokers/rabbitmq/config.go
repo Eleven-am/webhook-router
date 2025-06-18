@@ -1,8 +1,8 @@
 package rabbitmq
 
 import (
-	"fmt"
 	"net/url"
+	"webhook-router/internal/common/validation"
 )
 
 type Config struct {
@@ -11,19 +11,29 @@ type Config struct {
 }
 
 func (c *Config) Validate() error {
-	if c.URL == "" {
-		return fmt.Errorf("RabbitMQ URL is required")
+	v := validation.NewValidatorWithPrefix("RabbitMQ config")
+	
+	// Required URL
+	v.RequireString(c.URL, "url")
+	
+	// Validate URL format
+	if c.URL != "" {
+		if _, err := url.Parse(c.URL); err != nil {
+			v.Validate(func() error {
+				return err
+			})
+		}
 	}
-
-	if _, err := url.Parse(c.URL); err != nil {
-		return fmt.Errorf("invalid RabbitMQ URL: %w", err)
-	}
-
+	
+	// Set default pool size
 	if c.PoolSize <= 0 {
 		c.PoolSize = 5 // default pool size
 	}
-
-	return nil
+	
+	// Validate pool size range
+	v.RequireRange(c.PoolSize, 1, 100, "pool_size")
+	
+	return v.Error()
 }
 
 func (c *Config) GetConnectionString() string {

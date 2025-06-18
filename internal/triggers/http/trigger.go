@@ -1,41 +1,44 @@
 package http
 
 import (
+	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
+	
+	"webhook-router/internal/common/auth"
+	"webhook-router/internal/common/base"
+	"webhook-router/internal/common/config"
+	"webhook-router/internal/common/errors"
+	"webhook-router/internal/common/logging"
+	"webhook-router/internal/common/utils"
+	"webhook-router/internal/signature"
 	"webhook-router/internal/triggers"
 )
 
-// Trigger implements the HTTP webhook trigger
+// Trigger implements the HTTP webhook trigger using BaseTrigger
 type Trigger struct {
+	*base.BaseTrigger
 	config        *Config
-	handler       triggers.TriggerHandler
-	isRunning     bool
-	mu            sync.RWMutex
-	lastExecution *time.Time
 	rateLimiter   *RateLimiter
+	authRegistry  *auth.AuthenticatorRegistry
+	builder       *triggers.TriggerBuilder
 }
 
 // RateLimiter implements simple rate limiting
 type RateLimiter struct {
 	mu       sync.RWMutex
 	requests map[string][]time.Time
-	config   RateLimitConfig
+	config   config.RateLimitConfig
 }
 
-func NewRateLimiter(config RateLimitConfig) *RateLimiter {
+func NewRateLimiter(config config.RateLimitConfig) *RateLimiter {
 	return &RateLimiter{
 		requests: make(map[string][]time.Time),
 		config:   config,
@@ -76,97 +79,62 @@ func (rl *RateLimiter) Allow(identifier string) bool {
 }
 
 func NewTrigger(config *Config) *Trigger {
+	builder := triggers.NewTriggerBuilder("http", config)
+	
+	// Create auth registry with signature support
+	authRegistry := auth.NewAuthenticatorRegistry()
+	authRegistry.Register(signature.NewAuthStrategy(builder.Logger()))
+	
 	trigger := &Trigger{
-		config:      config,
-		isRunning:   false,
-		rateLimiter: NewRateLimiter(config.RateLimiting),
+		config:       config,
+		rateLimiter:  NewRateLimiter(config.RateLimiting),
+		authRegistry: authRegistry,
+		builder:      builder,
 	}
+	
+	// Initialize BaseTrigger - note we don't pass handler here
+	trigger.BaseTrigger = base.NewBaseTrigger("http", config, nil)
 	
 	return trigger
 }
 
-func (t *Trigger) Name() string {
-	return t.config.Name
-}
-
-func (t *Trigger) Type() string {
-	return "http"
-}
-
-func (t *Trigger) ID() int {
-	return t.config.ID
-}
-
-func (t *Trigger) Config() triggers.TriggerConfig {
-	return t.config
-}
-
-func (t *Trigger) IsRunning() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.isRunning
-}
-
-func (t *Trigger) LastExecution() *time.Time {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.lastExecution
-}
-
-func (t *Trigger) NextExecution() *time.Time {
-	// HTTP triggers don't have scheduled executions
-	return nil
-}
-
+// Start starts the trigger
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// Update BaseTrigger with the adapted handler
+	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
 	
-	if t.isRunning {
-		return triggers.ErrTriggerAlreadyRunning
-	}
-	
-	t.handler = handler
-	t.isRunning = true
-	
-	log.Printf("HTTP trigger '%s' started for path: %s", t.config.Name, t.config.Path)
+	// Use the BaseTrigger's Start method with our run function
+	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
+		// For HTTP triggers, we don't have a continuous run loop
+		// The actual handling happens in HandleHTTPRequest
+		
+		t.builder.Logger().Info("HTTP trigger started",
+			logging.Field{"path", t.config.Path},
+			logging.Field{"methods", strings.Join(t.config.Methods, ",")},
+		)
+		
+		// Keep running until context is cancelled
+		<-ctx.Done()
+		return nil
+	})
+}
+
+// NextExecution returns nil as HTTP triggers don't have scheduled executions
+func (t *Trigger) NextExecution() *time.Time {
 	return nil
 }
 
-func (t *Trigger) Stop() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	if !t.isRunning {
-		return triggers.ErrTriggerNotRunning
-	}
-	
-	t.isRunning = false
-	t.handler = nil
-	
-	log.Printf("HTTP trigger '%s' stopped", t.config.Name)
-	return nil
-}
-
+// Health checks if the trigger is healthy
 func (t *Trigger) Health() error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	
-	if !t.isRunning {
-		return fmt.Errorf("trigger is not running")
+	if !t.IsRunning() {
+		return errors.InternalError("trigger is not running", nil)
 	}
-	
 	return nil
 }
 
 // HandleHTTPRequest processes incoming HTTP requests for this trigger
 func (t *Trigger) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
-	t.mu.RLock()
-	handler := t.handler
-	isRunning := t.isRunning
-	t.mu.RUnlock()
-	
-	if !isRunning || handler == nil {
+	if !t.IsRunning() || t.GetHandler() == nil {
 		http.Error(w, "Trigger not active", http.StatusServiceUnavailable)
 		return
 	}
@@ -186,6 +154,10 @@ func (t *Trigger) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 	
 	// Authentication
 	if err := t.authenticate(r); err != nil {
+		t.builder.Logger().Warn("Authentication failed",
+			logging.Field{"error", err.Error()},
+			logging.Field{"remote_addr", r.RemoteAddr},
+		)
 		http.Error(w, "Authentication failed", http.StatusUnauthorized)
 		return
 	}
@@ -205,7 +177,7 @@ func (t *Trigger) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 	
 	// Create trigger event
 	event := &triggers.TriggerEvent{
-		ID:          t.generateEventID(),
+		ID:          utils.GenerateEventID("http", t.config.ID),
 		TriggerID:   t.config.ID,
 		TriggerName: t.config.Name,
 		Type:        "http",
@@ -231,27 +203,17 @@ func (t *Trigger) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 		t.applyTransformations(event, r)
 	}
 	
-	// Update last execution time
-	t.mu.Lock()
-	now := time.Now()
-	t.lastExecution = &now
-	t.mu.Unlock()
-	
-	// Handle the event
-	if err := handler(event); err != nil {
-		log.Printf("Error handling HTTP trigger event: %v", err)
+	// Handle the event using BaseTrigger's HandleEvent method
+	if err := t.HandleEvent(event); err != nil {
+		t.builder.Logger().Error("Error handling HTTP trigger event", err,
+			logging.Field{"event_id", event.ID},
+		)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	
-	// Send success response
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "success",
-		"event_id":  event.ID,
-		"timestamp": event.Timestamp,
-	})
+	// Send response
+	t.sendResponse(w, r)
 }
 
 func (t *Trigger) checkRateLimit(r *http.Request) bool {
@@ -261,14 +223,12 @@ func (t *Trigger) checkRateLimit(r *http.Request) bool {
 	
 	var identifier string
 	if t.config.RateLimiting.ByIP {
-		identifier = r.RemoteAddr
+		identifier = t.getClientIP(r)
 	} else if t.config.RateLimiting.ByHeader != "" {
 		identifier = r.Header.Get(t.config.RateLimiting.ByHeader)
 		if identifier == "" {
-			identifier = r.RemoteAddr // Fallback to IP
+			identifier = "unknown"
 		}
-	} else {
-		identifier = "global"
 	}
 	
 	return t.rateLimiter.Allow(identifier)
@@ -279,123 +239,49 @@ func (t *Trigger) authenticate(r *http.Request) error {
 		return nil
 	}
 	
-	switch t.config.Authentication.Type {
-	case "basic":
-		return t.authenticateBasic(r)
-	case "bearer":
-		return t.authenticateBearer(r)
-	case "apikey":
-		return t.authenticateAPIKey(r)
-	case "hmac":
-		return t.authenticateHMAC(r)
-	default:
-		return fmt.Errorf("unsupported authentication type: %s", t.config.Authentication.Type)
-	}
-}
-
-func (t *Trigger) authenticateBasic(r *http.Request) error {
-	username, password, ok := r.BasicAuth()
-	if !ok {
-		return fmt.Errorf("basic auth required")
+	// Store body for authentication methods that need it (HMAC, signature)
+	if t.config.Authentication.Type == "hmac" || t.config.Authentication.Type == "signature" {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return errors.InternalError("failed to read body for authentication", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		// Store body in context for validation
+		ctx := context.WithValue(r.Context(), "body", body)
+		*r = *r.WithContext(ctx)
 	}
 	
-	expectedUsername := t.config.Authentication.Settings["username"]
-	expectedPassword := t.config.Authentication.Settings["password"]
-	
-	if username != expectedUsername || password != expectedPassword {
-		return fmt.Errorf("invalid credentials")
-	}
-	
-	return nil
-}
-
-func (t *Trigger) authenticateBearer(r *http.Request) error {
-	authHeader := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return fmt.Errorf("bearer token required")
-	}
-	
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-	expectedToken := t.config.Authentication.Settings["token"]
-	
-	if token != expectedToken {
-		return fmt.Errorf("invalid token")
-	}
-	
-	return nil
-}
-
-func (t *Trigger) authenticateAPIKey(r *http.Request) error {
-	headerName := t.config.Authentication.Settings["header"]
-	expectedKey := t.config.Authentication.Settings["key"]
-	
-	actualKey := r.Header.Get(headerName)
-	if actualKey != expectedKey {
-		return fmt.Errorf("invalid API key")
-	}
-	
-	return nil
-}
-
-func (t *Trigger) authenticateHMAC(r *http.Request) error {
-	secret := t.config.Authentication.Settings["secret"]
-	algorithm := t.config.Authentication.Settings["algorithm"]
-	signatureHeader := t.config.Authentication.Settings["signature_header"]
-	if signatureHeader == "" {
-		signatureHeader = "X-Signature"
-	}
-	
-	// Read body for signature calculation
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read body for HMAC verification")
-	}
-	
-	// Calculate expected signature
-	var expectedSig string
-	switch algorithm {
-	case "sha256":
-		h := hmac.New(sha256.New, []byte(secret))
-		h.Write(body)
-		expectedSig = hex.EncodeToString(h.Sum(nil))
-	default:
-		return fmt.Errorf("unsupported HMAC algorithm: %s", algorithm)
-	}
-	
-	// Get actual signature from header
-	actualSig := r.Header.Get(signatureHeader)
-	if actualSig == "" {
-		return fmt.Errorf("signature header missing")
-	}
-	
-	// Compare signatures
-	if !hmac.Equal([]byte(expectedSig), []byte(actualSig)) {
-		return fmt.Errorf("signature verification failed")
-	}
-	
-	return nil
+	return t.authRegistry.Authenticate(
+		t.config.Authentication.Type,
+		r,
+		t.config.Authentication.Settings,
+	)
 }
 
 func (t *Trigger) validateRequest(r *http.Request) error {
+	config := t.config.Validation
+	
 	// Check required headers
-	for _, header := range t.config.Validation.RequiredHeaders {
+	for _, header := range config.RequiredHeaders {
 		if r.Header.Get(header) == "" {
-			return fmt.Errorf("required header missing: %s", header)
+			return errors.ValidationError(fmt.Sprintf("required header missing: %s", header))
 		}
 	}
 	
 	// Check required query parameters
-	for _, param := range t.config.Validation.RequiredParams {
+	for _, param := range config.RequiredParams {
 		if r.URL.Query().Get(param) == "" {
-			return fmt.Errorf("required query parameter missing: %s", param)
+			return errors.ValidationError(fmt.Sprintf("required parameter missing: %s", param))
 		}
 	}
 	
-	// Check content type if specified
-	if t.config.ContentType != "" {
-		contentType := r.Header.Get("Content-Type")
-		if !strings.Contains(contentType, t.config.ContentType) {
-			return fmt.Errorf("expected content type %s, got %s", t.config.ContentType, contentType)
+	// Check content length
+	if r.ContentLength >= 0 {
+		if config.MinBodySize > 0 && r.ContentLength < config.MinBodySize {
+			return errors.ValidationError(fmt.Sprintf("body size too small: %d < %d", r.ContentLength, config.MinBodySize))
+		}
+		if config.MaxBodySize > 0 && r.ContentLength > config.MaxBodySize {
+			return errors.ValidationError(fmt.Sprintf("body size too large: %d > %d", r.ContentLength, config.MaxBodySize))
 		}
 	}
 	
@@ -403,21 +289,20 @@ func (t *Trigger) validateRequest(r *http.Request) error {
 }
 
 func (t *Trigger) readBody(r *http.Request) ([]byte, error) {
-	// Check content length
-	if r.ContentLength > t.config.Validation.MaxBodySize {
-		return nil, fmt.Errorf("body size exceeds maximum allowed: %d", t.config.Validation.MaxBodySize)
+	// Use a limited reader to prevent memory exhaustion
+	maxSize := t.config.Validation.MaxBodySize
+	if maxSize <= 0 {
+		maxSize = 10 * 1024 * 1024 // 10MB default
 	}
 	
-	// Read body with size limit
-	reader := io.LimitReader(r.Body, t.config.Validation.MaxBodySize)
-	body, err := io.ReadAll(reader)
+	limitedReader := io.LimitReader(r.Body, maxSize+1)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
-		return nil, err
+		return nil, errors.InternalError("failed to read body", err)
 	}
 	
-	// Check minimum size
-	if int64(len(body)) < t.config.Validation.MinBodySize {
-		return nil, fmt.Errorf("body size below minimum required: %d", t.config.Validation.MinBodySize)
+	if int64(len(body)) > maxSize {
+		return nil, errors.ValidationError("body size exceeds limit")
 	}
 	
 	return body, nil
@@ -425,64 +310,160 @@ func (t *Trigger) readBody(r *http.Request) ([]byte, error) {
 
 func (t *Trigger) extractHeaders(r *http.Request) map[string]string {
 	headers := make(map[string]string)
+	
+	// Extract all headers
 	for name, values := range r.Header {
 		if len(values) > 0 {
-			headers[name] = values[0] // Take first value
+			headers[name] = values[0]
 		}
 	}
+	
+	// Add custom headers configured for extraction
+	for _, header := range t.config.Headers {
+		if value := r.Header.Get(header); value != "" {
+			headers[header] = value
+		}
+	}
+	
 	return headers
 }
 
 func (t *Trigger) applyTransformations(event *triggers.TriggerEvent, r *http.Request) {
+	transform := t.config.Transformation
+	
 	// Apply header mapping
-	if len(t.config.Transformation.HeaderMapping) > 0 {
+	if len(transform.HeaderMapping) > 0 {
 		newHeaders := make(map[string]string)
-		for oldName, newName := range t.config.Transformation.HeaderMapping {
+		for oldName, newName := range transform.HeaderMapping {
 			if value, exists := event.Headers[oldName]; exists {
 				newHeaders[newName] = value
-				delete(event.Headers, oldName)
 			}
 		}
+		// Merge with existing headers
 		for k, v := range newHeaders {
 			event.Headers[k] = v
 		}
 	}
 	
-	// Add additional headers
-	for key, value := range t.config.Transformation.AddHeaders {
-		event.Headers[key] = value
+	// Add configured headers
+	for name, value := range transform.AddHeaders {
+		event.Headers[name] = value
 	}
 	
-	// Apply body template transformation (basic implementation)
-	if t.config.Transformation.BodyTemplate != "" {
-		// This would be enhanced with a proper template engine
-		transformedBody := t.config.Transformation.BodyTemplate
-		transformedBody = strings.ReplaceAll(transformedBody, "{{method}}", r.Method)
-		transformedBody = strings.ReplaceAll(transformedBody, "{{path}}", r.URL.Path)
-		event.Data["body"] = transformedBody
+	// Apply body template if configured
+	if transform.BodyTemplate != "" {
+		tmpl, err := template.New("body").Parse(transform.BodyTemplate)
+		if err != nil {
+			t.builder.Logger().Error("Failed to parse body template", err)
+			return
+		}
+		
+		var buf bytes.Buffer
+		templateData := map[string]interface{}{
+			"Event":   event,
+			"Headers": r.Header,
+			"Query":   r.URL.Query(),
+			"Path":    r.URL.Path,
+		}
+		
+		if err := tmpl.Execute(&buf, templateData); err != nil {
+			t.builder.Logger().Error("Failed to execute body template", err)
+			return
+		}
+		
+		// Parse the result as JSON if possible
+		var transformedBody interface{}
+		if err := json.Unmarshal(buf.Bytes(), &transformedBody); err == nil {
+			event.Data["body"] = transformedBody
+		} else {
+			event.Data["body"] = buf.String()
+		}
 	}
 }
 
-func (t *Trigger) generateEventID() string {
-	return fmt.Sprintf("http-%d-%d", t.config.ID, time.Now().UnixNano())
-}
-
-// Factory for creating HTTP triggers
-type Factory struct{}
-
-func (f *Factory) Create(config triggers.TriggerConfig) (triggers.Trigger, error) {
-	httpConfig, ok := config.(*Config)
-	if !ok {
-		return nil, fmt.Errorf("invalid config type for HTTP trigger")
+// sendResponse sends the configured HTTP response back to the webhook client.
+// It applies the configured status code, headers, and body based on the
+// ResponseConfig. The body can be static or generated from a template.
+// A timestamp is automatically added to map responses.
+func (t *Trigger) sendResponse(w http.ResponseWriter, r *http.Request) {
+	// Apply configured response headers
+	for key, value := range t.config.Response.Headers {
+		w.Header().Set(key, value)
 	}
 	
-	if err := httpConfig.Validate(); err != nil {
-		return nil, err
+	// Set content type
+	w.Header().Set("Content-Type", t.config.Response.ContentType)
+	
+	// Set status code
+	w.WriteHeader(t.config.Response.StatusCode)
+	
+	// Build response body
+	var responseBody interface{}
+	
+	// Check if we have a body template
+	if t.config.Response.BodyTemplate != "" {
+		// TODO: Implement template processing with request context
+		// For now, use the static body
+		responseBody = t.config.Response.Body
+	} else {
+		// Use configured body
+		responseBody = t.config.Response.Body
 	}
 	
-	return NewTrigger(httpConfig), nil
+	// Add timestamp if response is a map
+	if respMap, ok := responseBody.(map[string]interface{}); ok {
+		respMap["timestamp"] = time.Now().Unix()
+	}
+	
+	// Send response based on content type
+	switch t.config.Response.ContentType {
+	case "application/json":
+		if err := json.NewEncoder(w).Encode(responseBody); err != nil {
+			t.builder.Logger().Error("Failed to send JSON response", err)
+		}
+	case "text/plain":
+		if str, ok := responseBody.(string); ok {
+			if _, err := w.Write([]byte(str)); err != nil {
+				t.builder.Logger().Error("Failed to send text response", err)
+			}
+		} else {
+			// Convert to string
+			if _, err := w.Write([]byte(fmt.Sprintf("%v", responseBody))); err != nil {
+				t.builder.Logger().Error("Failed to send text response", err)
+			}
+		}
+	default:
+		// Default to JSON
+		if err := json.NewEncoder(w).Encode(responseBody); err != nil {
+			t.builder.Logger().Error("Failed to send response", err)
+		}
+	}
 }
 
-func (f *Factory) GetType() string {
-	return "http"
+func (t *Trigger) getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+	
+	// Check X-Real-IP header
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	
+	// Fall back to RemoteAddr
+	ip := r.RemoteAddr
+	if colon := strings.LastIndex(ip, ":"); colon != -1 {
+		ip = ip[:colon]
+	}
+	
+	return ip
+}
+
+// Config returns the trigger configuration
+func (t *Trigger) Config() triggers.TriggerConfig {
+	return t.config
 }

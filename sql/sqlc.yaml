@@ -1,0 +1,32 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    queries: "./queries/all.sql"
+    schema: 
+      - "./schema/001_initial.sql"
+      - "./schema/002_dlq.sql"
+      - "./schema/003_broker_dlq.sql"
+      - "./schema/004_signature_config.sql"
+    gen:
+      go:
+        package: "sqlite"
+        out: "../internal/storage/generated/sqlite"
+        sql_package: "database/sql"
+        emit_json_tags: true
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+  - engine: "postgresql"
+    queries: "./queries/postgres.sql"
+    schema: 
+      - "./schema/001_initial_postgres.sql"
+      - "./schema/002_dlq_postgres.sql"
+      - "./schema/003_broker_dlq_postgres.sql"
+      - "./schema/004_signature_config_postgres.sql"
+    gen:
+      go:
+        package: "postgres"
+        out: "../internal/storage/generated/postgres"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true

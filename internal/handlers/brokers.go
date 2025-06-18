@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"webhook-router/internal/brokers"
+	awsbroker "webhook-router/internal/brokers/aws"
+	"webhook-router/internal/brokers/kafka"
 	"webhook-router/internal/brokers/rabbitmq"
+	redisbroker "webhook-router/internal/brokers/redis"
 	"webhook-router/internal/storage"
 
 	"github.com/gorilla/mux"
@@ -192,8 +195,10 @@ func (h *Handlers) TestBroker(w http.ResponseWriter, r *http.Request) {
 	registry := brokers.NewRegistry()
 
 	// Register our known broker factories
-	registry.Register("rabbitmq", &rabbitmq.Factory{})
-	// Note: You'd register all broker factories here in a real implementation
+	registry.Register("rabbitmq", rabbitmq.GetFactory())
+	registry.Register("kafka", kafka.GetFactory())
+	registry.Register("redis", redisbroker.GetFactory())
+	registry.Register("aws", awsbroker.GetFactory())
 
 	// Convert the stored config map to the appropriate broker config type
 	var brokerConfigInterface brokers.BrokerConfig
@@ -212,6 +217,72 @@ func (h *Handlers) TestBroker(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		brokerConfigInterface = rmqConfig
+	case "kafka":
+		kafkaConfig := &kafka.Config{}
+		configMap := brokerConfig.Config
+		if configMap != nil {
+			if brokers, exists := configMap["brokers"]; exists {
+				// Handle both string and array formats
+				switch v := brokers.(type) {
+				case string:
+					kafkaConfig.Brokers = []string{v}
+				case []interface{}:
+					for _, b := range v {
+						kafkaConfig.Brokers = append(kafkaConfig.Brokers, fmt.Sprintf("%v", b))
+					}
+				}
+			}
+			if groupID, exists := configMap["group_id"]; exists {
+				kafkaConfig.GroupID = fmt.Sprintf("%v", groupID)
+			}
+			if clientID, exists := configMap["client_id"]; exists {
+				kafkaConfig.ClientID = fmt.Sprintf("%v", clientID)
+			}
+		}
+		brokerConfigInterface = kafkaConfig
+	case "redis":
+		redisConfig := &redisbroker.Config{}
+		configMap := brokerConfig.Config
+		if configMap != nil {
+			if address, exists := configMap["address"]; exists {
+				redisConfig.Address = fmt.Sprintf("%v", address)
+			}
+			if password, exists := configMap["password"]; exists {
+				redisConfig.Password = fmt.Sprintf("%v", password)
+			}
+			if db, exists := configMap["db"]; exists {
+				if dbNum, ok := db.(float64); ok {
+					redisConfig.DB = int(dbNum)
+				}
+			}
+			if poolSize, exists := configMap["pool_size"]; exists {
+				if ps, ok := poolSize.(float64); ok {
+					redisConfig.PoolSize = int(ps)
+				}
+			}
+		}
+		brokerConfigInterface = redisConfig
+	case "aws":
+		awsConfig := &awsbroker.Config{}
+		configMap := brokerConfig.Config
+		if configMap != nil {
+			if region, exists := configMap["region"]; exists {
+				awsConfig.Region = fmt.Sprintf("%v", region)
+			}
+			if accessKeyID, exists := configMap["access_key_id"]; exists {
+				awsConfig.AccessKeyID = fmt.Sprintf("%v", accessKeyID)
+			}
+			if secretAccessKey, exists := configMap["secret_access_key"]; exists {
+				awsConfig.SecretAccessKey = fmt.Sprintf("%v", secretAccessKey)
+			}
+			if queueURL, exists := configMap["queue_url"]; exists {
+				awsConfig.QueueURL = fmt.Sprintf("%v", queueURL)
+			}
+			if topicArn, exists := configMap["topic_arn"]; exists {
+				awsConfig.TopicArn = fmt.Sprintf("%v", topicArn)
+			}
+		}
+		brokerConfigInterface = awsConfig
 	default:
 		result := map[string]interface{}{
 			"status": "error",

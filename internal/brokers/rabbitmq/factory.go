@@ -1,25 +1,20 @@
 package rabbitmq
 
 import (
-	"fmt"
 	"webhook-router/internal/brokers"
+	"webhook-router/internal/common/factory"
 )
 
-type Factory struct{}
-
-func (f *Factory) Create(config brokers.BrokerConfig) (brokers.Broker, error) {
-	rmqConfig, ok := config.(*Config)
-	if !ok {
-		return nil, fmt.Errorf("invalid config type for RabbitMQ broker")
-	}
-
-	return NewBroker(rmqConfig)
-}
-
-func (f *Factory) GetType() string {
-	return "rabbitmq"
+// GetFactory returns a RabbitMQ broker factory using the generic factory pattern
+func GetFactory() brokers.BrokerFactory {
+	return factory.NewBrokerFactory[*Config](
+		"rabbitmq",
+		func(config *Config) (brokers.Broker, error) {
+			return NewBroker(config)
+		},
+	)
 }
 
 func init() {
-	brokers.Register("rabbitmq", &Factory{})
+	brokers.Register("rabbitmq", GetFactory())
 }

@@ -6,14 +6,19 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"webhook-router/internal/common/errors"
+	"webhook-router/internal/enrichers"
 	"webhook-router/internal/pipeline"
+	"webhook-router/internal/pipeline/common"
+	"webhook-router/internal/redis"
 )
 
 // EnrichmentStage enriches data with additional information
 type EnrichmentStage struct {
-	name     string
-	config   EnrichmentConfig
-	compiled bool
+	name        string
+	config      EnrichmentConfig
+	compiled    bool
+	redisClient *redis.Client // Optional Redis client for distributed cache/rate limiting
 }
 
 type EnrichmentConfig struct {
@@ -34,10 +39,19 @@ type Enrichment struct {
 }
 
 type HttpEnrichmentConfig struct {
-	URL     string            `json:"url"`
-	Method  string            `json:"method"`
-	Headers map[string]string `json:"headers"`
-	Timeout int               `json:"timeout"` // timeout in seconds
+	URL            string                     `json:"url"`
+	Method         string                     `json:"method"`
+	Headers        map[string]string          `json:"headers"`
+	Timeout        int                        `json:"timeout"` // timeout in seconds
+	Auth           *enrichers.AuthConfig      `json:"auth"`
+	Retry          *enrichers.RetryConfig     `json:"retry"`
+	Cache          *enrichers.CacheConfig     `json:"cache"`
+	RateLimit      *enrichers.RateLimitConfig `json:"rate_limit"`
+	RequestBody    map[string]interface{}     `json:"request_body"`
+	URLTemplate    string                     `json:"url_template"`
+	BodyTemplate   string                     `json:"body_template"`
+	HeaderTemplate map[string]string          `json:"header_template"`
+	UseDistributed bool                       `json:"use_distributed"` // Whether to use distributed cache/rate limiting
 }
 
 func NewEnrichmentStage(name string) *EnrichmentStage {
@@ -45,6 +59,11 @@ func NewEnrichmentStage(name string) *EnrichmentStage {
 		name:     name,
 		compiled: false,
 	}
+}
+
+// SetRedisClient sets the Redis client for distributed operations
+func (s *EnrichmentStage) SetRedisClient(client *redis.Client) {
+	s.redisClient = client
 }
 
 func (s *EnrichmentStage) Name() string {
@@ -58,51 +77,51 @@ func (s *EnrichmentStage) Type() string {
 func (s *EnrichmentStage) Configure(config map[string]interface{}) error {
 	configData, err := json.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return errors.InternalError("failed to marshal config", err)
 	}
-	
+
 	if err := json.Unmarshal(configData, &s.config); err != nil {
-		return fmt.Errorf("failed to unmarshal config: %w", err)
+		return errors.InternalError("failed to unmarshal config", err)
 	}
-	
+
 	s.compiled = true
 	return nil
 }
 
 func (s *EnrichmentStage) Validate() error {
 	if !s.compiled {
-		return fmt.Errorf("stage not configured")
+		return errors.ConfigError("stage not configured")
 	}
-	
+
 	if len(s.config.Enrichments) == 0 {
-		return fmt.Errorf("enrichment stage requires at least one enrichment")
+		return errors.ConfigError("enrichment stage requires at least one enrichment")
 	}
-	
+
 	validTypes := map[string]bool{
 		"static": true, "lookup": true, "function": true, "http": true,
 	}
-	
+
 	for i, enrichment := range s.config.Enrichments {
 		if !validTypes[enrichment.Type] {
-			return fmt.Errorf("enrichment %d has invalid type: %s", i, enrichment.Type)
+			return errors.ConfigError(fmt.Sprintf("enrichment %d has invalid type: %s", i, enrichment.Type))
 		}
-		
+
 		if enrichment.TargetField == "" {
-			return fmt.Errorf("enrichment %d requires target_field", i)
+			return errors.ConfigError(fmt.Sprintf("enrichment %d requires target_field", i))
 		}
 	}
-	
+
 	return nil
 }
 
-func (s *EnrichmentStage) Process(ctx context.Context, data *pipeline.PipelineData) (*pipeline.StageResult, error) {
+func (s *EnrichmentStage) Process(ctx context.Context, data *pipeline.Data) (*pipeline.StageResult, error) {
 	start := time.Now()
-	
+
 	result := &pipeline.StageResult{
 		Success:  false,
 		Metadata: make(map[string]interface{}),
 	}
-	
+
 	// Parse input JSON
 	var inputData map[string]interface{}
 	if err := json.Unmarshal(data.Body, &inputData); err != nil {
@@ -110,7 +129,7 @@ func (s *EnrichmentStage) Process(ctx context.Context, data *pipeline.PipelineDa
 		result.Duration = time.Since(start)
 		return result, nil
 	}
-	
+
 	// Apply enrichments
 	if s.config.Parallel {
 		if err := s.applyEnrichmentsParallel(ctx, inputData); err != nil {
@@ -125,7 +144,7 @@ func (s *EnrichmentStage) Process(ctx context.Context, data *pipeline.PipelineDa
 			return result, nil
 		}
 	}
-	
+
 	// Marshal output JSON
 	outputBytes, err := json.Marshal(inputData)
 	if err != nil {
@@ -133,24 +152,24 @@ func (s *EnrichmentStage) Process(ctx context.Context, data *pipeline.PipelineDa
 		result.Duration = time.Since(start)
 		return result, nil
 	}
-	
+
 	// Update pipeline data
 	resultData := data.Clone()
 	resultData.Body = outputBytes
 	resultData.SetHeader("Content-Type", "application/json")
-	
+
 	result.Data = resultData
 	result.Success = true
 	result.Duration = time.Since(start)
 	result.Metadata["enrichments_applied"] = len(s.config.Enrichments)
-	
+
 	return result, nil
 }
 
 func (s *EnrichmentStage) applyEnrichmentsSequential(ctx context.Context, data map[string]interface{}) error {
 	for _, enrichment := range s.config.Enrichments {
 		if err := s.applyEnrichment(ctx, enrichment, data); err != nil {
-			return fmt.Errorf("enrichment '%s' failed: %w", enrichment.Name, err)
+			return errors.InternalError(fmt.Sprintf("enrichment '%s' failed", enrichment.Name), err)
 		}
 	}
 	return nil
@@ -159,25 +178,25 @@ func (s *EnrichmentStage) applyEnrichmentsSequential(ctx context.Context, data m
 func (s *EnrichmentStage) applyEnrichmentsParallel(ctx context.Context, data map[string]interface{}) error {
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(s.config.Enrichments))
-	
+
 	for _, enrichment := range s.config.Enrichments {
 		wg.Add(1)
 		go func(e Enrichment) {
 			defer wg.Done()
 			if err := s.applyEnrichment(ctx, e, data); err != nil {
-				errChan <- fmt.Errorf("enrichment '%s' failed: %w", e.Name, err)
+				errChan <- errors.InternalError(fmt.Sprintf("enrichment '%s' failed", e.Name), err)
 			}
 		}(enrichment)
 	}
-	
+
 	wg.Wait()
 	close(errChan)
-	
+
 	// Check for errors
 	for err := range errChan {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -189,43 +208,43 @@ func (s *EnrichmentStage) applyEnrichment(ctx context.Context, enrichment Enrich
 			return nil // Skip this enrichment
 		}
 	}
-	
+
 	var enrichedValue interface{}
 	var err error
-	
+
 	switch enrichment.Type {
 	case "static":
 		enrichedValue = enrichment.StaticValue
-		
+
 	case "lookup":
 		sourceValue := s.getFieldValue(data, enrichment.SourceField)
 		sourceStr := fmt.Sprintf("%v", sourceValue)
-		
+
 		if value, exists := enrichment.LookupTable[sourceStr]; exists {
 			enrichedValue = value
 		} else {
 			enrichedValue = enrichment.DefaultValue
 		}
-		
+
 	case "function":
 		enrichedValue, err = s.applyFunction(enrichment, data)
 		if err != nil {
 			return err
 		}
-		
+
 	case "http":
 		enrichedValue, err = s.applyHttpEnrichment(ctx, enrichment, data)
 		if err != nil {
 			return err
 		}
-		
+
 	default:
-		return fmt.Errorf("unsupported enrichment type: %s", enrichment.Type)
+		return errors.ConfigError(fmt.Sprintf("unsupported enrichment type: %s", enrichment.Type))
 	}
-	
+
 	// Set the enriched value
 	s.setFieldValue(data, enrichment.TargetField, enrichedValue)
-	
+
 	return nil
 }
 
@@ -233,7 +252,7 @@ func (s *EnrichmentStage) getFieldValue(data map[string]interface{}, field strin
 	if field == "" {
 		return nil
 	}
-	
+
 	// Simple field access (could be expanded to support JSONPath)
 	return data[field]
 }
@@ -242,7 +261,7 @@ func (s *EnrichmentStage) setFieldValue(data map[string]interface{}, field strin
 	if field == "" {
 		return
 	}
-	
+
 	// Simple field setting (could be expanded to support nested paths)
 	data[field] = value
 }
@@ -259,35 +278,68 @@ func (s *EnrichmentStage) evaluateCondition(condition string, data map[string]in
 func (s *EnrichmentStage) applyFunction(enrichment Enrichment, data map[string]interface{}) (interface{}, error) {
 	// Built-in functions for enrichment
 	sourceValue := s.getFieldValue(data, enrichment.SourceField)
-	
+
 	switch enrichment.Name {
 	case "timestamp":
 		return time.Now().Unix(), nil
-		
+
 	case "uuid":
 		// Simple UUID generation (in production, use proper UUID library)
 		return fmt.Sprintf("uuid-%d", time.Now().UnixNano()), nil
-		
+
 	case "uppercase":
 		return fmt.Sprintf("%v", sourceValue), nil
-		
+
 	case "lowercase":
 		return fmt.Sprintf("%v", sourceValue), nil
-		
+
 	default:
 		return enrichment.DefaultValue, nil
 	}
 }
 
 func (s *EnrichmentStage) applyHttpEnrichment(ctx context.Context, enrichment Enrichment, data map[string]interface{}) (interface{}, error) {
-	// HTTP enrichment would make HTTP requests to external services
-	// For now, return default value (in production, implement HTTP client)
-	return enrichment.DefaultValue, nil
+	// Convert HttpEnrichmentConfig to enrichers.HTTPConfig
+	httpConfig := &enrichers.HTTPConfig{
+		URL:            enrichment.HttpConfig.URL,
+		Method:         enrichment.HttpConfig.Method,
+		Headers:        enrichment.HttpConfig.Headers,
+		Auth:           enrichment.HttpConfig.Auth,
+		Retry:          enrichment.HttpConfig.Retry,
+		Cache:          enrichment.HttpConfig.Cache,
+		RateLimit:      enrichment.HttpConfig.RateLimit,
+		RequestBody:    enrichment.HttpConfig.RequestBody,
+		URLTemplate:    enrichment.HttpConfig.URLTemplate,
+		BodyTemplate:   enrichment.HttpConfig.BodyTemplate,
+		HeaderTemplate: enrichment.HttpConfig.HeaderTemplate,
+		UseDistributed: enrichment.HttpConfig.UseDistributed,
+		RedisClient:    s.redisClient,
+	}
+
+	// Set timeout from config (convert seconds to duration)
+	if enrichment.HttpConfig.Timeout > 0 {
+		httpConfig.Timeout = time.Duration(enrichment.HttpConfig.Timeout) * time.Second
+	}
+
+	// Create HTTP enricher
+	httpEnricher, err := enrichers.NewHTTPEnricher(httpConfig)
+	if err != nil {
+		return enrichment.DefaultValue, errors.InternalError("failed to create HTTP enricher", err)
+	}
+
+	// Perform enrichment
+	result, err := httpEnricher.Enrich(ctx, data)
+	if err != nil {
+		// Return default value on error (could be configured to fail instead)
+		return enrichment.DefaultValue, errors.InternalError("HTTP enrichment failed", err)
+	}
+
+	return result, nil
 }
 
 func (s *EnrichmentStage) Health() error {
 	if !s.compiled {
-		return fmt.Errorf("stage not configured")
+		return errors.ConfigError("stage not configured")
 	}
 	return nil
 }
@@ -302,16 +354,16 @@ type AggregationStage struct {
 }
 
 type AggregationConfig struct {
-	WindowSize    int                    `json:"window_size"`    // in seconds
-	WindowType    string                 `json:"window_type"`    // fixed, sliding
-	GroupBy       []string               `json:"group_by"`       // fields to group by
-	Aggregations  []AggregationFunction  `json:"aggregations"`
-	OutputField   string                 `json:"output_field"`   // where to store aggregated results
-	FlushInterval int                    `json:"flush_interval"` // how often to flush results
+	WindowSize    int                   `json:"window_size"` // in seconds
+	WindowType    string                `json:"window_type"` // fixed, sliding
+	GroupBy       []string              `json:"group_by"`    // fields to group by
+	Aggregations  []AggregationFunction `json:"aggregations"`
+	OutputField   string                `json:"output_field"`   // where to store aggregated results
+	FlushInterval int                   `json:"flush_interval"` // how often to flush results
 }
 
 type AggregationFunction struct {
-	Name        string `json:"name"`        // count, sum, avg, min, max
+	Name        string `json:"name"` // count, sum, avg, min, max
 	SourceField string `json:"source_field"`
 	TargetField string `json:"target_field"`
 }
@@ -335,13 +387,13 @@ func (s *AggregationStage) Type() string {
 func (s *AggregationStage) Configure(config map[string]interface{}) error {
 	configData, err := json.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return errors.InternalError("failed to marshal config", err)
 	}
-	
+
 	if err := json.Unmarshal(configData, &s.config); err != nil {
-		return fmt.Errorf("failed to unmarshal config: %w", err)
+		return errors.InternalError("failed to unmarshal config", err)
 	}
-	
+
 	// Set defaults
 	if s.config.WindowType == "" {
 		s.config.WindowType = "fixed"
@@ -349,40 +401,40 @@ func (s *AggregationStage) Configure(config map[string]interface{}) error {
 	if s.config.FlushInterval == 0 {
 		s.config.FlushInterval = 60 // 1 minute default
 	}
-	
+
 	s.compiled = true
 	return nil
 }
 
 func (s *AggregationStage) Validate() error {
 	if !s.compiled {
-		return fmt.Errorf("stage not configured")
+		return errors.ConfigError("stage not configured")
 	}
-	
+
 	if s.config.WindowSize <= 0 {
-		return fmt.Errorf("window_size must be positive")
+		return errors.ConfigError("window_size must be positive")
 	}
-	
+
 	if len(s.config.Aggregations) == 0 {
-		return fmt.Errorf("aggregation stage requires at least one aggregation function")
+		return errors.ConfigError("aggregation stage requires at least one aggregation function")
 	}
-	
+
 	validWindowTypes := map[string]bool{"fixed": true, "sliding": true}
 	if !validWindowTypes[s.config.WindowType] {
-		return fmt.Errorf("invalid window_type: %s", s.config.WindowType)
+		return errors.ConfigError(fmt.Sprintf("invalid window_type: %s", s.config.WindowType))
 	}
-	
+
 	return nil
 }
 
-func (s *AggregationStage) Process(ctx context.Context, data *pipeline.PipelineData) (*pipeline.StageResult, error) {
+func (s *AggregationStage) Process(ctx context.Context, data *pipeline.Data) (*pipeline.StageResult, error) {
 	start := time.Now()
-	
+
 	result := &pipeline.StageResult{
 		Success:  false,
 		Metadata: make(map[string]interface{}),
 	}
-	
+
 	// Parse input JSON
 	var inputData map[string]interface{}
 	if err := json.Unmarshal(data.Body, &inputData); err != nil {
@@ -390,10 +442,10 @@ func (s *AggregationStage) Process(ctx context.Context, data *pipeline.PipelineD
 		result.Duration = time.Since(start)
 		return result, nil
 	}
-	
+
 	// Generate group key
 	groupKey := s.generateGroupKey(inputData)
-	
+
 	// Add data to buffer
 	s.mu.Lock()
 	if s.buffer[groupKey] == nil {
@@ -401,18 +453,18 @@ func (s *AggregationStage) Process(ctx context.Context, data *pipeline.PipelineD
 	}
 	s.buffer[groupKey] = append(s.buffer[groupKey], inputData)
 	s.mu.Unlock()
-	
+
 	// For simplicity, always return aggregated results
 	// In production, this would be triggered by timers
 	aggregatedData := s.computeAggregations(groupKey)
-	
+
 	// Add aggregated data to input
 	if s.config.OutputField != "" {
 		inputData[s.config.OutputField] = aggregatedData
 	} else {
 		inputData["aggregated"] = aggregatedData
 	}
-	
+
 	// Marshal output JSON
 	outputBytes, err := json.Marshal(inputData)
 	if err != nil {
@@ -420,18 +472,18 @@ func (s *AggregationStage) Process(ctx context.Context, data *pipeline.PipelineD
 		result.Duration = time.Since(start)
 		return result, nil
 	}
-	
+
 	// Update pipeline data
 	resultData := data.Clone()
 	resultData.Body = outputBytes
 	resultData.SetHeader("Content-Type", "application/json")
-	
+
 	result.Data = resultData
 	result.Success = true
 	result.Duration = time.Since(start)
 	result.Metadata["group_key"] = groupKey
 	result.Metadata["buffer_size"] = len(s.buffer[groupKey])
-	
+
 	return result, nil
 }
 
@@ -439,18 +491,18 @@ func (s *AggregationStage) generateGroupKey(data map[string]interface{}) string 
 	if len(s.config.GroupBy) == 0 {
 		return "default"
 	}
-	
+
 	key := ""
 	for _, field := range s.config.GroupBy {
 		if value, exists := data[field]; exists {
 			key += fmt.Sprintf("%s:%v;", field, value)
 		}
 	}
-	
+
 	if key == "" {
 		return "default"
 	}
-	
+
 	return key
 }
 
@@ -458,18 +510,18 @@ func (s *AggregationStage) computeAggregations(groupKey string) map[string]inter
 	s.mu.RLock()
 	buffer := s.buffer[groupKey]
 	s.mu.RUnlock()
-	
+
 	if len(buffer) == 0 {
 		return make(map[string]interface{})
 	}
-	
+
 	results := make(map[string]interface{})
-	
+
 	for _, aggFunc := range s.config.Aggregations {
 		switch aggFunc.Name {
 		case "count":
 			results[aggFunc.TargetField] = len(buffer)
-			
+
 		case "sum":
 			sum := 0.0
 			for _, item := range buffer {
@@ -482,7 +534,7 @@ func (s *AggregationStage) computeAggregations(groupKey string) map[string]inter
 				}
 			}
 			results[aggFunc.TargetField] = sum
-			
+
 		case "avg":
 			sum := 0.0
 			count := 0
@@ -503,49 +555,51 @@ func (s *AggregationStage) computeAggregations(groupKey string) map[string]inter
 			}
 		}
 	}
-	
+
 	return results
 }
 
 func (s *AggregationStage) toFloat64(value interface{}) (float64, error) {
-	switch v := value.(type) {
-	case float64:
-		return v, nil
-	case float32:
-		return float64(v), nil
-	case int:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case int32:
-		return float64(v), nil
-	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", value)
-	}
+	return common.ToFloat64Simple(value)
 }
 
 func (s *AggregationStage) Health() error {
 	if !s.compiled {
-		return fmt.Errorf("stage not configured")
+		return errors.ConfigError("stage not configured")
 	}
 	return nil
 }
 
 // Stage factories
-type EnrichmentStageFactory struct{}
+type EnrichmentStageFactory struct {
+	redisClient *redis.Client // Optional Redis client for distributed operations
+}
 
 func (f *EnrichmentStageFactory) Create(config map[string]interface{}) (pipeline.Stage, error) {
 	name, ok := config["name"].(string)
 	if !ok {
 		name = "enrich"
 	}
-	
+
 	stage := NewEnrichmentStage(name)
+
+	// Set Redis client if available
+	if f.redisClient != nil {
+		stage.SetRedisClient(f.redisClient)
+	}
+
 	if err := stage.Configure(config); err != nil {
 		return nil, err
 	}
-	
+
 	return stage, nil
+}
+
+// NewEnrichmentStageFactory creates a factory with optional Redis client
+func NewEnrichmentStageFactory(redisClient *redis.Client) *EnrichmentStageFactory {
+	return &EnrichmentStageFactory{
+		redisClient: redisClient,
+	}
 }
 
 func (f *EnrichmentStageFactory) GetType() string {
@@ -573,12 +627,12 @@ func (f *AggregationStageFactory) Create(config map[string]interface{}) (pipelin
 	if !ok {
 		name = "aggregate"
 	}
-	
+
 	stage := NewAggregationStage(name)
 	if err := stage.Configure(config); err != nil {
 		return nil, err
 	}
-	
+
 	return stage, nil
 }
 

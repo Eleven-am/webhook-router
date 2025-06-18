@@ -123,7 +123,7 @@ func (h *Handlers) CreatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var config pipeline.PipelineConfig
+	var config pipeline.Config
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return

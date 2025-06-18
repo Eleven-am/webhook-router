@@ -1,0 +1,1786 @@
+basePath: /api
+definitions:
+  models.HealthCheckConfigAPI:
+    properties:
+      enabled:
+        type: boolean
+      endpoint:
+        type: string
+      healthy_threshold:
+        type: integer
+      interval:
+        description: Duration as string
+        type: string
+      timeout:
+        description: Duration as string
+        type: string
+      unhealthy_threshold:
+        type: integer
+    type: object
+  models.LoadBalancingConfigAPI:
+    properties:
+      hash_key:
+        type: string
+      session_key:
+        type: string
+      sticky_session:
+        type: boolean
+      strategy:
+        type: string
+    type: object
+  models.RouteDestinationAPI:
+    properties:
+      broker_queue:
+        type: string
+      config:
+        additionalProperties: true
+        type: object
+      health_check:
+        $ref: '#/definitions/models.HealthCheckConfigAPI'
+      id:
+        type: string
+      pipeline_id:
+        type: string
+      priority:
+        type: integer
+      timeout:
+        description: Duration as string
+        type: string
+      type:
+        type: string
+      url:
+        type: string
+      weight:
+        type: integer
+    type: object
+  models.RouteRuleAPI:
+    properties:
+      conditions:
+        items:
+          $ref: '#/definitions/models.RuleConditionAPI'
+        type: array
+      created_at:
+        type: string
+      description:
+        type: string
+      destinations:
+        items:
+          $ref: '#/definitions/models.RouteDestinationAPI'
+        type: array
+      enabled:
+        type: boolean
+      id:
+        type: string
+      load_balancing:
+        $ref: '#/definitions/models.LoadBalancingConfigAPI'
+      name:
+        type: string
+      priority:
+        type: integer
+      tags:
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+    type: object
+  models.RuleConditionAPI:
+    properties:
+      field:
+        type: string
+      negate:
+        type: boolean
+      operator:
+        type: string
+      type:
+        type: string
+      value: {}
+    type: object
+  pipeline.PipelineConfig:
+    type: object
+  routing.RouteRule:
+    type: object
+  routing.RuleCondition:
+    properties:
+      field:
+        description: Field name (for header, query conditions)
+        type: string
+      negate:
+        description: Negate the condition result
+        type: boolean
+      operator:
+        description: eq, ne, contains, regex, exists, gt, lt, in
+        type: string
+      type:
+        description: path, header, body, method, query, script
+        type: string
+      value:
+        description: Expected value
+    type: object
+  storage.BrokerConfig:
+    properties:
+      active:
+        type: boolean
+      config:
+        additionalProperties: true
+        type: object
+      created_at:
+        type: string
+      health_status:
+        type: string
+      id:
+        type: integer
+      last_health_check:
+        type: string
+      name:
+        type: string
+      type:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  storage.Route:
+    properties:
+      active:
+        type: boolean
+      condition_expression:
+        type: string
+      created_at:
+        type: string
+      destination_broker_id:
+        type: integer
+      endpoint:
+        type: string
+      exchange:
+        type: string
+      filters:
+        type: string
+      headers:
+        type: string
+      id:
+        type: integer
+      method:
+        type: string
+      name:
+        type: string
+      pipeline_id:
+        description: New fields for Phase 1
+        type: integer
+      priority:
+        type: integer
+      queue:
+        type: string
+      routing_key:
+        type: string
+      trigger_id:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  storage.Trigger:
+    properties:
+      active:
+        type: boolean
+      config:
+        additionalProperties: true
+        type: object
+      created_at:
+        type: string
+      error_message:
+        type: string
+      id:
+        type: integer
+      last_execution:
+        type: string
+      name:
+        type: string
+      next_execution:
+        type: string
+      status:
+        type: string
+      type:
+        type: string
+      updated_at:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: Enterprise-grade webhook routing and data transformation platform
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: Webhook Router API
+  version: "1.0"
+paths:
+  /:
+    get:
+      description: Serves the main HTML frontend page
+      produces:
+      - text/html
+      responses:
+        "200":
+          description: Frontend page HTML
+          schema:
+            type: string
+        "404":
+          description: Frontend not found
+          schema:
+            type: string
+      summary: Serve main frontend
+      tags:
+      - frontend
+  /brokers:
+    get:
+      description: Returns a list of all configured message broker connections
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of broker configurations
+          schema:
+            items:
+              $ref: '#/definitions/storage.BrokerConfig'
+            type: array
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get all message brokers
+      tags:
+      - brokers
+    post:
+      consumes:
+      - application/json
+      description: Creates a new message broker configuration
+      parameters:
+      - description: Broker configuration
+        in: body
+        name: broker
+        required: true
+        schema:
+          $ref: '#/definitions/storage.BrokerConfig'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created broker configuration
+          schema:
+            $ref: '#/definitions/storage.BrokerConfig'
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Create message broker
+      tags:
+      - brokers
+  /brokers/{id}:
+    delete:
+      description: Removes a message broker configuration
+      parameters:
+      - description: Broker ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Invalid broker ID
+          schema:
+            type: string
+        "500":
+          description: Failed to delete broker
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Delete message broker
+      tags:
+      - brokers
+    get:
+      description: Returns a specific message broker configuration by ID
+      parameters:
+      - description: Broker ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Broker configuration
+          schema:
+            $ref: '#/definitions/storage.BrokerConfig'
+        "400":
+          description: Invalid broker ID
+          schema:
+            type: string
+        "404":
+          description: Broker not found
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get message broker
+      tags:
+      - brokers
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing message broker configuration
+      parameters:
+      - description: Broker ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Broker configuration
+        in: body
+        name: broker
+        required: true
+        schema:
+          $ref: '#/definitions/storage.BrokerConfig'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated broker configuration
+          schema:
+            $ref: '#/definitions/storage.BrokerConfig'
+        "400":
+          description: Invalid JSON or broker ID
+          schema:
+            type: string
+        "500":
+          description: Failed to update broker
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Update message broker
+      tags:
+      - brokers
+  /brokers/{id}/test:
+    post:
+      description: Tests connectivity to a message broker
+      parameters:
+      - description: Broker ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: Test result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid broker ID or configuration
+          schema:
+            type: string
+        "404":
+          description: Broker not found
+          schema:
+            type: string
+        "503":
+          description: Broker health check failed
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Test broker connection
+      tags:
+      - brokers
+  /brokers/types:
+    get:
+      description: Returns a list of supported message broker types
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of broker types
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SessionAuth: []
+      summary: Get broker types
+      tags:
+      - brokers
+  /change-password:
+    get:
+      description: Serves the HTML change password page for users with default credentials
+      produces:
+      - text/html
+      responses:
+        "200":
+          description: Change password page HTML
+          schema:
+            type: string
+        "302":
+          description: Redirect to login or admin page
+          schema:
+            type: string
+        "404":
+          description: Change password page not found
+          schema:
+            type: string
+      summary: Serve change password page
+      tags:
+      - auth
+    post:
+      consumes:
+      - application/x-www-form-urlencoded
+      description: Updates user password and invalidates current session
+      parameters:
+      - description: New password
+        in: formData
+        name: password
+        required: true
+        type: string
+      - description: Password confirmation
+        in: formData
+        name: confirm_password
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirect to login page with success message
+          schema:
+            type: string
+        "400":
+          description: Invalid password or passwords do not match
+          schema:
+            type: string
+        "401":
+          description: Invalid session
+          schema:
+            type: string
+        "405":
+          description: Method not allowed
+          schema:
+            type: string
+        "500":
+          description: Failed to change password
+          schema:
+            type: string
+      summary: Process password change
+      tags:
+      - auth
+  /health:
+    get:
+      description: Returns the health status of the application and its dependencies
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Health status
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Health check
+      tags:
+      - system
+  /login:
+    get:
+      description: Serves the HTML login page
+      produces:
+      - text/html
+      responses:
+        "200":
+          description: Login page HTML
+          schema:
+            type: string
+        "404":
+          description: Login page not found
+          schema:
+            type: string
+      summary: Serve login page
+      tags:
+      - auth
+    post:
+      consumes:
+      - application/x-www-form-urlencoded
+      description: Authenticates user credentials and creates a session
+      parameters:
+      - description: Username
+        in: formData
+        name: username
+        required: true
+        type: string
+      - description: Password
+        in: formData
+        name: password
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirect to admin or change password page
+          schema:
+            type: string
+        "401":
+          description: Invalid credentials
+          schema:
+            type: string
+        "405":
+          description: Method not allowed
+          schema:
+            type: string
+      summary: Process login
+      tags:
+      - auth
+  /logout:
+    post:
+      description: Invalidates the current session and redirects to login
+      responses:
+        "302":
+          description: Redirect to login page
+          schema:
+            type: string
+      summary: Process logout
+      tags:
+      - auth
+  /pipelines:
+    get:
+      description: Returns a list of all configured data transformation pipelines
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of pipelines
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Pipeline engine not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get all data pipelines
+      tags:
+      - pipelines
+    post:
+      consumes:
+      - application/json
+      description: Creates a new data transformation pipeline with stages
+      parameters:
+      - description: Pipeline configuration
+        in: body
+        name: pipeline
+        required: true
+        schema:
+          $ref: '#/definitions/pipeline.PipelineConfig'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created pipeline
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid JSON or pipeline validation failed
+          schema:
+            type: string
+        "500":
+          description: Failed to register pipeline
+          schema:
+            type: string
+        "503":
+          description: Pipeline engine not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Create data pipeline
+      tags:
+      - pipelines
+  /pipelines/{id}:
+    delete:
+      description: Removes a data transformation pipeline
+      parameters:
+      - description: Pipeline ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Pipeline not found
+          schema:
+            type: string
+        "503":
+          description: Pipeline engine not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Delete data pipeline
+      tags:
+      - pipelines
+    get:
+      description: Returns a specific data transformation pipeline by ID
+      parameters:
+      - description: Pipeline ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Pipeline details
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Pipeline not found
+          schema:
+            type: string
+        "503":
+          description: Pipeline engine not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get data pipeline
+      tags:
+      - pipelines
+  /pipelines/{id}/execute:
+    post:
+      consumes:
+      - application/json
+      description: Executes a data transformation pipeline with test data
+      parameters:
+      - description: Pipeline ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Test data for pipeline execution
+        in: body
+        name: testData
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Pipeline execution result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "404":
+          description: Pipeline not found
+          schema:
+            type: string
+        "500":
+          description: Pipeline execution failed
+          schema:
+            type: string
+        "503":
+          description: Pipeline engine not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Execute pipeline
+      tags:
+      - pipelines
+  /pipelines/metrics:
+    get:
+      description: Returns performance metrics for pipeline executions
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Pipeline metrics
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to get metrics
+          schema:
+            type: string
+        "503":
+          description: Pipeline engine not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get pipeline metrics
+      tags:
+      - pipelines
+  /pipelines/stages/types:
+    get:
+      description: Returns a list of supported pipeline stage types
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of stage types
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SessionAuth: []
+      summary: Get stage types
+      tags:
+      - pipelines
+  /routes:
+    get:
+      description: Returns a list of all configured webhook routes
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of routes
+          schema:
+            items:
+              $ref: '#/definitions/storage.Route'
+            type: array
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get all webhook routes
+      tags:
+      - routes
+    post:
+      consumes:
+      - application/json
+      description: Creates a new webhook route configuration
+      parameters:
+      - description: Route configuration
+        in: body
+        name: route
+        required: true
+        schema:
+          $ref: '#/definitions/storage.Route'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created route
+          schema:
+            $ref: '#/definitions/storage.Route'
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "409":
+          description: Route name already exists
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Create webhook route
+      tags:
+      - routes
+  /routes/{id}:
+    delete:
+      description: Removes a webhook route configuration
+      parameters:
+      - description: Route ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Invalid route ID
+          schema:
+            type: string
+        "500":
+          description: Failed to delete route
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Delete webhook route
+      tags:
+      - routes
+    get:
+      description: Returns a specific webhook route by ID
+      parameters:
+      - description: Route ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Route details
+          schema:
+            $ref: '#/definitions/storage.Route'
+        "400":
+          description: Invalid route ID
+          schema:
+            type: string
+        "404":
+          description: Route not found
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get webhook route
+      tags:
+      - routes
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing webhook route configuration
+      parameters:
+      - description: Route ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Route configuration
+        in: body
+        name: route
+        required: true
+        schema:
+          $ref: '#/definitions/storage.Route'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated route
+          schema:
+            $ref: '#/definitions/storage.Route'
+        "400":
+          description: Invalid JSON or route ID
+          schema:
+            type: string
+        "500":
+          description: Failed to update route
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Update webhook route
+      tags:
+      - routes
+  /routes/{id}/test:
+    post:
+      description: Tests a webhook route by sending a sample payload
+      parameters:
+      - description: Route ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: Test result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid route ID
+          schema:
+            type: string
+        "404":
+          description: Route not found
+          schema:
+            type: string
+        "503":
+          description: No broker configured
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Test webhook route
+      tags:
+      - routes
+  /routing/metrics:
+    get:
+      description: Returns performance metrics for the routing system
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Router metrics
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to get metrics
+          schema:
+            type: string
+        "503":
+          description: Router not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get router metrics
+      tags:
+      - routing
+  /routing/rules:
+    get:
+      description: Returns a list of all configured advanced routing rules
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of routing rules
+          schema:
+            items:
+              $ref: '#/definitions/models.RouteRuleAPI'
+            type: array
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+        "503":
+          description: Router not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get all routing rules
+      tags:
+      - routing
+    post:
+      consumes:
+      - application/json
+      description: Creates a new advanced routing rule with conditions and destinations
+      parameters:
+      - description: Routing rule configuration
+        in: body
+        name: rule
+        required: true
+        schema:
+          $ref: '#/definitions/routing.RouteRule'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created routing rule
+          schema:
+            $ref: '#/definitions/routing.RouteRule'
+        "400":
+          description: Invalid JSON or rule validation failed
+          schema:
+            type: string
+        "503":
+          description: Router not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Create routing rule
+      tags:
+      - routing
+  /routing/rules/{id}:
+    delete:
+      description: Removes a routing rule configuration
+      parameters:
+      - description: Rule ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Rule not found
+          schema:
+            type: string
+        "503":
+          description: Router not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Delete routing rule
+      tags:
+      - routing
+    get:
+      description: Returns a specific routing rule by ID
+      parameters:
+      - description: Rule ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Routing rule
+          schema:
+            $ref: '#/definitions/models.RouteRuleAPI'
+        "404":
+          description: Rule not found
+          schema:
+            type: string
+        "503":
+          description: Router not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get routing rule
+      tags:
+      - routing
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing routing rule configuration
+      parameters:
+      - description: Rule ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Routing rule configuration
+        in: body
+        name: rule
+        required: true
+        schema:
+          $ref: '#/definitions/routing.RouteRule'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated routing rule
+          schema:
+            $ref: '#/definitions/routing.RouteRule'
+        "400":
+          description: Invalid JSON or rule validation failed
+          schema:
+            type: string
+        "503":
+          description: Router not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Update routing rule
+      tags:
+      - routing
+  /routing/rules/{id}/test:
+    post:
+      consumes:
+      - application/json
+      description: Tests a routing rule with sample request data
+      parameters:
+      - description: Rule ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Test request data
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Test result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "404":
+          description: Rule not found
+          schema:
+            type: string
+        "500":
+          description: Route test failed
+          schema:
+            type: string
+        "503":
+          description: Router not initialized
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Test routing rule
+      tags:
+      - routing
+  /settings:
+    get:
+      description: Returns all application configuration settings
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Application settings
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get application settings
+      tags:
+      - settings
+    post:
+      consumes:
+      - application/json
+      description: Updates multiple application configuration settings
+      parameters:
+      - description: Settings to update
+        in: body
+        name: settings
+        required: true
+        schema:
+          additionalProperties:
+            type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated settings
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Update application settings
+      tags:
+      - settings
+  /stats:
+    get:
+      description: Returns overall application statistics and metrics
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Application statistics
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to get statistics
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get application statistics
+      tags:
+      - statistics
+  /stats/routes/{id}:
+    get:
+      description: Returns statistics and metrics for a specific webhook route
+      parameters:
+      - description: Route ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Route statistics
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid route ID
+          schema:
+            type: string
+        "404":
+          description: Route not found
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get route statistics
+      tags:
+      - statistics
+  /triggers:
+    get:
+      description: Returns a list of all configured triggers with optional filtering
+      parameters:
+      - description: Filter by trigger type
+        in: query
+        name: type
+        type: string
+      - description: Filter by trigger status
+        in: query
+        name: status
+        type: string
+      - description: Filter by active status
+        in: query
+        name: active
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of triggers
+          schema:
+            items:
+              $ref: '#/definitions/storage.Trigger'
+            type: array
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get all triggers
+      tags:
+      - triggers
+    post:
+      consumes:
+      - application/json
+      description: Creates a new trigger configuration for automated webhook processing
+      parameters:
+      - description: Trigger configuration
+        in: body
+        name: trigger
+        required: true
+        schema:
+          $ref: '#/definitions/storage.Trigger'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created trigger
+          schema:
+            $ref: '#/definitions/storage.Trigger'
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Create trigger
+      tags:
+      - triggers
+  /triggers/{id}:
+    delete:
+      description: Removes a trigger configuration
+      parameters:
+      - description: Trigger ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Invalid trigger ID
+          schema:
+            type: string
+        "500":
+          description: Failed to delete trigger
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Delete trigger
+      tags:
+      - triggers
+    get:
+      description: Returns a specific trigger configuration by ID
+      parameters:
+      - description: Trigger ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Trigger configuration
+          schema:
+            $ref: '#/definitions/storage.Trigger'
+        "400":
+          description: Invalid trigger ID
+          schema:
+            type: string
+        "404":
+          description: Trigger not found
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Get trigger
+      tags:
+      - triggers
+    put:
+      consumes:
+      - application/json
+      description: Updates an existing trigger configuration
+      parameters:
+      - description: Trigger ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Trigger configuration
+        in: body
+        name: trigger
+        required: true
+        schema:
+          $ref: '#/definitions/storage.Trigger'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated trigger
+          schema:
+            $ref: '#/definitions/storage.Trigger'
+        "400":
+          description: Invalid JSON or trigger ID
+          schema:
+            type: string
+        "500":
+          description: Failed to update trigger
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Update trigger
+      tags:
+      - triggers
+  /triggers/{id}/start:
+    post:
+      description: Starts a specific trigger
+      parameters:
+      - description: Trigger ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: Start result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid trigger ID
+          schema:
+            type: string
+        "404":
+          description: Trigger not found
+          schema:
+            type: string
+        "500":
+          description: Failed to start trigger
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Start trigger
+      tags:
+      - triggers
+  /triggers/{id}/stop:
+    post:
+      description: Stops a specific trigger
+      parameters:
+      - description: Trigger ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: Stop result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid trigger ID
+          schema:
+            type: string
+        "404":
+          description: Trigger not found
+          schema:
+            type: string
+        "500":
+          description: Failed to stop trigger
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Stop trigger
+      tags:
+      - triggers
+  /triggers/{id}/test:
+    post:
+      description: Tests a trigger configuration
+      parameters:
+      - description: Trigger ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: Test result
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid trigger ID or configuration
+          schema:
+            type: string
+        "404":
+          description: Trigger not found
+          schema:
+            type: string
+      security:
+      - SessionAuth: []
+      summary: Test trigger
+      tags:
+      - triggers
+  /triggers/types:
+    get:
+      description: Returns a list of supported trigger types
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of trigger types
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SessionAuth: []
+      summary: Get trigger types
+      tags:
+      - triggers
+  /webhook:
+    delete:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    get:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    patch:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    post:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    put:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+  /webhook/{endpoint}:
+    delete:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook endpoint name
+        in: path
+        name: endpoint
+        type: string
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    get:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook endpoint name
+        in: path
+        name: endpoint
+        type: string
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    patch:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook endpoint name
+        in: path
+        name: endpoint
+        type: string
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    post:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook endpoint name
+        in: path
+        name: endpoint
+        type: string
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+    put:
+      consumes:
+      - application/json
+      - text/xml
+      - text/plain
+      description: Processes incoming webhook requests and routes them to configured
+        destinations
+      parameters:
+      - description: Webhook endpoint name
+        in: path
+        name: endpoint
+        type: string
+      - description: Webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Process incoming webhook
+      tags:
+      - webhooks
+securityDefinitions:
+  SessionAuth:
+    in: cookie
+    name: session
+    type: apiKey
+swagger: "2.0"

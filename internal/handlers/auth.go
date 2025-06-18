@@ -15,21 +15,14 @@ import (
 // @Failure 404 {string} string "Login page not found"
 // @Router /login [get]
 func (h *Handlers) ServeLogin(w http.ResponseWriter, r *http.Request) {
-	content, err := h.webFS.ReadFile("web/login.html")
-	if err != nil {
-		http.Error(w, "Login page not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	w.Write(content)
+	h.serveStaticFile(w, "web/login.html", "text/html", "Login page not found")
 }
 
 // HandleLogin processes login requests
 // @Summary Process login
 // @Description Authenticates user credentials and creates a session
 // @Tags auth
-// @Accept form
+// @Accept application/x-www-form-urlencoded
 // @Produce json
 // @Param username formData string true "Username"
 // @Param password formData string true "Password"
@@ -38,30 +31,21 @@ func (h *Handlers) ServeLogin(w http.ResponseWriter, r *http.Request) {
 // @Failure 405 {string} string "Method not allowed"
 // @Router /login [post]
 func (h *Handlers) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !h.requirePOST(w, r) {
 		return
 	}
 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 
-	sessionID, session, err := h.auth.Login(username, password)
+	token, session, err := h.auth.Login(username, password)
 	if err != nil {
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		h.handleError(w, err, "Login failed", "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
-	// Set session cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    sessionID,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   false, // Set to true in production with HTTPS
-		SameSite: http.SameSiteStrictMode,
-		Expires:  session.ExpiresAt,
-	})
+	// Set JWT token cookie
+	h.setTokenCookie(w, token, session.ExpiresAt)
 
 	// If default user, redirect to change password page
 	if session.IsDefault {
@@ -79,21 +63,26 @@ func (h *Handlers) HandleLogin(w http.ResponseWriter, r *http.Request) {
 // @Success 302 {string} string "Redirect to login page"
 // @Router /logout [post]
 func (h *Handlers) HandleLogout(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("session")
-	if err == nil {
-		h.auth.Logout(cookie.Value)
+	// Get token from cookie or header
+	token, _ := h.extractToken(r)
+	
+	// Blacklist the token if present
+	if token != "" {
+		if err := h.auth.Logout(token); err != nil {
+			// Log error but continue with logout
+			h.logger.Error("Failed to blacklist token", err)
+		}
 	}
+	
+	// Clear token cookie
+	h.clearTokenCookie(w)
 
-	// Clear session cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		MaxAge:   -1,
-	})
-
-	http.Redirect(w, r, "/login", http.StatusFound)
+	// Return different responses based on request type
+	if h.isAPIRequest(r) {
+		h.sendJSONResponse(w, map[string]string{"message": "Logged out successfully"})
+	} else {
+		http.Redirect(w, r, "/login", http.StatusFound)
+	}
 }
 
 // ServeChangePassword serves the change password page
@@ -106,17 +95,10 @@ func (h *Handlers) HandleLogout(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {string} string "Change password page not found"
 // @Router /change-password [get]
 func (h *Handlers) ServeChangePassword(w http.ResponseWriter, r *http.Request) {
-	// Check if user has valid session
-	cookie, err := r.Cookie("session")
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-
-	session, valid := h.auth.ValidateSession(cookie.Value)
+	// Validate session
+	session, valid := h.validateSession(w, r)
 	if !valid {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
+		return // validateSession already handled the redirect
 	}
 
 	// Check if user is using default credentials
@@ -126,21 +108,14 @@ func (h *Handlers) ServeChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := h.webFS.ReadFile("web/change-password.html")
-	if err != nil {
-		http.Error(w, "Change password page not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	w.Write(content)
+	h.serveStaticFile(w, "web/change-password.html", "text/html", "Change password page not found")
 }
 
 // HandleChangePassword processes password change requests
 // @Summary Process password change
 // @Description Updates user password and invalidates current session
 // @Tags auth
-// @Accept form
+// @Accept application/x-www-form-urlencoded
 // @Produce json
 // @Param password formData string true "New password"
 // @Param confirm_password formData string true "Password confirmation"
@@ -151,54 +126,37 @@ func (h *Handlers) ServeChangePassword(w http.ResponseWriter, r *http.Request) {
 // @Failure 500 {string} string "Failed to change password"
 // @Router /change-password [post]
 func (h *Handlers) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !h.requirePOST(w, r) {
 		return
 	}
 
-	// Check session
-	cookie, err := r.Cookie("session")
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-
-	session, valid := h.auth.ValidateSession(cookie.Value)
+	// Validate session
+	session, valid := h.validateSession(w, r)
 	if !valid {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
+		return // validateSession already handled the redirect
 	}
 
 	newPassword := r.FormValue("password")
 	confirmPassword := r.FormValue("confirm_password")
 
-	if newPassword != confirmPassword {
-		http.Error(w, "Passwords do not match", http.StatusBadRequest)
-		return
-	}
-
-	if len(newPassword) < 8 {
-		http.Error(w, "Password must be at least 8 characters", http.StatusBadRequest)
+	// Validate password change request
+	if err := h.validatePasswordChange(newPassword, confirmPassword); err != nil {
+		h.handleError(w, err, "Password validation failed", err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Update password
 	if err := h.auth.ChangePassword(session.Username, newPassword); err != nil {
-		http.Error(w, "Failed to change password", http.StatusInternalServerError)
+		h.handleError(w, err, "Failed to change password", "Failed to change password", http.StatusInternalServerError)
 		return
 	}
 
-	// Clear current session
-	h.auth.Logout(cookie.Value)
-
-	// Clear session cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		MaxAge:   -1,
-	})
+	// Clear current token and cookie
+	token, _ := h.extractToken(r)
+	if token != "" {
+		h.auth.Logout(token)
+	}
+	h.clearTokenCookie(w)
 
 	// Redirect to login with success message
 	http.Redirect(w, r, "/login?message=password_changed", http.StatusFound)

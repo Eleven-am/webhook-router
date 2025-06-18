@@ -8,16 +8,33 @@ import (
 	"time"
 )
 
-// BasicRouter implements the Router interface with priority-based routing
+// BasicRouter implements the Router interface with priority-based routing.
+// It evaluates routing rules in priority order to determine where incoming
+// requests should be sent. The router is thread-safe and supports concurrent
+// routing operations.
 type BasicRouter struct {
-	rules       []*RouteRule
-	ruleEngine  RuleEngine
+	// rules stores all routing rules sorted by priority
+	rules []*RouteRule
+	// ruleEngine evaluates rule conditions
+	ruleEngine RuleEngine
+	// destManager handles destination selection and health
 	destManager DestinationManager
-	mu          sync.RWMutex
-	isRunning   bool
-	metrics     *RouterMetrics
+	// mu protects concurrent access to rules
+	mu sync.RWMutex
+	// isRunning indicates if the router is active
+	isRunning bool
+	// metrics tracks routing performance and statistics
+	metrics *RouterMetrics
 }
 
+// NewBasicRouter creates a new router instance with the provided rule engine and destination manager.
+// The router starts in a stopped state and must be started with Start() before processing requests.
+//
+// Parameters:
+//   - ruleEngine: Engine for evaluating routing rule conditions
+//   - destManager: Manager for destination selection and health tracking
+//
+// Returns a configured router ready for rule configuration and startup.
 func NewBasicRouter(ruleEngine RuleEngine, destManager DestinationManager) *BasicRouter {
 	return &BasicRouter{
 		rules:       make([]*RouteRule, 0),
@@ -31,6 +48,22 @@ func NewBasicRouter(ruleEngine RuleEngine, destManager DestinationManager) *Basi
 	}
 }
 
+// Route evaluates the incoming request against all configured routing rules and returns
+// the destinations where the request should be sent. Rules are evaluated in priority order
+// (higher priority first), and the first matching rule determines the routing decision.
+//
+// The method performs the following steps:
+//   1. Validates the router is running
+//   2. Evaluates rules in priority order
+//   3. For matching rules, selects healthy destinations using the configured strategy
+//   4. Updates metrics and returns the routing result
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeouts
+//   - request: The incoming request to route
+//
+// Returns a RouteResult with selected destinations or an error if routing fails.
+// Common errors include no matching rules or no healthy destinations available.
 func (r *BasicRouter) Route(ctx context.Context, request *RouteRequest) (*RouteResult, error) {
 	start := time.Now()
 	
@@ -256,160 +289,131 @@ func (r *BasicRouter) GetMetrics() (*RouterMetrics, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	
-	// Return a copy of metrics
+	// Return a copy of metrics using utility functions
 	metricsCopy := *r.metrics
-	metricsCopy.RuleHitCounts = make(map[string]int64)
-	metricsCopy.DestinationMetrics = make(map[string]DestinationMetrics)
-	
-	for k, v := range r.metrics.RuleHitCounts {
-		metricsCopy.RuleHitCounts[k] = v
-	}
-	
-	for k, v := range r.metrics.DestinationMetrics {
-		metricsCopy.DestinationMetrics[k] = v
-	}
+	metricsCopy.RuleHitCounts = CopyInt64Map(r.metrics.RuleHitCounts)
+	metricsCopy.DestinationMetrics = CopyDestinationMetricsMap(r.metrics.DestinationMetrics)
 	
 	return &metricsCopy, nil
 }
 
 func (r *BasicRouter) validateRule(rule *RouteRule) error {
-	if rule.ID == "" {
-		return fmt.Errorf("rule ID is required")
-	}
+	// Build validators using utility functions
+	validators := BuildValidators(
+		// Required field validations
+		func() error { return ValidateRequired("id", rule.ID, "rule ID") },
+		func() error { return ValidateRequired("name", rule.Name, "rule name") },
+		
+		// Collection validations
+		func() error {
+			if len(rule.Conditions) == 0 {
+				return ValidationError{Field: "conditions", Message: "must have at least one condition"}
+			}
+			return nil
+		},
+		func() error {
+			if len(rule.Destinations) == 0 {
+				return ValidationError{Field: "destinations", Message: "must have at least one destination"}
+			}
+			return nil
+		},
+		
+		// Nested validations
+		func() error {
+			for i, condition := range rule.Conditions {
+				if err := r.validateCondition(&condition); err != nil {
+					return WrapErrorf(err, "condition %d is invalid", i)
+				}
+			}
+			return nil
+		},
+		func() error {
+			for i, destination := range rule.Destinations {
+				if err := r.validateDestination(&destination); err != nil {
+					return WrapErrorf(err, "destination %d is invalid", i)
+				}
+			}
+			return nil
+		},
+		func() error {
+			return WrapError(r.validateLoadBalancing(&rule.LoadBalancing), "load balancing configuration is invalid")
+		},
+	)
 	
-	if rule.Name == "" {
-		return fmt.Errorf("rule name is required")
-	}
-	
-	if len(rule.Conditions) == 0 {
-		return fmt.Errorf("rule must have at least one condition")
-	}
-	
-	if len(rule.Destinations) == 0 {
-		return fmt.Errorf("rule must have at least one destination")
-	}
-	
-	// Validate conditions
-	for i, condition := range rule.Conditions {
-		if err := r.validateCondition(&condition); err != nil {
-			return fmt.Errorf("condition %d is invalid: %w", i, err)
-		}
-	}
-	
-	// Validate destinations
-	for i, destination := range rule.Destinations {
-		if err := r.validateDestination(&destination); err != nil {
-			return fmt.Errorf("destination %d is invalid: %w", i, err)
-		}
-	}
-	
-	// Validate load balancing configuration
-	if err := r.validateLoadBalancing(&rule.LoadBalancing); err != nil {
-		return fmt.Errorf("load balancing configuration is invalid: %w", err)
-	}
-	
-	return nil
+	return RunValidators(validators...)
 }
 
 func (r *BasicRouter) validateCondition(condition *RuleCondition) error {
-	if condition.Type == "" {
-		return fmt.Errorf("condition type is required")
-	}
-	
-	if condition.Operator == "" {
-		return fmt.Errorf("condition operator is required")
-	}
-	
-	// Check if condition type is supported
+	// Get supported types and operators once
 	supportedTypes := r.ruleEngine.GetSupportedConditionTypes()
-	isSupported := false
-	for _, supportedType := range supportedTypes {
-		if condition.Type == supportedType {
-			isSupported = true
-			break
-		}
-	}
-	if !isSupported {
-		return fmt.Errorf("unsupported condition type: %s", condition.Type)
-	}
-	
-	// Check if operator is supported
 	supportedOperators := r.ruleEngine.GetSupportedOperators()
-	isSupported = false
-	for _, supportedOp := range supportedOperators {
-		if condition.Operator == supportedOp {
-			isSupported = true
-			break
-		}
-	}
-	if !isSupported {
-		return fmt.Errorf("unsupported operator: %s", condition.Operator)
-	}
 	
-	// Validate that field is provided for conditions that require it
-	fieldRequiredTypes := map[string]bool{
-		"header": true,
-		"query":  true,
-		"body_json": true,
-		"context": true,
-	}
-	if fieldRequiredTypes[condition.Type] && condition.Field == "" {
-		return fmt.Errorf("condition type %s requires a field", condition.Type)
-	}
+	// Field required types
+	fieldRequiredTypes := []string{"header", "query", "body_json", "context"}
 	
-	return nil
+	validators := BuildValidators(
+		// Required field validations
+		func() error { return ValidateRequired("type", condition.Type, "condition type") },
+		func() error { return ValidateRequired("operator", condition.Operator, "condition operator") },
+		
+		// Type validation
+		func() error { return ValidateInSet(condition.Type, supportedTypes, "condition type") },
+		
+		// Operator validation
+		func() error { return ValidateInSet(condition.Operator, supportedOperators, "condition operator") },
+		
+		// Conditional field validation
+		func() error {
+			return ValidateConditional(
+				SliceContains(fieldRequiredTypes, condition.Type),
+				func() error { return ValidateRequired("field", condition.Field, "condition field") },
+			)
+		},
+	)
+	
+	return RunValidators(validators...)
 }
 
 func (r *BasicRouter) validateDestination(destination *RouteDestination) error {
-	if destination.ID == "" {
-		return fmt.Errorf("destination ID is required")
-	}
+	validTypes := []string{"broker", "http", "webhook", "pipeline"}
 	
-	if destination.Type == "" {
-		return fmt.Errorf("destination type is required")
-	}
+	validators := BuildValidators(
+		// Required field validations
+		func() error { return ValidateRequired("id", destination.ID, "destination ID") },
+		func() error { return ValidateRequired("type", destination.Type, "destination type") },
+		
+		// Type validation
+		func() error { return ValidateInSet(destination.Type, validTypes, "destination type") },
+		
+		// Numeric validations
+		func() error { return ValidateNonNegative(destination.Priority, "destination priority") },
+		func() error { return ValidateNonNegative(destination.Weight, "destination weight") },
+	)
 	
-	validTypes := map[string]bool{
-		"broker":   true,
-		"http":     true,
-		"webhook":  true,
-		"pipeline": true,
-	}
-	if !validTypes[destination.Type] {
-		return fmt.Errorf("unsupported destination type: %s", destination.Type)
-	}
-	
-	if destination.Priority < 0 {
-		return fmt.Errorf("destination priority must be non-negative")
-	}
-	
-	if destination.Weight < 0 {
-		return fmt.Errorf("destination weight must be non-negative")
-	}
-	
-	return nil
+	return RunValidators(validators...)
 }
 
 func (r *BasicRouter) validateLoadBalancing(config *LoadBalancingConfig) error {
-	validStrategies := map[string]bool{
-		"round_robin":      true,
-		"weighted":         true,
-		"least_connections": true,
-		"random":           true,
-		"hash":             true,
-	}
+	validStrategies := []string{"round_robin", "weighted", "least_connections", "random", "hash"}
 	
-	if config.Strategy != "" && !validStrategies[config.Strategy] {
-		return fmt.Errorf("unsupported load balancing strategy: %s", config.Strategy)
-	}
+	validators := BuildValidators(
+		// Strategy validation
+		func() error { return ValidateInSet(config.Strategy, validStrategies, "load balancing strategy") },
+		
+		// Conditional validations
+		func() error {
+			return ValidateConditional(
+				config.Strategy == "hash",
+				func() error { return ValidateRequired("hash_key", config.HashKey, "hash key for hash strategy") },
+			)
+		},
+		func() error {
+			return ValidateConditional(
+				config.StickySession,
+				func() error { return ValidateRequired("session_key", config.SessionKey, "session key for sticky session") },
+			)
+		},
+	)
 	
-	if config.Strategy == "hash" && config.HashKey == "" {
-		return fmt.Errorf("hash strategy requires hash_key")
-	}
-	
-	if config.StickySession && config.SessionKey == "" {
-		return fmt.Errorf("sticky session requires session_key")
-	}
-	
-	return nil
+	return RunValidators(validators...)
 }

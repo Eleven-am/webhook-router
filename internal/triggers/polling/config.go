@@ -1,9 +1,10 @@
 package polling
 
 import (
-	"fmt"
-	"strings"
 	"time"
+	"webhook-router/internal/common/config"
+	"webhook-router/internal/common/errors"
+	"webhook-router/internal/common/validation"
 	"webhook-router/internal/triggers"
 )
 
@@ -12,23 +13,19 @@ type Config struct {
 	triggers.BaseTriggerConfig
 	
 	// Polling-specific settings
-	URL            string                 `json:"url"`             // URL to poll
-	Method         string                 `json:"method"`          // HTTP method (GET, POST, etc.)
-	Headers        map[string]string      `json:"headers"`         // HTTP headers
-	Body           string                 `json:"body"`            // Request body (for POST/PUT)
-	Interval       time.Duration          `json:"interval"`        // Polling interval
-	Timeout        time.Duration          `json:"timeout"`         // Request timeout
-	Authentication AuthConfig             `json:"authentication"`  // Authentication config
-	ChangeDetection ChangeDetectionConfig `json:"change_detection"` // How to detect changes
-	ResponseFilter ResponseFilterConfig   `json:"response_filter"`  // Filter responses
-	ErrorHandling  ErrorHandlingConfig    `json:"error_handling"`   // Error handling
+	URL             string                 `json:"url"`              // URL to poll
+	Method          string                 `json:"method"`           // HTTP method (GET, POST, etc.)
+	Headers         map[string]string      `json:"headers"`          // HTTP headers
+	Body            string                 `json:"body"`             // Request body (for POST/PUT)
+	Interval        time.Duration          `json:"interval"`         // Polling interval
+	Timeout         time.Duration          `json:"timeout"`          // Request timeout
+	Authentication  config.AuthConfig      `json:"authentication"`   // Authentication config
+	ChangeDetection ChangeDetectionConfig  `json:"change_detection"` // How to detect changes
+	ResponseFilter  ResponseFilterConfig   `json:"response_filter"`  // Filter responses
+	ErrorHandling   PollingErrorHandlingConfig `json:"error_handling"`   // Error handling
+	AlwaysTrigger   bool                   `json:"always_trigger"`   // Trigger even if no change detected
 }
 
-// AuthConfig defines authentication for polling requests
-type AuthConfig struct {
-	Type     string            `json:"type"`     // none, basic, bearer, apikey, oauth2
-	Settings map[string]string `json:"settings"` // Auth-specific settings
-}
 
 // ChangeDetectionConfig defines how to detect changes in responses
 type ChangeDetectionConfig struct {
@@ -41,32 +38,22 @@ type ChangeDetectionConfig struct {
 
 // ResponseFilterConfig defines response filtering
 type ResponseFilterConfig struct {
-	Enabled       bool              `json:"enabled"`        // Enable response filtering
-	StatusCodes   []int             `json:"status_codes"`   // Only trigger on these status codes
-	ContentType   string            `json:"content_type"`   // Only trigger on this content type
-	MinSize       int64             `json:"min_size"`       // Minimum response size
-	MaxSize       int64             `json:"max_size"`       // Maximum response size
-	RequiredText  string            `json:"required_text"`  // Text that must be present
-	ExcludedText  string            `json:"excluded_text"`  // Text that must not be present
-	JSONCondition JSONConditionConfig `json:"json_condition"` // JSON-based conditions
+	Enabled       bool                `json:"enabled"`        // Enable response filtering
+	StatusCodes   []int               `json:"status_codes"`   // Only trigger on these status codes
+	ContentType   string              `json:"content_type"`   // Only trigger on this content type
+	MinSize       int64               `json:"min_size"`       // Minimum response size
+	MaxSize       int64               `json:"max_size"`       // Maximum response size
+	RequiredText  string              `json:"required_text"`  // Text that must be present
+	ExcludedText  string              `json:"excluded_text"`  // Text that must not be present
+	JSONCondition config.JSONConditionConfig `json:"json_condition"` // JSON-based conditions
 }
 
-// JSONConditionConfig defines JSON-based filtering conditions
-type JSONConditionConfig struct {
-	Enabled    bool   `json:"enabled"`     // Enable JSON condition checking
-	Path       string `json:"path"`        // JSONPath expression
-	Operator   string `json:"operator"`    // eq, ne, gt, lt, gte, lte, contains, exists
-	Value      string `json:"value"`       // Expected value
-	ValueType  string `json:"value_type"`  // string, number, boolean
-}
-
-// ErrorHandlingConfig defines error handling behavior
-type ErrorHandlingConfig struct {
-	RetryCount        int           `json:"retry_count"`         // Number of retries
-	RetryDelay        time.Duration `json:"retry_delay"`         // Delay between retries
-	IgnoreSSLErrors   bool          `json:"ignore_ssl_errors"`   // Ignore SSL certificate errors
-	TreatErrorAsChange bool         `json:"treat_error_as_change"` // Treat errors as changes
-	AlertOnError      bool          `json:"alert_on_error"`      // Send alert on persistent errors
+// PollingErrorHandlingConfig extends the common error handling with polling-specific options
+type PollingErrorHandlingConfig struct {
+	config.ErrorHandlingConfig
+	
+	IgnoreSSLErrors    bool `json:"ignore_ssl_errors"`     // Ignore SSL certificate errors
+	TreatErrorAsChange bool `json:"treat_error_as_change"` // Treat errors as changes
 }
 
 func NewConfig(name string) *Config {
@@ -81,10 +68,7 @@ func NewConfig(name string) *Config {
 		Headers:  make(map[string]string),
 		Interval: time.Minute,
 		Timeout:  30 * time.Second,
-		Authentication: AuthConfig{
-			Type:     "none",
-			Settings: make(map[string]string),
-		},
+		Authentication: config.NewAuthConfig(),
 		ChangeDetection: ChangeDetectionConfig{
 			Type: "hash",
 		},
@@ -93,248 +77,150 @@ func NewConfig(name string) *Config {
 			StatusCodes: []int{200},
 			MaxSize:     10 * 1024 * 1024, // 10MB
 		},
-		ErrorHandling: ErrorHandlingConfig{
-			RetryCount:        3,
-			RetryDelay:        10 * time.Second,
-			IgnoreSSLErrors:   false,
+		ErrorHandling: PollingErrorHandlingConfig{
+			ErrorHandlingConfig: config.ErrorHandlingConfig{
+				RetryEnabled: true,
+				MaxRetries:   3,
+				RetryDelay:   10 * time.Second,
+				AlertOnError: false,
+			},
+			IgnoreSSLErrors:    false,
 			TreatErrorAsChange: false,
-			AlertOnError:      true,
 		},
+		AlwaysTrigger: false,
 	}
 }
 
 func (c *Config) Validate() error {
-	if c.Name == "" {
-		return fmt.Errorf("trigger name is required")
-	}
+	v := validation.NewValidator()
 	
-	if c.URL == "" {
-		return fmt.Errorf("URL is required")
-	}
+	// Basic validation
+	v.RequireString(c.Name, "name")
+	v.RequireURL(c.URL, "url")
+	v.RequireOneOf(c.Method, []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"}, "method")
 	
-	// Validate URL format
-	if !strings.HasPrefix(c.URL, "http://") && !strings.HasPrefix(c.URL, "https://") {
-		return fmt.Errorf("URL must start with http:// or https://")
-	}
-	
-	// Validate HTTP method
-	validMethods := map[string]bool{
-		"GET": true, "POST": true, "PUT": true, "DELETE": true,
-		"PATCH": true, "HEAD": true, "OPTIONS": true,
-	}
-	if !validMethods[strings.ToUpper(c.Method)] {
-		return fmt.Errorf("invalid HTTP method: %s", c.Method)
-	}
-	c.Method = strings.ToUpper(c.Method)
-	
-	// Validate intervals and timeouts
+	// Validate interval
 	if c.Interval <= 0 {
-		return fmt.Errorf("interval must be positive")
+		v.Validate(func() error {
+			return errors.ConfigError("interval must be positive")
+		})
 	}
-	if c.Interval < 10*time.Second {
-		return fmt.Errorf("minimum interval is 10 seconds")
-	}
+	
+	// Validate timeout
 	if c.Timeout <= 0 {
 		c.Timeout = 30 * time.Second
 	}
-	if c.Timeout >= c.Interval {
-		return fmt.Errorf("timeout must be less than polling interval")
-	}
 	
 	// Validate authentication
-	if err := c.validateAuth(); err != nil {
-		return fmt.Errorf("authentication error: %w", err)
-	}
+	v.Validate(func() error {
+		return c.validateAuth()
+	})
 	
 	// Validate change detection
-	if err := c.validateChangeDetection(); err != nil {
-		return fmt.Errorf("change detection error: %w", err)
+	validChangeTypes := []string{"hash", "content", "header", "jsonpath", "status_code"}
+	v.RequireOneOf(c.ChangeDetection.Type, validChangeTypes, "change_detection.type")
+	
+	if c.ChangeDetection.Type == "header" && c.ChangeDetection.HeaderName == "" {
+		v.Validate(func() error {
+			return errors.ConfigError("header_name is required for header change detection")
+		})
+	}
+	
+	if c.ChangeDetection.Type == "jsonpath" && c.ChangeDetection.JSONPath == "" {
+		v.Validate(func() error {
+			return errors.ConfigError("json_path is required for jsonpath change detection")
+		})
 	}
 	
 	// Validate response filter
-	if err := c.validateResponseFilter(); err != nil {
-		return fmt.Errorf("response filter error: %w", err)
+	if c.ResponseFilter.Enabled {
+		if c.ResponseFilter.MaxSize <= 0 {
+			c.ResponseFilter.MaxSize = 10 * 1024 * 1024 // 10MB default
+		}
+		
+		v.RequireNonNegative(int(c.ResponseFilter.MinSize), "response_filter.min_size")
+		
+		if c.ResponseFilter.MinSize > c.ResponseFilter.MaxSize {
+			v.Validate(func() error {
+				return errors.ConfigError("min_size cannot be greater than max_size")
+			})
+		}
+		
+		// Validate JSON condition if enabled
+		if c.ResponseFilter.JSONCondition.Enabled {
+			v.RequireString(c.ResponseFilter.JSONCondition.Path, "json_condition.path")
+			v.RequireOneOf(c.ResponseFilter.JSONCondition.Operator,
+				[]string{"eq", "ne", "gt", "lt", "gte", "lte", "contains", "exists"},
+				"json_condition.operator",
+			)
+			v.RequireOneOf(c.ResponseFilter.JSONCondition.ValueType,
+				[]string{"string", "number", "boolean"},
+				"json_condition.value_type",
+			)
+		}
 	}
 	
-	// Validate error handling
-	if err := c.validateErrorHandling(); err != nil {
-		return fmt.Errorf("error handling error: %w", err)
-	}
+	// Validate error handling using common validation
+	config.ValidateErrorHandling(&c.ErrorHandling.ErrorHandlingConfig, v, "error_handling")
 	
-	return nil
+	return v.Error()
 }
 
 func (c *Config) validateAuth() error {
-	validTypes := map[string]bool{
-		"none": true, "basic": true, "bearer": true, "apikey": true, "oauth2": true,
-	}
-	if !validTypes[c.Authentication.Type] {
-		return fmt.Errorf("invalid authentication type: %s", c.Authentication.Type)
-	}
+	v := validation.NewValidator()
 	
+	validAuthTypes := []string{"none", "basic", "bearer", "apikey", "oauth2"}
+	v.RequireOneOf(c.Authentication.Type, validAuthTypes, "authentication.type")
+	
+	// Validate auth-specific settings
 	switch c.Authentication.Type {
 	case "basic":
-		if c.Authentication.Settings["username"] == "" || c.Authentication.Settings["password"] == "" {
-			return fmt.Errorf("username and password required for basic auth")
-		}
+		v.RequireString(c.Authentication.Settings["username"], "username")
+		v.RequireString(c.Authentication.Settings["password"], "password")
+		
 	case "bearer":
-		if c.Authentication.Settings["token"] == "" {
-			return fmt.Errorf("token required for bearer auth")
-		}
+		v.RequireString(c.Authentication.Settings["token"], "token")
+		
 	case "apikey":
-		if c.Authentication.Settings["key"] == "" || c.Authentication.Settings["header"] == "" {
-			return fmt.Errorf("key and header required for API key auth")
+		v.RequireString(c.Authentication.Settings["api_key"], "api_key")
+		
+		// Set defaults
+		if c.Authentication.Settings["location"] == "" {
+			c.Authentication.Settings["location"] = "header"
 		}
+		if c.Authentication.Settings["key_name"] == "" {
+			c.Authentication.Settings["key_name"] = "X-API-Key"
+		}
+		
+		v.RequireOneOf(c.Authentication.Settings["location"], []string{"header", "query"}, "api key location")
+		
 	case "oauth2":
-		if c.Authentication.Settings["client_id"] == "" || c.Authentication.Settings["client_secret"] == "" {
-			return fmt.Errorf("client_id and client_secret required for OAuth2")
+		// OAuth2 can be configured in multiple ways
+		// Either with access_token directly or with oauth2 config reference
+		if c.Authentication.Settings["access_token"] == "" && c.Authentication.Settings["oauth2_config_id"] == "" {
+			v.Validate(func() error {
+				return errors.ConfigError("either access_token or oauth2_config_id is required for oauth2 auth")
+			})
 		}
 	}
 	
-	return nil
+	return v.Error()
 }
 
-func (c *Config) validateChangeDetection() error {
-	validTypes := map[string]bool{
-		"hash": true, "content": true, "header": true, "jsonpath": true, "status_code": true,
-	}
-	if !validTypes[c.ChangeDetection.Type] {
-		return fmt.Errorf("invalid change detection type: %s", c.ChangeDetection.Type)
-	}
-	
-	switch c.ChangeDetection.Type {
-	case "header":
-		if c.ChangeDetection.HeaderName == "" {
-			return fmt.Errorf("header_name required for header change detection")
-		}
-	case "jsonpath":
-		if c.ChangeDetection.JSONPath == "" {
-			return fmt.Errorf("json_path required for jsonpath change detection")
-		}
-	}
-	
-	return nil
-}
-
-func (c *Config) validateResponseFilter() error {
-	if !c.ResponseFilter.Enabled {
-		return nil
-	}
-	
-	// Validate status codes
-	if len(c.ResponseFilter.StatusCodes) == 0 {
-		c.ResponseFilter.StatusCodes = []int{200}
-	}
-	for _, code := range c.ResponseFilter.StatusCodes {
-		if code < 100 || code > 599 {
-			return fmt.Errorf("invalid status code: %d", code)
-		}
-	}
-	
-	// Validate size limits
-	if c.ResponseFilter.MinSize < 0 {
-		c.ResponseFilter.MinSize = 0
-	}
-	if c.ResponseFilter.MaxSize <= 0 {
-		c.ResponseFilter.MaxSize = 10 * 1024 * 1024 // 10MB default
-	}
-	if c.ResponseFilter.MinSize > c.ResponseFilter.MaxSize {
-		return fmt.Errorf("min_size cannot be greater than max_size")
-	}
-	
-	// Validate JSON condition
-	if c.ResponseFilter.JSONCondition.Enabled {
-		if c.ResponseFilter.JSONCondition.Path == "" {
-			return fmt.Errorf("JSON condition path is required")
-		}
-		
-		validOperators := map[string]bool{
-			"eq": true, "ne": true, "gt": true, "lt": true,
-			"gte": true, "lte": true, "contains": true, "exists": true,
-		}
-		if !validOperators[c.ResponseFilter.JSONCondition.Operator] {
-			return fmt.Errorf("invalid JSON condition operator: %s", c.ResponseFilter.JSONCondition.Operator)
-		}
-		
-		validValueTypes := map[string]bool{
-			"string": true, "number": true, "boolean": true,
-		}
-		if c.ResponseFilter.JSONCondition.ValueType != "" &&
-		   !validValueTypes[c.ResponseFilter.JSONCondition.ValueType] {
-			return fmt.Errorf("invalid JSON condition value type: %s", c.ResponseFilter.JSONCondition.ValueType)
-		}
-	}
-	
-	return nil
-}
-
-func (c *Config) validateErrorHandling() error {
-	if c.ErrorHandling.RetryCount < 0 {
-		c.ErrorHandling.RetryCount = 0
-	}
-	if c.ErrorHandling.RetryCount > 10 {
-		return fmt.Errorf("maximum retry count is 10")
-	}
-	
-	if c.ErrorHandling.RetryDelay <= 0 {
-		c.ErrorHandling.RetryDelay = 10 * time.Second
-	}
-	
-	return nil
-}
-
+// GetRequestTimeout returns the request timeout
 func (c *Config) GetRequestTimeout() time.Duration {
+	if c.Timeout <= 0 {
+		return 30 * time.Second
+	}
 	return c.Timeout
 }
 
-func (c *Config) GetPollingInterval() time.Duration {
-	return c.Interval
+// GetName returns the trigger name (implements base.TriggerConfig)
+func (c *Config) GetName() string {
+	return c.Name
 }
 
-func (c *Config) ShouldFilterResponse(statusCode int, contentType string, size int64, body string) bool {
-	if !c.ResponseFilter.Enabled {
-		return false // Don't filter if filtering is disabled
-	}
-	
-	// Check status code
-	if len(c.ResponseFilter.StatusCodes) > 0 {
-		validStatus := false
-		for _, code := range c.ResponseFilter.StatusCodes {
-			if code == statusCode {
-				validStatus = true
-				break
-			}
-		}
-		if !validStatus {
-			return true // Filter out (don't trigger)
-		}
-	}
-	
-	// Check content type
-	if c.ResponseFilter.ContentType != "" {
-		if !strings.Contains(contentType, c.ResponseFilter.ContentType) {
-			return true // Filter out
-		}
-	}
-	
-	// Check size
-	if size < c.ResponseFilter.MinSize || size > c.ResponseFilter.MaxSize {
-		return true // Filter out
-	}
-	
-	// Check required text
-	if c.ResponseFilter.RequiredText != "" {
-		if !strings.Contains(body, c.ResponseFilter.RequiredText) {
-			return true // Filter out
-		}
-	}
-	
-	// Check excluded text
-	if c.ResponseFilter.ExcludedText != "" {
-		if strings.Contains(body, c.ResponseFilter.ExcludedText) {
-			return true // Filter out
-		}
-	}
-	
-	return false // Don't filter (allow trigger)
+// GetID returns the trigger ID (implements base.TriggerConfig)
+func (c *Config) GetID() int {
+	return c.ID
 }

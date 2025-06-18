@@ -134,14 +134,15 @@ func (dm *BasicDestinationManager) selectWeighted(destinations []RouteDestinatio
 		return nil, ErrNoDestinationsAvailable
 	}
 	
+	// Helper function to get effective weight
+	getWeight := func(dest RouteDestination) int {
+		return DefaultInt(dest.Weight, 1)
+	}
+	
 	// Calculate total weight
 	totalWeight := 0
 	for _, dest := range destinations {
-		weight := dest.Weight
-		if weight <= 0 {
-			weight = 1 // Default weight
-		}
-		totalWeight += weight
+		totalWeight += getWeight(dest)
 	}
 	
 	if totalWeight == 0 {
@@ -153,11 +154,7 @@ func (dm *BasicDestinationManager) selectWeighted(destinations []RouteDestinatio
 	currentWeight := 0
 	
 	for _, dest := range destinations {
-		weight := dest.Weight
-		if weight <= 0 {
-			weight = 1
-		}
-		currentWeight += weight
+		currentWeight += getWeight(dest)
 		if random < currentWeight {
 			return &dest, nil
 		}
@@ -246,22 +243,17 @@ func (dm *BasicDestinationManager) selectHash(destinations []RouteDestination, h
 }
 
 func (dm *BasicDestinationManager) getSessionValue(request *RouteRequest, sessionKey string) string {
-	// Try to get session value from headers first
-	if value := request.Headers[sessionKey]; value != "" {
-		return value
-	}
-	
-	// Try to get from query parameters
-	if value := request.QueryParams[sessionKey]; value != "" {
-		return value
-	}
-	
-	// Try to get from context
-	if value, exists := request.Context[sessionKey]; exists {
-		return fmt.Sprintf("%v", value)
-	}
-	
-	return ""
+	// Use coalescing to get the first non-empty value
+	return CoalesceString(
+		SafeAccess(request.Headers, sessionKey, ""),
+		SafeAccess(request.QueryParams, sessionKey, ""),
+		func() string {
+			if value, exists := request.Context[sessionKey]; exists {
+				return fmt.Sprintf("%v", value)
+			}
+			return ""
+		}(),
+	)
 }
 
 func (dm *BasicDestinationManager) UpdateDestinationHealth(destinationID string, healthy bool) error {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -108,6 +109,14 @@ func (h *Handlers) CreateRoute(w http.ResponseWriter, r *http.Request) {
 		route.RoutingKey = route.Queue
 	}
 
+	// Process signature configuration if provided
+	if route.SignatureConfig != "" && h.encryptor != nil {
+		if err := PrepareSignatureConfig(&route, h.encryptor); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid signature configuration: %v", err), http.StatusBadRequest)
+			return
+		}
+	}
+	
 	if err := h.storage.CreateRoute(&route); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			http.Error(w, "Route name already exists", http.StatusConflict)
@@ -181,6 +190,14 @@ func (h *Handlers) UpdateRoute(w http.ResponseWriter, r *http.Request) {
 	route.ID = id
 	route.UpdatedAt = time.Now()
 
+	// Process signature configuration if provided
+	if route.SignatureConfig != "" && h.encryptor != nil {
+		if err := PrepareSignatureConfig(&route, h.encryptor); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid signature configuration: %v", err), http.StatusBadRequest)
+			return
+		}
+	}
+	
 	if err := h.storage.UpdateRoute(&route); err != nil {
 		http.Error(w, "Failed to update route", http.StatusInternalServerError)
 		return

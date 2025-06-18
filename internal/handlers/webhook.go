@@ -2,17 +2,17 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
-	"webhook-router/internal/brokers"
+	"webhook-router/internal/common/logging"
+	"webhook-router/internal/signature"
 	"webhook-router/internal/storage"
 )
+
+var startTime = time.Now()
 
 // Webhook handlers
 
@@ -40,70 +40,68 @@ func (h *Handlers) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	endpoint := vars["endpoint"]
 
 	// Log webhook details for debugging
-	log.Printf("Received %s request to endpoint: %s", r.Method, endpoint)
+	h.logger.Debug("Received webhook request",
+		logging.Field{"method", r.Method},
+		logging.Field{"endpoint", endpoint},
+	)
 
 	// Read the body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("Error reading request body: %v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		h.handleError(w, err, "Error reading request body", "Failed to read request body", http.StatusBadRequest)
 		return
 	}
 
 	// Create webhook payload
-	payload := WebhookPayload{
-		Method:    r.Method,
-		URL:       r.URL,
-		Headers:   r.Header,
-		Body:      string(body),
-		Timestamp: time.Now(),
-	}
+	payload := h.createWebhookPayload(r, body)
 
-	// If there's an endpoint specified, try to find a matching route
-	var matchedRoutes []storage.Route
-	if endpoint != "" {
-		routes, err := h.storage.GetRoutes()
-		if err != nil {
-			log.Printf("Error getting routes: %v", err)
-		} else {
-			for _, route := range routes {
-				if strings.EqualFold(route.Name, endpoint) || route.Endpoint == endpoint {
-					matchedRoutes = append(matchedRoutes, *route)
-				}
-			}
-		}
-	}
-
-	// If no specific routes match, get all routes and match by method/path
-	if len(matchedRoutes) == 0 {
-		routes, err := h.storage.GetRoutes()
-		if err != nil {
-			log.Printf("Error getting routes: %v", err)
-		} else {
-			for _, route := range routes {
-				// Match by method and path patterns
-				if route.Method == r.Method || route.Method == "*" {
-					matchedRoutes = append(matchedRoutes, *route)
-				}
-			}
-		}
+	// Find matching routes
+	matchedRoutes, err := h.findMatchingRoutes(endpoint, r.Method)
+	if err != nil {
+		h.logger.Error("Error finding matching routes", err)
+		// Continue processing even if route lookup fails
 	}
 
 	// Process each matching route
 	if len(matchedRoutes) > 0 {
 		for _, route := range matchedRoutes {
+			// Verify signature if configured
+			if route.SignatureConfig != "" && h.encryptor != nil {
+				signatureConfig, err := BuildSignatureAuthConfig(route, h.encryptor)
+				if err != nil {
+					h.logger.Error("Failed to build signature config", err,
+						logging.Field{"route", route.Name},
+					)
+					http.Error(w, "Invalid signature configuration", http.StatusInternalServerError)
+					return
+				}
+				
+				if signatureConfig != nil && signatureConfig.Enabled {
+					verifier := signature.NewVerifier(signatureConfig, h.logger)
+					if err := verifier.Verify(r, body); err != nil {
+						h.logger.Warn("Signature verification failed", 
+							logging.Field{"route", route.Name},
+							logging.Field{"error", err.Error()},
+						)
+						
+						// Check failure action
+						if signatureConfig.FailureAction == "reject" {
+							http.Error(w, "Invalid signature", http.StatusUnauthorized)
+							return
+						}
+						// Otherwise, continue processing (log or allow)
+					}
+				}
+			}
+			
 			payload.RouteID = route.ID
 			payload.RouteName = route.Name
 
-			go h.processWebhookRoute(payload, route)
+			go h.processWebhookRoute(payload, *route)
 		}
 	} else {
 		// No matching routes, send to default queue if broker is available
-		if h.broker != nil {
-			go h.publishToDefaultQueue(payload)
-		} else {
-			log.Printf("No broker configured and no matching routes for endpoint: %s", endpoint)
-		}
+		go h.publishToDefaultQueue(payload)
 	}
 
 	// Always return 200 OK for webhooks
@@ -113,67 +111,64 @@ func (h *Handlers) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) processWebhookRoute(payload WebhookPayload, route storage.Route) {
 	// Apply filters if they exist
-	if route.Filters != "" && route.Filters != "{}" {
-		var filters map[string]interface{}
-		if err := json.Unmarshal([]byte(route.Filters), &filters); err != nil {
-			log.Printf("Error parsing filters for route %s: %v", route.Name, err)
-			return
-		}
-
-		// Simple filter matching (can be expanded)
-		if !h.matchesFilters(payload, filters) {
-			log.Printf("Payload does not match filters for route: %s", route.Name)
-			return
-		}
-	}
-
-	// Apply headers if they exist
-	var headers map[string]string
-	if route.Headers != "" && route.Headers != "{}" {
-		if err := json.Unmarshal([]byte(route.Headers), &headers); err != nil {
-			log.Printf("Error parsing headers for route %s: %v", route.Name, err)
-		}
-	}
-
-	// Convert payload to JSON
-	payloadJSON, err := json.Marshal(payload)
+	matches, err := h.processFilters(payload, route.Filters)
 	if err != nil {
-		log.Printf("Error marshaling payload: %v", err)
+		h.logger.Error("Error processing filters", err,
+			logging.Field{"route", route.Name},
+		)
+		return
+	}
+	if !matches {
+		h.logger.Debug("Payload does not match filters",
+			logging.Field{"route", route.Name},
+		)
 		return
 	}
 
-	// Publish to broker if available
-	if h.broker != nil {
-		routingKey := route.RoutingKey
-		if routingKey == "" {
-			routingKey = route.Queue
-		}
-
-		message := &brokers.Message{
-			MessageID:  fmt.Sprintf("webhook-%d", time.Now().UnixNano()),
-			Queue:      route.Queue,
-			RoutingKey: routingKey,
-			Body:       payloadJSON,
-			Headers:    headers,
-			Timestamp:  time.Now(),
-		}
-
-		if err := h.broker.Publish(message); err != nil {
-			log.Printf("Error publishing to broker for route %s: %v", route.Name, err)
-			return
-		}
-
-		log.Printf("Successfully published webhook to queue %s for route %s", route.Queue, route.Name)
-	} else {
-		log.Printf("No broker configured, cannot publish for route: %s", route.Name)
+	// Parse headers
+	headers, err := h.parseHeaders(route.Headers)
+	if err != nil {
+		h.logger.Error("Error parsing headers", err,
+			logging.Field{"route", route.Name},
+		)
+		return
 	}
-}
 
-func (h *Handlers) publishToDefaultQueue(payload WebhookPayload) {
 	// Convert payload to JSON
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("Error marshaling payload for default queue: %v", err)
+		h.logger.Error("Error marshaling payload", err)
+		return
+	}
+
+	// Create message
+	message := h.createBrokerMessage("webhook", route.Queue, route.RoutingKey, payloadJSON, headers)
+
+	// Publish message with DLQ support
+	if err := h.publishMessageWithDLQ(route.ID, message, route.DestinationBrokerID); err != nil {
+		h.logger.Error("Error publishing webhook message", err,
+			logging.Field{"route", route.Name},
+			logging.Field{"queue", route.Queue},
+		)
+		return
+	}
+
+	h.logger.Info("Successfully published webhook",
+		logging.Field{"queue", route.Queue},
+		logging.Field{"route", route.Name},
+	)
+}
+
+func (h *Handlers) publishToDefaultQueue(payload WebhookPayload) {
+	if h.broker == nil {
+		h.logger.Warn("No broker configured and no matching routes")
+		return
+	}
+
+	// Convert payload to JSON
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		h.logger.Error("Error marshaling payload for default queue", err)
 		return
 	}
 
@@ -182,57 +177,22 @@ func (h *Handlers) publishToDefaultQueue(payload WebhookPayload) {
 		defaultQueue = h.config.DefaultQueue
 	}
 
-	message := &brokers.Message{
-		MessageID:  fmt.Sprintf("webhook-default-%d", time.Now().UnixNano()),
-		Queue:      defaultQueue,
-		RoutingKey: defaultQueue,
-		Body:       payloadJSON,
-		Timestamp:  time.Now(),
-	}
+	// Create message for default queue
+	message := h.createBrokerMessage("webhook-default", defaultQueue, defaultQueue, payloadJSON, nil)
 
-	if err := h.broker.Publish(message); err != nil {
-		log.Printf("Error publishing to default queue: %v", err)
+	// Publish with DLQ support (use route ID 0 for default queue)
+	if err := h.publishMessageWithDLQ(0, message, nil); err != nil {
+		h.logger.Error("Error publishing to default queue", err,
+			logging.Field{"queue", defaultQueue},
+		)
 		return
 	}
 
-	log.Printf("Successfully published webhook to default queue: %s", defaultQueue)
+	h.logger.Info("Successfully published webhook to default queue",
+		logging.Field{"queue", defaultQueue},
+	)
 }
 
-func (h *Handlers) matchesFilters(payload WebhookPayload, filters map[string]interface{}) bool {
-	// Simple filter implementation
-	// In a full implementation, this would support complex filter logic
-
-	for key, expectedValue := range filters {
-		switch key {
-		case "method":
-			if payload.Method != expectedValue {
-				return false
-			}
-		case "content_type":
-			contentType := ""
-			if ct, exists := payload.Headers["Content-Type"]; exists && len(ct) > 0 {
-				contentType = ct[0]
-			}
-			if !strings.Contains(contentType, fmt.Sprintf("%v", expectedValue)) {
-				return false
-			}
-		case "user_agent":
-			userAgent := ""
-			if ua, exists := payload.Headers["User-Agent"]; exists && len(ua) > 0 {
-				userAgent = ua[0]
-			}
-			if !strings.Contains(userAgent, fmt.Sprintf("%v", expectedValue)) {
-				return false
-			}
-		case "body_contains":
-			if !strings.Contains(payload.Body, fmt.Sprintf("%v", expectedValue)) {
-				return false
-			}
-		}
-	}
-
-	return true
-}
 
 // HealthCheck returns the health status of the application
 // @Summary Health check
@@ -242,33 +202,40 @@ func (h *Handlers) matchesFilters(payload WebhookPayload, filters map[string]int
 // @Success 200 {object} map[string]interface{} "Health status"
 // @Router /health [get]
 func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	overallHealthy := true
 	status := map[string]interface{}{
 		"status":    "healthy",
 		"timestamp": time.Now(),
 		"version":   "1.0.0",
+		"uptime":    time.Since(startTime).String(),
 	}
+
+	// Check storage health
+	storageHealthy := h.checkComponentHealth(status, "storage", h.storage.Health)
+	if storageHealthy {
+		h.addStorageMetrics(status)
+	}
+	overallHealthy = overallHealthy && storageHealthy
 
 	// Check broker health if available
 	if h.broker != nil {
-		if err := h.broker.Health(); err != nil {
-			status["broker_status"] = "unhealthy"
-			status["broker_error"] = err.Error()
-		} else {
-			status["broker_status"] = "healthy"
-		}
+		brokerHealthy := h.checkComponentHealth(status, "broker", h.broker.Health)
+		overallHealthy = overallHealthy && brokerHealthy
 	} else {
 		status["broker_status"] = "not_configured"
 	}
 
-	// Check storage health
-	if err := h.storage.Health(); err != nil {
-		status["storage_status"] = "unhealthy"
-		status["storage_error"] = err.Error()
+	// Add broker metrics
+	h.addBrokerMetrics(status)
+	
+	// Add system metrics
+	h.addSystemMetrics(status)
+	
+	// Set overall status and send response
+	if !overallHealthy {
+		status["status"] = "degraded"
 		w.WriteHeader(http.StatusServiceUnavailable)
-	} else {
-		status["storage_status"] = "healthy"
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
+	h.sendJSONResponse(w, status)
 }

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"webhook-router/internal/common/errors"
 )
 
 // BasicRuleEngine implements the RuleEngine interface
@@ -49,7 +50,7 @@ func (re *BasicRuleEngine) EvaluateRule(rule *RouteRule, request *RouteRequest) 
 	
 	if !exists {
 		if err := re.CompileRule(rule); err != nil {
-			return false, fmt.Errorf("failed to compile rule: %w", err)
+			return false, errors.InternalError("failed to compile rule", err)
 		}
 		re.mu.RLock()
 		compiled = re.compiledRules[rule.ID]
@@ -241,55 +242,50 @@ func (re *BasicRuleEngine) evaluateCompiledCondition(compiled *CompiledCondition
 }
 
 func (re *BasicRuleEngine) extractValue(conditionType, field string, request *RouteRequest) (string, error) {
-	switch conditionType {
-	case "path":
-		return request.Path, nil
+	// Value extractors map
+	extractors := map[string]func() (string, error){
+		"path":        func() (string, error) { return request.Path, nil },
+		"method":      func() (string, error) { return request.Method, nil },
+		"body":        func() (string, error) { return string(request.Body), nil },
+		"remote_addr": func() (string, error) { return request.RemoteAddr, nil },
+		"user_agent":  func() (string, error) { return request.UserAgent, nil },
+		"size":        func() (string, error) { return strconv.Itoa(len(request.Body)), nil },
 		
-	case "method":
-		return request.Method, nil
-		
-	case "header":
-		if field == "" {
-			return "", fmt.Errorf("header condition requires field name")
-		}
-		return request.Headers[field], nil
-		
-	case "query":
-		if field == "" {
-			return "", fmt.Errorf("query condition requires field name")
-		}
-		return request.QueryParams[field], nil
-		
-	case "body":
-		return string(request.Body), nil
-		
-	case "remote_addr":
-		return request.RemoteAddr, nil
-		
-	case "user_agent":
-		return request.UserAgent, nil
-		
-	case "body_json":
-		if field == "" {
-			return string(request.Body), nil
-		}
-		return re.extractJSONField(request.Body, field)
-		
-	case "size":
-		return strconv.Itoa(len(request.Body)), nil
-		
-	case "context":
-		if field == "" {
-			return "", fmt.Errorf("context condition requires field name")
-		}
-		if value, exists := request.Context[field]; exists {
-			return fmt.Sprintf("%v", value), nil
-		}
-		return "", nil
-		
-	default:
-		return "", fmt.Errorf("%w: %s", ErrUnsupportedConditionType, conditionType)
+		// Field-based extractors
+		"header": func() (string, error) {
+			if field == "" {
+				return "", ValidationError{Field: "header", Message: "header condition requires field name"}
+			}
+			return SafeAccess(request.Headers, field, ""), nil
+		},
+		"query": func() (string, error) {
+			if field == "" {
+				return "", ValidationError{Field: "query", Message: "query condition requires field name"}
+			}
+			return SafeAccess(request.QueryParams, field, ""), nil
+		},
+		"context": func() (string, error) {
+			if field == "" {
+				return "", ValidationError{Field: "context", Message: "context condition requires field name"}
+			}
+			if value, exists := request.Context[field]; exists {
+				return fmt.Sprintf("%v", value), nil
+			}
+			return "", nil
+		},
+		"body_json": func() (string, error) {
+			if field == "" {
+				return string(request.Body), nil
+			}
+			return re.extractJSONField(request.Body, field)
+		},
 	}
+	
+	if extractor, exists := extractors[conditionType]; exists {
+		return extractor()
+	}
+	
+	return "", fmt.Errorf("%w: %s", ErrUnsupportedConditionType, conditionType)
 }
 
 func (re *BasicRuleEngine) extractJSONField(body []byte, field string) (string, error) {

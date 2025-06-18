@@ -198,21 +198,30 @@ func (h *Handlers) StartTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For now, just update the status in database
-	// In a full implementation, this would interact with the trigger manager
-	trigger, err := h.storage.GetTrigger(id)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get trigger: %v", err), http.StatusNotFound)
+	// Check if trigger manager is available
+	if h.triggerManager == nil {
+		http.Error(w, "Trigger manager not initialized", http.StatusInternalServerError)
 		return
 	}
 
-	trigger.Status = "running"
-	trigger.Active = true
-	trigger.UpdatedAt = time.Now()
+	// Load trigger into manager if not already loaded
+	if _, err := h.triggerManager.GetTrigger(id); err != nil {
+		if err := h.triggerManager.LoadTrigger(id); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to load trigger: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
 
-	if err := h.storage.UpdateTrigger(trigger); err != nil {
+	// Start the trigger through the manager
+	if err := h.triggerManager.StartTrigger(id); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to start trigger: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// Get trigger details for response
+	trigger, err := h.storage.GetTrigger(id)
+	if err != nil {
+		trigger = &storage.Trigger{Name: fmt.Sprintf("Trigger %d", id)}
 	}
 
 	result := map[string]interface{}{
@@ -243,21 +252,22 @@ func (h *Handlers) StopTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For now, just update the status in database
-	// In a full implementation, this would interact with the trigger manager
-	trigger, err := h.storage.GetTrigger(id)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get trigger: %v", err), http.StatusNotFound)
+	// Check if trigger manager is available
+	if h.triggerManager == nil {
+		http.Error(w, "Trigger manager not initialized", http.StatusInternalServerError)
 		return
 	}
 
-	trigger.Status = "stopped"
-	trigger.Active = false
-	trigger.UpdatedAt = time.Now()
-
-	if err := h.storage.UpdateTrigger(trigger); err != nil {
+	// Stop the trigger through the manager
+	if err := h.triggerManager.StopTrigger(id); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to stop trigger: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// Get trigger details for response
+	trigger, err := h.storage.GetTrigger(id)
+	if err != nil {
+		trigger = &storage.Trigger{Name: fmt.Sprintf("Trigger %d", id)}
 	}
 
 	result := map[string]interface{}{

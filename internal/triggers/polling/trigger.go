@@ -1,36 +1,40 @@
 package polling
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/tls"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	
+	"webhook-router/internal/circuitbreaker"
+	"webhook-router/internal/common/auth"
+	"webhook-router/internal/common/base"
+	"webhook-router/internal/common/errors"
+	commonhttp "webhook-router/internal/common/http"
+	"webhook-router/internal/common/logging"
+	"webhook-router/internal/common/utils"
 	"webhook-router/internal/triggers"
 )
 
-// Trigger implements the polling trigger
+// Trigger implements the polling trigger using BaseTrigger
 type Trigger struct {
-	config           *Config
-	handler          triggers.TriggerHandler
-	isRunning        bool
-	mu               sync.RWMutex
-	lastExecution    *time.Time
-	nextExecution    *time.Time
-	ctx              context.Context
-	cancel           context.CancelFunc
-	client           *http.Client
-	lastState        string // For change detection
+	*base.BaseTrigger
+	config            *Config
+	nextExecution     *time.Time
+	client            *http.Client
+	lastState         string // For change detection
 	consecutiveErrors int
+	mu                sync.RWMutex
+	builder           *triggers.TriggerBuilder
+	authRegistry      *auth.AuthenticatorRegistry
+	circuitBreaker    *circuitbreaker.CircuitBreaker
 }
 
 // PollResult represents the result of a poll operation
@@ -45,500 +49,141 @@ type PollResult struct {
 	ChangeReason string            `json:"change_reason,omitempty"`
 }
 
+
 func NewTrigger(config *Config) *Trigger {
+	builder := triggers.NewTriggerBuilder("polling", config)
+	
 	// Create HTTP client with custom settings
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: config.ErrorHandling.IgnoreSSLErrors,
-		},
+	clientOpts := []commonhttp.ClientOption{
+		commonhttp.WithTimeout(config.GetRequestTimeout()),
 	}
 	
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   config.GetRequestTimeout(),
+	if config.ErrorHandling.IgnoreSSLErrors {
+		// Create a custom client with insecure TLS
+		transport := &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		}
+		client := &http.Client{
+			Transport: transport,
+			Timeout:   config.GetRequestTimeout(),
+		}
+		
+		trigger := &Trigger{
+			config:            config,
+			client:            client,
+			consecutiveErrors: 0,
+			builder:           builder,
+			authRegistry:      auth.NewAuthenticatorRegistry(),
+			circuitBreaker:    circuitbreaker.New(fmt.Sprintf("polling-trigger-%s", config.URL), circuitbreaker.PollingConfig),
+		}
+		
+		// Initialize BaseTrigger
+		trigger.BaseTrigger = builder.BuildBaseTrigger(nil)
+		return trigger
 	}
 	
-	return &Trigger{
+	// Use standard HTTP client factory
+	trigger := &Trigger{
 		config:            config,
-		isRunning:         false,
-		client:            client,
+		client:            commonhttp.NewHTTPClient(clientOpts...),
 		consecutiveErrors: 0,
+		builder:           builder,
+		authRegistry:      auth.NewAuthenticatorRegistry(),
+		circuitBreaker:    circuitbreaker.New(fmt.Sprintf("polling-trigger-%s", config.URL), circuitbreaker.PollingConfig),
 	}
+	
+	// Initialize BaseTrigger
+	trigger.BaseTrigger = builder.BuildBaseTrigger(nil)
+	
+	return trigger
 }
 
-func (t *Trigger) Name() string {
-	return t.config.Name
-}
-
-func (t *Trigger) Type() string {
-	return "polling"
-}
-
-func (t *Trigger) ID() int {
-	return t.config.ID
-}
-
-func (t *Trigger) Config() triggers.TriggerConfig {
-	return t.config
-}
-
-func (t *Trigger) IsRunning() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.isRunning
-}
-
-func (t *Trigger) LastExecution() *time.Time {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.lastExecution
-}
-
+// NextExecution returns the next scheduled execution time
 func (t *Trigger) NextExecution() *time.Time {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.nextExecution
 }
 
+// Start starts the polling trigger
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// Build BaseTrigger with the handler
+	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
 	
-	if t.isRunning {
-		return triggers.ErrTriggerAlreadyRunning
-	}
-	
-	t.handler = handler
-	t.isRunning = true
-	t.ctx, t.cancel = context.WithCancel(ctx)
-	t.consecutiveErrors = 0
-	
-	// Calculate next execution
-	next := time.Now().Add(t.config.GetPollingInterval())
-	t.nextExecution = &next
-	
-	// Start the polling loop
-	go t.pollLoop()
-	
-	log.Printf("Polling trigger '%s' started, polling %s every %v", 
-		t.config.Name, t.config.URL, t.config.GetPollingInterval())
-	return nil
+	// Use the BaseTrigger's Start method with our run function
+	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
+		return t.run(ctx)
+	})
 }
 
-func (t *Trigger) Stop() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+func (t *Trigger) run(ctx context.Context) error {
+	t.builder.Logger().Info("Polling trigger started",
+		logging.Field{"url", t.config.URL},
+		logging.Field{"interval", t.config.Interval},
+	)
 	
-	if !t.isRunning {
-		return triggers.ErrTriggerNotRunning
-	}
+	// Initial poll
+	t.poll(ctx)
 	
-	t.isRunning = false
-	if t.cancel != nil {
-		t.cancel()
-	}
-	
-	log.Printf("Polling trigger '%s' stopped", t.config.Name)
-	return nil
-}
-
-func (t *Trigger) Health() error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	
-	if !t.isRunning {
-		return fmt.Errorf("trigger is not running")
-	}
-	
-	// Check if we have too many consecutive errors
-	if t.consecutiveErrors > t.config.ErrorHandling.RetryCount {
-		return fmt.Errorf("too many consecutive errors: %d", t.consecutiveErrors)
-	}
-	
-	return nil
-}
-
-func (t *Trigger) pollLoop() {
-	ticker := time.NewTicker(t.config.GetPollingInterval())
+	// Create ticker for periodic polling
+	ticker := time.NewTicker(t.config.Interval)
 	defer ticker.Stop()
-	
-	// Execute immediately on start
-	t.executePoll()
 	
 	for {
 		select {
-		case <-ticker.C:
-			t.executePoll()
-		case <-t.ctx.Done():
-			return
+		case <-ctx.Done():
+			t.builder.Logger().Info("Polling trigger stopped")
+			return nil
+			
+		case tickTime := <-ticker.C:
+			// Update next execution
+			next := tickTime.Add(t.config.Interval)
+			t.mu.Lock()
+			t.nextExecution = &next
+			t.mu.Unlock()
+			
+			// Poll
+			t.poll(ctx)
 		}
 	}
 }
 
-func (t *Trigger) executePoll() {
-	// Update execution time
-	t.mu.Lock()
-	now := time.Now()
-	t.lastExecution = &now
-	next := now.Add(t.config.GetPollingInterval())
-	t.nextExecution = &next
-	t.mu.Unlock()
-	
-	// Perform the poll with retry logic
-	result := t.pollWithRetry()
-	
-	// Handle the result
-	if result.Error != "" {
-		t.handleError(result)
+func (t *Trigger) poll(ctx context.Context) {
+	// Perform the HTTP request with retries
+	result, err := t.performRequestWithRetries(ctx)
+	if err != nil {
+		t.handleError(err)
 		return
 	}
 	
-	// Reset consecutive errors on success
+	// Check if response indicates a change
+	changed, changeReason := t.detectChange(result)
+	result.Changed = changed
+	result.ChangeReason = changeReason
+	
+	if !changed && !t.config.AlwaysTrigger {
+		t.builder.Logger().Debug("No change detected, skipping trigger")
+		return
+	}
+	
+	// Reset error counter on success
 	t.mu.Lock()
 	t.consecutiveErrors = 0
 	t.mu.Unlock()
 	
-	// Check if response should be filtered
-	if t.config.ShouldFilterResponse(result.StatusCode, 
-		result.Headers["Content-Type"], result.Size, result.Body) {
-		log.Printf("Polling trigger '%s': response filtered out", t.config.Name)
-		return
-	}
-	
-	// Detect changes
-	changed, reason := t.detectChange(result)
-	if !changed {
-		log.Printf("Polling trigger '%s': no changes detected", t.config.Name)
-		return
-	}
-	
-	result.Changed = true
-	result.ChangeReason = reason
-	
 	// Create trigger event
-	event := t.createTriggerEvent(result)
-	
-	// Handle the event
-	if err := t.handler(event); err != nil {
-		log.Printf("Error handling polling trigger event for '%s': %v", t.config.Name, err)
-	} else {
-		log.Printf("Polling trigger '%s' fired: %s", t.config.Name, reason)
-	}
-}
-
-func (t *Trigger) pollWithRetry() *PollResult {
-	var lastResult *PollResult
-	
-	for attempt := 0; attempt <= t.config.ErrorHandling.RetryCount; attempt++ {
-		if attempt > 0 {
-			// Wait before retry
-			time.Sleep(t.config.ErrorHandling.RetryDelay)
-		}
-		
-		result := t.performPoll()
-		lastResult = result
-		
-		if result.Error == "" {
-			return result
-		}
-		
-		log.Printf("Polling attempt %d failed for trigger '%s': %s", 
-			attempt+1, t.config.Name, result.Error)
-	}
-	
-	return lastResult
-}
-
-func (t *Trigger) performPoll() *PollResult {
-	start := time.Now()
-	
-	// Create request
-	req, err := t.createRequest()
-	if err != nil {
-		return &PollResult{
-			Error:    fmt.Sprintf("Failed to create request: %v", err),
-			Duration: time.Since(start),
-		}
-	}
-	
-	// Perform request
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return &PollResult{
-			Error:    fmt.Sprintf("Request failed: %v", err),
-			Duration: time.Since(start),
-		}
-	}
-	defer resp.Body.Close()
-	
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return &PollResult{
-			StatusCode: resp.StatusCode,
-			Error:      fmt.Sprintf("Failed to read response body: %v", err),
-			Duration:   time.Since(start),
-		}
-	}
-	
-	// Extract headers
-	headers := make(map[string]string)
-	for name, values := range resp.Header {
-		if len(values) > 0 {
-			headers[name] = values[0]
-		}
-	}
-	
-	return &PollResult{
-		StatusCode: resp.StatusCode,
-		Headers:    headers,
-		Body:       string(body),
-		Size:       int64(len(body)),
-		Duration:   time.Since(start),
-	}
-}
-
-func (t *Trigger) createRequest() (*http.Request, error) {
-	// Create request body
-	var body io.Reader
-	if t.config.Body != "" {
-		body = strings.NewReader(t.config.Body)
-	}
-	
-	// Create request
-	req, err := http.NewRequestWithContext(t.ctx, t.config.Method, t.config.URL, body)
-	if err != nil {
-		return nil, err
-	}
-	
-	// Add headers
-	for key, value := range t.config.Headers {
-		req.Header.Set(key, value)
-	}
-	
-	// Add authentication
-	if err := t.addAuthentication(req); err != nil {
-		return nil, fmt.Errorf("authentication failed: %w", err)
-	}
-	
-	return req, nil
-}
-
-func (t *Trigger) addAuthentication(req *http.Request) error {
-	switch t.config.Authentication.Type {
-	case "none":
-		return nil
-		
-	case "basic":
-		username := t.config.Authentication.Settings["username"]
-		password := t.config.Authentication.Settings["password"]
-		req.SetBasicAuth(username, password)
-		return nil
-		
-	case "bearer":
-		token := t.config.Authentication.Settings["token"]
-		req.Header.Set("Authorization", "Bearer "+token)
-		return nil
-		
-	case "apikey":
-		key := t.config.Authentication.Settings["key"]
-		header := t.config.Authentication.Settings["header"]
-		req.Header.Set(header, key)
-		return nil
-		
-	case "oauth2":
-		// For OAuth2, we would need to implement token refresh logic
-		// For now, assume the token is provided in settings
-		token := t.config.Authentication.Settings["access_token"]
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		return nil
-		
-	default:
-		return fmt.Errorf("unsupported authentication type: %s", t.config.Authentication.Type)
-	}
-}
-
-func (t *Trigger) detectChange(result *PollResult) (bool, string) {
-	switch t.config.ChangeDetection.Type {
-	case "hash":
-		return t.detectHashChange(result)
-	case "content":
-		return t.detectContentChange(result)
-	case "header":
-		return t.detectHeaderChange(result)
-	case "jsonpath":
-		return t.detectJSONPathChange(result)
-	case "status_code":
-		return t.detectStatusCodeChange(result)
-	default:
-		return true, "unknown change detection type"
-	}
-}
-
-func (t *Trigger) detectHashChange(result *PollResult) (bool, string) {
-	// Create hash input
-	var hashInput string
-	
-	if len(t.config.ChangeDetection.HashFields) > 0 {
-		// Hash specific fields
-		for _, field := range t.config.ChangeDetection.HashFields {
-			switch field {
-			case "body":
-				hashInput += result.Body
-			case "status_code":
-				hashInput += strconv.Itoa(result.StatusCode)
-			default:
-				if value, exists := result.Headers[field]; exists {
-					hashInput += value
-				}
-			}
-		}
-	} else {
-		// Hash entire response body by default
-		hashInput = result.Body
-	}
-	
-	// Calculate hash
-	hasher := md5.New()
-	hasher.Write([]byte(hashInput))
-	currentHash := hex.EncodeToString(hasher.Sum(nil))
-	
-	// Check for change
-	if t.lastState == "" {
-		t.lastState = currentHash
-		return true, "initial poll"
-	}
-	
-	if currentHash != t.lastState {
-		t.lastState = currentHash
-		return true, "content hash changed"
-	}
-	
-	return false, ""
-}
-
-func (t *Trigger) detectContentChange(result *PollResult) (bool, string) {
-	if t.lastState == "" {
-		t.lastState = result.Body
-		return true, "initial poll"
-	}
-	
-	if result.Body != t.lastState {
-		t.lastState = result.Body
-		return true, "content changed"
-	}
-	
-	return false, ""
-}
-
-func (t *Trigger) detectHeaderChange(result *PollResult) (bool, string) {
-	headerValue := result.Headers[t.config.ChangeDetection.HeaderName]
-	
-	if t.lastState == "" {
-		t.lastState = headerValue
-		return true, "initial poll"
-	}
-	
-	if headerValue != t.lastState {
-		t.lastState = headerValue
-		return true, fmt.Sprintf("header '%s' changed", t.config.ChangeDetection.HeaderName)
-	}
-	
-	return false, ""
-}
-
-func (t *Trigger) detectJSONPathChange(result *PollResult) (bool, string) {
-	// Basic JSONPath implementation (would use a proper library in production)
-	var data interface{}
-	if err := json.Unmarshal([]byte(result.Body), &data); err != nil {
-		return false, ""
-	}
-	
-	// For simplicity, assume JSONPath is a simple field name
-	// In production, you'd use a proper JSONPath library
-	value := t.extractJSONValue(data, t.config.ChangeDetection.JSONPath)
-	currentValue := fmt.Sprintf("%v", value)
-	
-	if t.lastState == "" {
-		t.lastState = currentValue
-		return true, "initial poll"
-	}
-	
-	if currentValue != t.lastState {
-		t.lastState = currentValue
-		return true, fmt.Sprintf("JSONPath '%s' changed", t.config.ChangeDetection.JSONPath)
-	}
-	
-	return false, ""
-}
-
-func (t *Trigger) detectStatusCodeChange(result *PollResult) (bool, string) {
-	statusCode := strconv.Itoa(result.StatusCode)
-	
-	if t.lastState == "" {
-		t.lastState = statusCode
-		return true, "initial poll"
-	}
-	
-	if statusCode != t.lastState {
-		t.lastState = statusCode
-		return true, fmt.Sprintf("status code changed from %s to %s", t.lastState, statusCode)
-	}
-	
-	return false, ""
-}
-
-func (t *Trigger) extractJSONValue(data interface{}, path string) interface{} {
-	// Simple implementation - in production, use a JSONPath library
-	if m, ok := data.(map[string]interface{}); ok {
-		return m[path]
-	}
-	return nil
-}
-
-func (t *Trigger) handleError(result *PollResult) {
-	t.mu.Lock()
-	t.consecutiveErrors++
-	errors := t.consecutiveErrors
-	t.mu.Unlock()
-	
-	log.Printf("Polling trigger '%s' error (consecutive: %d): %s", 
-		t.config.Name, errors, result.Error)
-	
-	// Check if we should treat errors as changes
-	if t.config.ErrorHandling.TreatErrorAsChange {
-		// Create error event
-		event := t.createErrorEvent(result)
-		if err := t.handler(event); err != nil {
-			log.Printf("Error handling polling error event for '%s': %v", t.config.Name, err)
-		}
-	}
-	
-	// Send alert if configured and we've exceeded retry count
-	if t.config.ErrorHandling.AlertOnError && errors > t.config.ErrorHandling.RetryCount {
-		// Implementation for alerting would go here
-		log.Printf("Alert: Polling trigger '%s' has %d consecutive errors", t.config.Name, errors)
-	}
-}
-
-func (t *Trigger) createTriggerEvent(result *PollResult) *triggers.TriggerEvent {
-	return &triggers.TriggerEvent{
-		ID:          t.generateEventID(),
+	event := &triggers.TriggerEvent{
+		ID:          utils.GenerateEventID("polling", t.config.ID),
 		TriggerID:   t.config.ID,
 		TriggerName: t.config.Name,
 		Type:        "polling",
 		Timestamp:   time.Now(),
 		Data: map[string]interface{}{
-			"url":           t.config.URL,
-			"method":        t.config.Method,
-			"status_code":   result.StatusCode,
-			"body":          result.Body,
-			"size":          result.Size,
-			"duration_ms":   result.Duration.Milliseconds(),
-			"changed":       result.Changed,
-			"change_reason": result.ChangeReason,
+			"url":        t.config.URL,
+			"method":     t.config.Method,
+			"poll_result": result,
 		},
 		Headers: result.Headers,
 		Source: triggers.TriggerSource{
@@ -547,51 +192,339 @@ func (t *Trigger) createTriggerEvent(result *PollResult) *triggers.TriggerEvent 
 			URL:  t.config.URL,
 		},
 	}
+	
+	// Handle the event
+	if err := t.HandleEvent(event); err != nil {
+		t.builder.Logger().Error("Failed to handle polling event", err,
+			logging.Field{"event_id", event.ID},
+		)
+	}
 }
 
-func (t *Trigger) createErrorEvent(result *PollResult) *triggers.TriggerEvent {
-	return &triggers.TriggerEvent{
-		ID:          t.generateEventID(),
-		TriggerID:   t.config.ID,
-		TriggerName: t.config.Name,
-		Type:        "polling_error",
-		Timestamp:   time.Now(),
-		Data: map[string]interface{}{
-			"url":               t.config.URL,
-			"method":            t.config.Method,
-			"error":             result.Error,
-			"consecutive_errors": t.consecutiveErrors,
-			"duration_ms":       result.Duration.Milliseconds(),
-		},
+func (t *Trigger) performRequestWithRetries(ctx context.Context) (*PollResult, error) {
+	var result *PollResult
+	var lastErr error
+	
+	retryCount := t.config.ErrorHandling.MaxRetries
+	if retryCount <= 0 {
+		retryCount = 1
+	}
+	
+	for attempt := 0; attempt < retryCount; attempt++ {
+		if attempt > 0 {
+			// Wait before retry
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(t.config.ErrorHandling.RetryDelay):
+			}
+		}
+		
+		result, lastErr = t.performRequest(ctx)
+		if lastErr == nil {
+			return result, nil
+		}
+		
+		t.builder.Logger().Warn("Poll request failed, retrying",
+			logging.Field{"attempt", attempt + 1},
+			logging.Field{"error", lastErr.Error()},
+		)
+	}
+	
+	return result, lastErr
+}
+
+func (t *Trigger) performRequest(ctx context.Context) (*PollResult, error) {
+	start := time.Now()
+	result := &PollResult{
 		Headers: make(map[string]string),
-		Source: triggers.TriggerSource{
-			Type: "polling",
-			Name: t.config.Name,
-			URL:  t.config.URL,
-		},
-	}
-}
-
-func (t *Trigger) generateEventID() string {
-	return fmt.Sprintf("polling-%d-%d", t.config.ID, time.Now().UnixNano())
-}
-
-// Factory for creating polling triggers
-type Factory struct{}
-
-func (f *Factory) Create(config triggers.TriggerConfig) (triggers.Trigger, error) {
-	pollingConfig, ok := config.(*Config)
-	if !ok {
-		return nil, fmt.Errorf("invalid config type for polling trigger")
 	}
 	
-	if err := pollingConfig.Validate(); err != nil {
-		return nil, err
+	// Create request
+	body := strings.NewReader(t.config.Body)
+	req, err := http.NewRequestWithContext(ctx, t.config.Method, t.config.URL, body)
+	if err != nil {
+		return result, errors.InternalError("failed to create request", err)
 	}
 	
-	return NewTrigger(pollingConfig), nil
+	// Add headers
+	for name, value := range t.config.Headers {
+		req.Header.Set(name, value)
+	}
+	
+	// Handle authentication
+	if err := t.authenticate(req); err != nil {
+		return result, err
+	}
+	
+	// Perform request with circuit breaker protection
+	var resp *http.Response
+	err = t.circuitBreaker.Execute(ctx, func() error {
+		var httpErr error
+		resp, httpErr = t.client.Do(req)
+		return httpErr
+	})
+	duration := time.Since(start)
+	result.Duration = duration
+	
+	if err != nil {
+		result.Error = err.Error()
+		return result, errors.ConnectionError("request failed", err)
+	}
+	defer resp.Body.Close()
+	
+	// Extract response details
+	result.StatusCode = resp.StatusCode
+	
+	// Extract headers
+	for name, values := range resp.Header {
+		if len(values) > 0 {
+			result.Headers[name] = values[0]
+		}
+	}
+	
+	// Read body with size limit
+	maxSize := t.config.ResponseFilter.MaxSize
+	if maxSize <= 0 {
+		maxSize = 10 * 1024 * 1024 // 10MB default
+	}
+	
+	limitedReader := io.LimitReader(resp.Body, maxSize+1)
+	bodyBytes, err := io.ReadAll(limitedReader)
+	if err != nil {
+		result.Error = err.Error()
+		return result, errors.InternalError("failed to read response body", err)
+	}
+	
+	result.Body = string(bodyBytes)
+	result.Size = int64(len(bodyBytes))
+	
+	// Check if response passes filters
+	if !t.passesFilters(result) {
+		return result, errors.ValidationError("response did not pass configured filters")
+	}
+	
+	return result, nil
 }
 
-func (f *Factory) GetType() string {
-	return "polling"
+func (t *Trigger) authenticate(req *http.Request) error {
+	if t.config.Authentication.Type == "none" {
+		return nil
+	}
+	
+	// For OAuth2, we need special handling
+	if t.config.Authentication.Type == "oauth2" {
+		// This would integrate with the OAuth2 manager
+		// For now, we'll use bearer token if available
+		if token := t.config.Authentication.Settings["access_token"]; token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+			return nil
+		}
+	}
+	
+	// Use auth registry for other types
+	return t.authRegistry.Authenticate(
+		t.config.Authentication.Type,
+		req,
+		t.config.Authentication.Settings,
+	)
+}
+
+func (t *Trigger) detectChange(result *PollResult) (bool, string) {
+	// First poll - always consider as changed
+	if t.lastState == "" {
+		t.mu.Lock()
+		t.lastState = t.computeState(result)
+		t.mu.Unlock()
+		return true, "initial poll"
+	}
+	
+	// Compute new state
+	newState := t.computeState(result)
+	
+	t.mu.RLock()
+	oldState := t.lastState
+	t.mu.RUnlock()
+	
+	if newState != oldState {
+		t.mu.Lock()
+		t.lastState = newState
+		t.mu.Unlock()
+		return true, fmt.Sprintf("state changed from %s to %s", oldState[:8], newState[:8])
+	}
+	
+	return false, ""
+}
+
+func (t *Trigger) computeState(result *PollResult) string {
+	switch t.config.ChangeDetection.Type {
+	case "hash":
+		return t.computeHashState(result)
+	case "content":
+		return result.Body
+	case "header":
+		if t.config.ChangeDetection.HeaderName != "" {
+			return result.Headers[t.config.ChangeDetection.HeaderName]
+		}
+		return ""
+	case "status_code":
+		return strconv.Itoa(result.StatusCode)
+	case "jsonpath":
+		// Would implement JSONPath extraction here
+		return result.Body
+	default:
+		// Default to hash
+		return t.computeHashState(result)
+	}
+}
+
+func (t *Trigger) computeHashState(result *PollResult) string {
+	h := md5.New()
+	
+	// Include configured fields in hash
+	if len(t.config.ChangeDetection.HashFields) == 0 {
+		// Default: hash the body
+		h.Write([]byte(result.Body))
+	} else {
+		for _, field := range t.config.ChangeDetection.HashFields {
+			switch field {
+			case "body":
+				h.Write([]byte(result.Body))
+			case "status_code":
+				h.Write([]byte(strconv.Itoa(result.StatusCode)))
+			case "headers":
+				// Hash all headers
+				for name, value := range result.Headers {
+					h.Write([]byte(name + ":" + value))
+				}
+			default:
+				// Check if it's a specific header
+				if strings.HasPrefix(field, "header:") {
+					headerName := strings.TrimPrefix(field, "header:")
+					if value := result.Headers[headerName]; value != "" {
+						h.Write([]byte(value))
+					}
+				}
+			}
+		}
+	}
+	
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (t *Trigger) passesFilters(result *PollResult) bool {
+	if !t.config.ResponseFilter.Enabled {
+		return true
+	}
+	
+	filter := t.config.ResponseFilter
+	
+	// Check status codes
+	if len(filter.StatusCodes) > 0 {
+		found := false
+		for _, code := range filter.StatusCodes {
+			if result.StatusCode == code {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	
+	// Check content type
+	if filter.ContentType != "" {
+		contentType := result.Headers["Content-Type"]
+		if !strings.Contains(contentType, filter.ContentType) {
+			return false
+		}
+	}
+	
+	// Check size limits
+	if filter.MinSize > 0 && result.Size < filter.MinSize {
+		return false
+	}
+	if filter.MaxSize > 0 && result.Size > filter.MaxSize {
+		return false
+	}
+	
+	// Check required/excluded text
+	if filter.RequiredText != "" && !strings.Contains(result.Body, filter.RequiredText) {
+		return false
+	}
+	if filter.ExcludedText != "" && strings.Contains(result.Body, filter.ExcludedText) {
+		return false
+	}
+	
+	// Check JSON conditions
+	if filter.JSONCondition.Enabled {
+		// Would implement JSON condition checking here
+		// For now, pass
+	}
+	
+	return true
+}
+
+func (t *Trigger) handleError(err error) {
+	t.mu.Lock()
+	t.consecutiveErrors++
+	consecutiveErrors := t.consecutiveErrors
+	t.mu.Unlock()
+	
+	t.builder.Logger().Error("Polling failed", err,
+		logging.Field{"consecutive_errors", consecutiveErrors},
+	)
+	
+	// Check if we should treat error as change
+	if t.config.ErrorHandling.TreatErrorAsChange {
+		event := &triggers.TriggerEvent{
+			ID:          utils.GenerateEventID("polling-error", t.config.ID),
+			TriggerID:   t.config.ID,
+			TriggerName: t.config.Name,
+			Type:        "polling",
+			Timestamp:   time.Now(),
+			Data: map[string]interface{}{
+				"error":              err.Error(),
+				"consecutive_errors": consecutiveErrors,
+				"url":                t.config.URL,
+			},
+			Headers: make(map[string]string),
+			Source: triggers.TriggerSource{
+				Type: "polling",
+				Name: t.config.Name,
+				URL:  t.config.URL,
+			},
+		}
+		
+		if err := t.HandleEvent(event); err != nil {
+			t.builder.Logger().Error("Failed to handle error event", err)
+		}
+	}
+}
+
+// Health checks if the trigger is healthy
+func (t *Trigger) Health() error {
+	if !t.IsRunning() {
+		return errors.InternalError("trigger is not running", nil)
+	}
+	
+	// Check if we have too many consecutive errors
+	t.mu.RLock()
+	consecutiveErrors := t.consecutiveErrors
+	t.mu.RUnlock()
+	
+	if consecutiveErrors > 5 {
+		return errors.InternalError(
+			fmt.Sprintf("too many consecutive errors: %d", consecutiveErrors),
+			nil,
+		)
+	}
+	
+	return nil
+}
+
+// Config returns the trigger configuration
+func (t *Trigger) Config() triggers.TriggerConfig {
+	return t.config
 }

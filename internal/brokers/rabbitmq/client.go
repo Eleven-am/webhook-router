@@ -2,11 +2,11 @@ package rabbitmq
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/streadway/amqp"
+	"webhook-router/internal/common/logging"
 )
 
 type ConnectionPool struct {
@@ -15,6 +15,7 @@ type ConnectionPool struct {
 	connections chan *amqp.Connection
 	mu          sync.RWMutex
 	closed      bool
+	logger      logging.Logger
 }
 
 type Client struct {
@@ -24,10 +25,16 @@ type Client struct {
 }
 
 func NewConnectionPool(url string, maxSize int) (*ConnectionPool, error) {
+	logger := logging.GetGlobalLogger().WithFields(
+		logging.Field{"component", "rabbitmq_pool"},
+		logging.Field{"url", url},
+	)
+	
 	pool := &ConnectionPool{
 		url:         url,
 		maxSize:     maxSize,
 		connections: make(chan *amqp.Connection, maxSize),
+		logger:      logger,
 	}
 
 	// Pre-fill the pool with connections
@@ -103,7 +110,7 @@ func (p *ConnectionPool) Close() {
 	}
 }
 
-func (p *ConnectionPool) NewClient() (*Client, error) {
+func (p *ConnectionPool) NewClient() (ClientInterface, error) {
 	conn, err := p.GetConnection()
 	if err != nil {
 		return nil, err
@@ -147,13 +154,21 @@ func (c *Client) QueueBind(name, key, exchange string, noWait bool, args amqp.Ta
 	return c.ch.QueueBind(name, key, exchange, noWait, args)
 }
 
+// Consume starts consuming messages from a queue
+func (c *Client) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error) {
+	return c.ch.Consume(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
+}
+
 // PublishWebhook is a convenience method for publishing webhook data
 func (c *Client) PublishWebhook(queue, exchange, routingKey string, body []byte) error {
 	// Declare queue if it doesn't exist
 	if queue != "" {
 		_, err := c.QueueDeclare(queue, true, false, false, false, nil)
 		if err != nil {
-			log.Printf("Warning: failed to declare queue %s: %v", queue, err)
+			c.pool.logger.Warn("Failed to declare queue",
+				logging.Field{"queue", queue},
+				logging.Field{"error", err.Error()},
+			)
 		}
 	}
 
@@ -161,14 +176,22 @@ func (c *Client) PublishWebhook(queue, exchange, routingKey string, body []byte)
 	if exchange != "" {
 		err := c.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
 		if err != nil {
-			log.Printf("Warning: failed to declare exchange %s: %v", exchange, err)
+			c.pool.logger.Warn("Failed to declare exchange",
+				logging.Field{"exchange", exchange},
+				logging.Field{"error", err.Error()},
+			)
 		}
 
 		// Bind queue to exchange if both are specified
 		if queue != "" {
 			err = c.QueueBind(queue, routingKey, exchange, false, nil)
 			if err != nil {
-				log.Printf("Warning: failed to bind queue %s to exchange %s: %v", queue, exchange, err)
+				c.pool.logger.Warn("Failed to bind queue to exchange",
+					logging.Field{"queue", queue},
+					logging.Field{"exchange", exchange},
+					logging.Field{"routing_key", routingKey},
+					logging.Field{"error", err.Error()},
+				)
 			}
 		}
 	}

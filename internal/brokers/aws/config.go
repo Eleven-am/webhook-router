@@ -3,61 +3,62 @@ package aws
 import (
 	"fmt"
 	"time"
+	"webhook-router/internal/common/config"
+	"webhook-router/internal/common/validation"
 )
 
 type Config struct {
+	config.BaseConnConfig
+	
 	Region            string
 	AccessKeyID       string
 	SecretAccessKey   string
 	SessionToken      string // Optional for temporary credentials
 	QueueURL          string // For SQS
 	TopicArn          string // For SNS
-	Timeout           time.Duration
-	RetryMax          int
 	VisibilityTimeout int64 // SQS message visibility timeout in seconds
 	WaitTimeSeconds   int64 // SQS long polling wait time
 	MaxMessages       int64 // SQS max messages per receive
 }
 
 func (c *Config) Validate() error {
-	if c.Region == "" {
-		return fmt.Errorf("AWS region is required")
-	}
-
-	if c.AccessKeyID == "" {
-		return fmt.Errorf("AWS access key ID is required")
-	}
-
-	if c.SecretAccessKey == "" {
-		return fmt.Errorf("AWS secret access key is required")
-	}
-
+	v := validation.NewValidatorWithPrefix("AWS config")
+	
+	// Required fields
+	v.RequireString(c.Region, "region")
+	v.RequireString(c.AccessKeyID, "access_key_id")
+	v.RequireString(c.SecretAccessKey, "secret_access_key")
+	
+	// Either QueueURL or TopicArn is required
 	if c.QueueURL == "" && c.TopicArn == "" {
-		return fmt.Errorf("either QueueURL (for SQS) or TopicArn (for SNS) is required")
+		v.Validate(func() error {
+			return fmt.Errorf("either QueueURL (for SQS) or TopicArn (for SNS) is required")
+		})
 	}
-
-	// Set defaults
-	if c.Timeout <= 0 {
-		c.Timeout = 30 * time.Second
-	}
-
-	if c.RetryMax <= 0 {
-		c.RetryMax = 3
-	}
-
+	
+	// Set common connection defaults
+	c.SetConnectionDefaults(30 * time.Second)
+	
+	// Set AWS-specific defaults
 	if c.VisibilityTimeout <= 0 {
 		c.VisibilityTimeout = 30 // 30 seconds
 	}
-
+	
 	if c.WaitTimeSeconds < 0 {
 		c.WaitTimeSeconds = 20 // 20 seconds for long polling
 	}
-
+	
 	if c.MaxMessages <= 0 {
 		c.MaxMessages = 1 // Process one message at a time
 	}
-
-	return nil
+	
+	// Validate ranges
+	v.RequirePositive(c.RetryMax, "retry_max")
+	v.RequireNonNegative(int(c.VisibilityTimeout), "visibility_timeout")
+	v.RequireNonNegative(int(c.WaitTimeSeconds), "wait_time_seconds")
+	v.RequirePositive(int(c.MaxMessages), "max_messages")
+	
+	return v.Error()
 }
 
 func (c *Config) GetType() string {
@@ -75,12 +76,12 @@ func (c *Config) GetConnectionString() string {
 }
 
 func DefaultConfig() *Config {
-	return &Config{
+	config := &Config{
 		Region:            "us-east-1",
-		Timeout:           30 * time.Second,
-		RetryMax:          3,
 		VisibilityTimeout: 30,
 		WaitTimeSeconds:   20,
 		MaxMessages:       1,
 	}
+	config.SetConnectionDefaults(30 * time.Second)
+	return config
 }

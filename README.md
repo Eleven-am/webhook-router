@@ -669,9 +669,161 @@ For support and questions:
 - Check application logs and health endpoint
 - Verify RabbitMQ connection in Settings
 
+## 🏗️ Distributed Architecture
+
+### Simplified Distributed Executor
+
+The webhook router includes a simplified distributed task execution system for handling webhooks across multiple instances.
+
+#### Key Features
+
+1. **Cleaner Interface**: Simple `Execute()` and `ScheduleTask()` methods
+2. **Task-based API**: Everything is a `Task` with an ID and Execute method
+3. **Standalone Mode**: Works without distributed coordination
+4. **Flexible Coordination**: Pluggable coordinator interface
+
+#### Usage Example
+
+**Basic Usage**:
+```go
+// Create a simple task
+task := distributed.NewSimpleTask("process-webhook-123", func(ctx context.Context) error {
+    // Your task logic here
+    return processWebhook(ctx, webhookData)
+})
+
+// Execute the task
+err := executor.Execute(context.Background(), task)
+```
+
+**Integration with Trigger Manager**:
+```go
+// In main.go
+
+// Create executor based on configuration
+var executor distributed.Executor
+if redisClient != nil {
+    // Distributed mode
+    coordinator := NewRedisCoordinator(redisClient, nodeID)
+    executor = distributed.NewSimpleExecutor(nodeID, coordinator, distributed.ExecutorOptions{
+        EnableDistributed:      true,
+        LockTimeout:           10 * time.Second,
+        LeaderElectionInterval: 30 * time.Second,
+    })
+} else {
+    // Standalone mode
+    executor = distributed.NewStandaloneExecutor()
+}
+
+// Create trigger manager with simplified distributed support
+triggerManager := triggers.NewSimplifiedDistributedManager(
+    baseTriggerManager,
+    executor,
+)
+```
+
+**Custom Task Implementation**:
+```go
+type DataProcessingTask struct {
+    id     string
+    data   []byte
+    config ProcessingConfig
+}
+
+func (t *DataProcessingTask) ID() string {
+    return t.id
+}
+
+func (t *DataProcessingTask) Execute(ctx context.Context) error {
+    // Process data with timeout
+    ctx, cancel := context.WithTimeout(ctx, t.config.Timeout)
+    defer cancel()
+    
+    result, err := processData(ctx, t.data)
+    if err != nil {
+        return fmt.Errorf("processing failed: %w", err)
+    }
+    
+    return saveResult(ctx, result)
+}
+```
+
+#### Implementing a Coordinator
+
+To use distributed mode, implement the `Coordinator` interface:
+
+```go
+type RedisCoordinator struct {
+    client *redis.Client
+    nodeID string
+    logger logging.Logger
+}
+
+func (r *RedisCoordinator) AcquireLock(ctx context.Context, key string, ttl time.Duration) (distributed.Lock, error) {
+    // Implement Redis-based locking
+    lock := &RedisLock{
+        client: r.client,
+        key:    fmt.Sprintf("lock:%s", key),
+        value:  r.nodeID,
+        ttl:    ttl,
+    }
+    
+    // Try to acquire lock with SET NX EX
+    ok, err := r.client.SetNX(ctx, lock.key, lock.value, ttl).Result()
+    if err != nil {
+        return nil, err
+    }
+    if !ok {
+        return nil, errors.New("lock already held")
+    }
+    
+    return lock, nil
+}
+
+func (r *RedisCoordinator) IsLeader(ctx context.Context) bool {
+    // Check if this node holds the leader key
+    val, err := r.client.Get(ctx, "leader").Result()
+    if err != nil {
+        return false
+    }
+    return val == r.nodeID
+}
+
+func (r *RedisCoordinator) BecomeLeader(ctx context.Context) error {
+    // Try to become leader
+    return r.client.Set(ctx, "leader", r.nodeID, 30*time.Second).Err()
+}
+```
+
+#### Migration from Old System
+
+To migrate from the old distributed trigger system:
+
+1. Replace `DistributedManager` with `SimplifiedDistributedManager`
+2. Use the adapter for backward compatibility
+3. Gradually migrate to the task-based API
+
+```go
+// Old way
+dm := triggers.NewDistributedManager(manager, redisClient, lockManager, config)
+
+// New way
+executor := distributed.NewSimpleExecutor(nodeID, coordinator, options)
+dm := triggers.NewSimplifiedDistributedManager(manager, executor)
+```
+
+#### Benefits
+
+1. **Simpler API**: Fewer methods and clearer semantics
+2. **Better Testing**: Easy to mock and test
+3. **Flexible**: Works in both distributed and standalone modes
+4. **Extensible**: Easy to add new coordinator implementations
+5. **Type-safe**: Uses interfaces and generics where appropriate
+
 ## 🗺️ Roadmap
 
 - [x] Authentication and authorization
+- [x] Distributed task execution system
 - [ ] Prometheus metrics integration
 - [ ] Webhook signature validation
 - [ ] Rate limiting and throttling

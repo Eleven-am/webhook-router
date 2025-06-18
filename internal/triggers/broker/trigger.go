@@ -4,501 +4,680 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
+	
 	"webhook-router/internal/brokers"
+	"webhook-router/internal/brokers/aws"
+	"webhook-router/internal/brokers/gcp"
+	"webhook-router/internal/brokers/kafka"
+	"webhook-router/internal/brokers/rabbitmq"
+	redisbroker "webhook-router/internal/brokers/redis"
+	"webhook-router/internal/common/base"
+	"webhook-router/internal/common/errors"
+	"webhook-router/internal/common/logging"
+	"webhook-router/internal/common/utils"
+	"webhook-router/internal/pipeline/common"
 	"webhook-router/internal/triggers"
 )
 
-// Trigger implements the broker event trigger
+// Trigger implements the broker event trigger using BaseTrigger
 type Trigger struct {
+	*base.BaseTrigger
 	config        *Config
-	handler       triggers.TriggerHandler
-	isRunning     bool
-	mu            sync.RWMutex
-	lastExecution *time.Time
-	ctx           context.Context
-	cancel        context.CancelFunc
 	broker        brokers.Broker
 	messageCount  int64
 	errorCount    int64
+	mu            sync.RWMutex
+	builder       *triggers.TriggerBuilder
 }
 
+
 func NewTrigger(config *Config, brokerRegistry *brokers.Registry) (*Trigger, error) {
+	builder := triggers.NewTriggerBuilder("broker", config)
+	
 	// Create broker instance from config
 	brokerConfig, err := createBrokerConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create broker config: %w", err)
+		return nil, errors.ConfigError(fmt.Sprintf("failed to create broker config: %v", err))
 	}
 	
-	broker, err := brokerRegistry.Create(config.BrokerType, brokerConfig)
+	// Cast to BrokerConfig interface
+	bConfig, ok := brokerConfig.(brokers.BrokerConfig)
+	if !ok {
+		return nil, errors.ConfigError("invalid broker config type")
+	}
+	
+	broker, err := brokerRegistry.Create(config.BrokerType, bConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create broker: %w", err)
+		return nil, errors.InternalError("failed to create broker", err)
 	}
 	
-	return &Trigger{
+	trigger := &Trigger{
 		config:       config,
-		isRunning:    false,
 		broker:       broker,
 		messageCount: 0,
 		errorCount:   0,
-	}, nil
+		builder:      builder,
+	}
+	
+	// Initialize BaseTrigger
+	trigger.BaseTrigger = builder.BuildBaseTrigger(nil)
+	
+	return trigger, nil
 }
 
-func (t *Trigger) Name() string {
-	return t.config.Name
-}
-
-func (t *Trigger) Type() string {
-	return "broker"
-}
-
-func (t *Trigger) ID() int {
-	return t.config.ID
-}
-
-func (t *Trigger) Config() triggers.TriggerConfig {
-	return t.config
-}
-
-func (t *Trigger) IsRunning() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.isRunning
-}
-
-func (t *Trigger) LastExecution() *time.Time {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.lastExecution
-}
-
+// NextExecution returns nil as broker triggers are event-driven
 func (t *Trigger) NextExecution() *time.Time {
-	// Broker triggers don't have scheduled executions
 	return nil
 }
 
+// Start starts the broker trigger
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// Build BaseTrigger with the handler
+	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
 	
-	if t.isRunning {
-		return triggers.ErrTriggerAlreadyRunning
-	}
-	
-	t.handler = handler
-	t.isRunning = true
-	t.ctx, t.cancel = context.WithCancel(ctx)
-	
-	// Start subscribing to broker messages
-	if err := t.startSubscription(); err != nil {
-		t.isRunning = false
-		return fmt.Errorf("failed to start subscription: %w", err)
-	}
-	
-	log.Printf("Broker trigger '%s' started, listening to %s:%s", 
-		t.config.Name, t.config.BrokerType, t.config.Topic)
-	return nil
+	// Use the BaseTrigger's Start method with our run function
+	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
+		return t.run(ctx, handler)
+	})
 }
 
+// Stop stops the broker trigger
 func (t *Trigger) Stop() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	if !t.isRunning {
-		return triggers.ErrTriggerNotRunning
+	// First stop the base trigger
+	if err := t.BaseTrigger.Stop(); err != nil {
+		return err
 	}
 	
-	t.isRunning = false
-	if t.cancel != nil {
-		t.cancel()
-	}
-	
-	// Close broker connection
+	// Then close broker connection
 	if t.broker != nil {
-		t.broker.Close()
-	}
-	
-	log.Printf("Broker trigger '%s' stopped", t.config.Name)
-	return nil
-}
-
-func (t *Trigger) Health() error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	
-	if !t.isRunning {
-		return fmt.Errorf("trigger is not running")
-	}
-	
-	// Check broker health
-	if t.broker == nil {
-		return fmt.Errorf("broker not initialized")
-	}
-	
-	if err := t.broker.Health(); err != nil {
-		return fmt.Errorf("broker health check failed: %w", err)
+		if err := t.broker.Close(); err != nil {
+			t.builder.Logger().Error("Failed to close broker", err)
+		}
 	}
 	
 	return nil
 }
 
-func (t *Trigger) startSubscription() error {
-	// Create message handler for broker
-	messageHandler := func(message *brokers.IncomingMessage) error {
-		return t.handleBrokerMessage(message)
+func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) error {
+	// Connect to broker with config
+	brokerConfig, err := createBrokerConfig(t.config)
+	if err != nil {
+		return errors.ConfigError(fmt.Sprintf("failed to create broker config: %v", err))
 	}
 	
-	// Subscribe to the topic/queue
-	topic := t.config.GetTopic()
-	if t.config.GetRoutingKey() != "" {
-		// For RabbitMQ with routing key
-		topic = t.config.GetRoutingKey()
+	bConfig, ok := brokerConfig.(brokers.BrokerConfig)
+	if !ok {
+		return errors.ConfigError("invalid broker config type")
 	}
 	
-	return t.broker.Subscribe(topic, messageHandler)
-}
-
-func (t *Trigger) handleBrokerMessage(message *brokers.IncomingMessage) error {
-	// Update execution time
-	t.mu.Lock()
-	now := time.Now()
-	t.lastExecution = &now
-	t.messageCount++
-	messageCount := t.messageCount
-	t.mu.Unlock()
+	if err := t.broker.Connect(bConfig); err != nil {
+		return errors.ConnectionError("failed to connect to broker", err)
+	}
 	
-	// Check if message should be filtered
-	if t.config.ShouldFilterMessage(message.Headers, string(message.Body), int64(len(message.Body))) {
-		log.Printf("Broker trigger '%s': message filtered out", t.config.Name)
+	t.builder.Logger().Info("Broker trigger started",
+		logging.Field{"topic", t.config.Topic},
+		logging.Field{"consumer_group", t.config.ConsumerGroup},
+	)
+	
+	// Create message handler
+	messageHandler := func(msg *brokers.IncomingMessage) error {
+		t.processMessage(ctx, msg, handler)
 		return nil
 	}
 	
-	// Process the message with retry logic
-	return t.processMessageWithRetry(message, 1)
-}
-
-func (t *Trigger) processMessageWithRetry(message *brokers.IncomingMessage, attempt int) error {
-	// Create trigger event from broker message
-	event, err := t.createTriggerEvent(message)
-	if err != nil {
-		log.Printf("Error creating trigger event for '%s': %v", t.config.Name, err)
-		return t.handleError(message, err, attempt)
+	// Subscribe to topic
+	if err := t.broker.Subscribe(ctx, t.config.Topic, messageHandler); err != nil {
+		return errors.ConnectionError("failed to subscribe to broker", err)
 	}
 	
-	// Handle the event
-	if err := t.handler(event); err != nil {
-		log.Printf("Error handling broker trigger event for '%s': %v", t.config.Name, err)
-		return t.handleError(message, err, attempt)
-	}
-	
-	log.Printf("Broker trigger '%s' processed message successfully", t.config.Name)
+	// Wait for context cancellation
+	<-ctx.Done()
+	t.builder.Logger().Info("Broker trigger stopped")
 	return nil
 }
 
-func (t *Trigger) handleError(message *brokers.IncomingMessage, err error, attempt int) error {
-	t.mu.Lock()
-	t.errorCount++
-	errorCount := t.errorCount
-	t.mu.Unlock()
+func (t *Trigger) processMessage(ctx context.Context, msg *brokers.IncomingMessage, handler triggers.TriggerHandler) {
+	atomic.AddInt64(&t.messageCount, 1)
 	
-	log.Printf("Broker trigger '%s' error (attempt %d, total errors: %d): %v", 
-		t.config.Name, attempt, errorCount, err)
-	
-	// Check if we should retry
-	if t.config.ShouldRetry(attempt) {
-		log.Printf("Retrying broker trigger '%s' in %v", t.config.Name, t.config.GetRetryDelay())
-		
-		// Retry after delay
-		go func() {
-			time.Sleep(t.config.GetRetryDelay())
-			t.processMessageWithRetry(message, attempt+1)
-		}()
-		
-		return nil // Don't return error to broker (we're handling retry)
+	// Check if message passes filters
+	if !t.passesFilters(msg) {
+		t.builder.Logger().Debug("Message filtered out",
+			logging.Field{"message_id", msg.ID},
+		)
+		return
 	}
 	
-	// Send to dead letter queue if configured
-	if t.config.ErrorHandling.DeadLetterQueue != "" {
-		t.sendToDeadLetterQueue(message, err)
-	}
-	
-	// Send alert if configured
-	if t.config.ErrorHandling.AlertOnError {
-		t.sendErrorAlert(message, err, attempt)
-	}
-	
-	// Return error based on configuration
-	if t.config.ErrorHandling.IgnoreErrors {
-		return nil // Don't propagate error
-	}
-	
-	return err
-}
-
-func (t *Trigger) createTriggerEvent(message *brokers.IncomingMessage) (*triggers.TriggerEvent, error) {
-	// Create base event
+	// Create trigger event
 	event := &triggers.TriggerEvent{
-		ID:          t.generateEventID(),
+		ID:          utils.GenerateEventID("broker", t.config.ID),
 		TriggerID:   t.config.ID,
 		TriggerName: t.config.Name,
 		Type:        "broker",
-		Timestamp:   message.Timestamp,
+		Timestamp:   time.Now(),
 		Data: map[string]interface{}{
-			"message_id":     message.ID,
-			"body":           string(message.Body),
-			"broker_type":    t.config.BrokerType,
-			"topic":          t.config.Topic,
-			"routing_key":    t.config.RoutingKey,
-			"consumer_group": t.config.ConsumerGroup,
+			"message_id":   msg.ID,
+			"body":         string(msg.Body),
+			"broker_type":  t.config.BrokerType,
+			"topic":        t.config.Topic,
+			"timestamp":    msg.Timestamp,
+			"metadata":     msg.Metadata,
 		},
-		Headers: make(map[string]string),
+		Headers: msg.Headers,
 		Source: triggers.TriggerSource{
 			Type: "broker",
 			Name: t.config.Name,
-			URL:  message.Source.URL,
 		},
 	}
 	
-	// Copy original headers
-	for key, value := range message.Headers {
-		event.Headers[key] = value
-	}
-	
-	// Add broker metadata
-	for key, value := range message.Metadata {
-		event.Data[fmt.Sprintf("metadata_%s", key)] = value
-	}
-	
-	// Apply transformations if enabled
+	// Apply transformations
 	if t.config.Transformation.Enabled {
-		if err := t.applyTransformations(event, message); err != nil {
-			return nil, fmt.Errorf("transformation failed: %w", err)
-		}
+		t.applyTransformations(event, msg)
 	}
 	
-	return event, nil
+	// Handle the event through the handler directly
+	err := handler(event)
+	
+	if err != nil {
+		atomic.AddInt64(&t.errorCount, 1)
+		t.handleMessageError(msg, err)
+	}
 }
 
-func (t *Trigger) applyTransformations(event *triggers.TriggerEvent, message *brokers.IncomingMessage) error {
+func (t *Trigger) passesFilters(msg *brokers.IncomingMessage) bool {
+	if !t.config.MessageFilter.Enabled {
+		return true
+	}
+	
+	filter := t.config.MessageFilter
+	
+	// Check headers
+	for name, value := range filter.Headers {
+		if msg.Headers[name] != value {
+			return false
+		}
+	}
+	
+	// Check content type
+	if filter.ContentType != "" {
+		contentType := msg.Headers["Content-Type"]
+		if !strings.Contains(contentType, filter.ContentType) {
+			return false
+		}
+	}
+	
+	// Check body contains/not contains
+	bodyStr := string(msg.Body)
+	if filter.BodyContains != "" && !strings.Contains(bodyStr, filter.BodyContains) {
+		return false
+	}
+	if filter.BodyNotContains != "" && strings.Contains(bodyStr, filter.BodyNotContains) {
+		return false
+	}
+	
+	// Check size limits
+	msgSize := int64(len(msg.Body))
+	if filter.MinSize > 0 && msgSize < filter.MinSize {
+		return false
+	}
+	if filter.MaxSize > 0 && msgSize > filter.MaxSize {
+		return false
+	}
+	
+	// Check JSON conditions
+	if filter.JSONCondition.Enabled {
+		if !t.checkJSONCondition(msg.Body, &filter.JSONCondition) {
+			return false
+		}
+	}
+	
+	return true
+}
+
+func (t *Trigger) applyTransformations(event *triggers.TriggerEvent, msg *brokers.IncomingMessage) {
+	transform := t.config.Transformation
+	
 	// Apply header mapping
-	if len(t.config.Transformation.HeaderMapping) > 0 {
+	if len(transform.HeaderMapping) > 0 {
 		newHeaders := make(map[string]string)
-		for oldName, newName := range t.config.Transformation.HeaderMapping {
+		for oldName, newName := range transform.HeaderMapping {
 			if value, exists := event.Headers[oldName]; exists {
 				newHeaders[newName] = value
-				delete(event.Headers, oldName)
 			}
 		}
+		// Merge with existing headers
 		for k, v := range newHeaders {
 			event.Headers[k] = v
 		}
 	}
 	
-	// Add additional headers
-	for key, value := range t.config.Transformation.AddHeaders {
-		event.Headers[key] = value
-	}
-	
-	// Apply body template transformation
-	if t.config.Transformation.BodyTemplate != "" {
-		transformedBody, err := t.processBodyTemplate(message)
-		if err != nil {
-			return fmt.Errorf("body template processing failed: %w", err)
-		}
-		event.Data["body"] = transformedBody
+	// Add configured headers
+	for name, value := range transform.AddHeaders {
+		event.Headers[name] = value
 	}
 	
 	// Extract fields
-	if len(t.config.Transformation.ExtractFields) > 0 {
-		extracted := make(map[string]interface{})
-		for _, field := range t.config.Transformation.ExtractFields {
-			value, err := t.extractField(field, message)
-			if err != nil && field.Required {
-				return fmt.Errorf("failed to extract required field '%s': %w", field.Name, err)
-			}
-			if err == nil {
-				extracted[field.Name] = value
-			} else if field.DefaultValue != "" {
-				extracted[field.Name] = field.DefaultValue
+	for _, field := range transform.ExtractFields {
+		value := t.extractField(msg, field)
+		if value != "" || !field.Required {
+			event.Data[field.Name] = value
+		}
+	}
+	
+	// Apply body template if configured
+	if transform.BodyTemplate != "" {
+		tmpl, err := template.New("body").Parse(transform.BodyTemplate)
+		if err != nil {
+			t.builder.Logger().Error("Failed to parse body template", err)
+			return
+		}
+		
+		var buf strings.Builder
+		templateData := map[string]interface{}{
+			"Event":   event,
+			"Message": msg,
+		}
+		
+		if err := tmpl.Execute(&buf, templateData); err != nil {
+			t.builder.Logger().Error("Failed to execute body template", err)
+			return
+		}
+		
+		// Try to parse result as JSON
+		var transformedBody interface{}
+		if err := json.Unmarshal([]byte(buf.String()), &transformedBody); err == nil {
+			event.Data["body"] = transformedBody
+		} else {
+			event.Data["body"] = buf.String()
+		}
+	}
+}
+
+func (t *Trigger) extractField(msg *brokers.IncomingMessage, field ExtractFieldConfig) string {
+	switch field.Source {
+	case "header":
+		if value, exists := msg.Headers[field.Path]; exists {
+			return value
+		}
+		
+	case "metadata":
+		// Extract from message metadata
+		switch field.Path {
+		case "id":
+			return msg.ID
+		case "timestamp":
+			return msg.Timestamp.Format(time.RFC3339)
+		case "source_name":
+			return msg.Source.Name
+		case "source_type":
+			return msg.Source.Type
+		default:
+			// Check in metadata map
+			if val, exists := msg.Metadata[field.Path]; exists {
+				return fmt.Sprintf("%v", val)
 			}
 		}
-		event.Data["extracted_fields"] = extracted
+		
+	case "body":
+		// Extract from JSON body using dot notation
+		if field.Path == "" {
+			return string(msg.Body)
+		}
+		
+		// Parse JSON and extract field
+		var data map[string]interface{}
+		if err := json.Unmarshal(msg.Body, &data); err != nil {
+			t.builder.Logger().Debug("Failed to parse JSON body for field extraction",
+				logging.Field{"error", err.Error()},
+				logging.Field{"field_path", field.Path},
+			)
+			return field.DefaultValue
+		}
+		
+		value := common.GetFieldValue(data, field.Path)
+		if value != nil {
+			return fmt.Sprintf("%v", value)
+		}
+	}
+	
+	return field.DefaultValue
+}
+
+func (t *Trigger) handleMessageError(msg *brokers.IncomingMessage, err error) {
+	t.builder.Logger().Error("Failed to process message", err,
+		logging.Field{"message_id", msg.ID},
+	)
+	
+	// Send to DLQ if configured
+	if t.config.ErrorHandling.DeadLetterQueue != "" {
+		// Create a broker message from the incoming message for logging purposes
+		// Note: In a full implementation, this would be sent to the DLQ broker
+		
+		// Log that message should be sent to DLQ with detailed information
+		t.builder.Logger().Error("Message failed processing, should be sent to DLQ",
+			errors.InternalError("DLQ not implemented yet", err),
+			logging.Field{"message_id", msg.ID},
+			logging.Field{"dlq_queue", t.config.ErrorHandling.DeadLetterQueue},
+			logging.Field{"original_error", err.Error()},
+		)
+		
+		// TODO: When broker manager is accessible from trigger:
+		// if dlq, err := t.brokerManager.GetDLQ(t.brokerID); err == nil {
+		//     if err := dlq.SendToFail(t.config.ID, brokerMsg, err); err != nil {
+		//         t.builder.Logger().Error("Failed to send message to DLQ", err,
+		//             logging.Field{"message_id", msg.ID},
+		//         )
+		//     }
+		// }
+	}
+	
+	// Alert if configured (skipping for now as requested)
+	if t.config.ErrorHandling.AlertOnError {
+		t.builder.Logger().Warn("Alert should be sent for message processing failure",
+			logging.Field{"message_id", msg.ID},
+		)
+	}
+}
+
+// Health checks if the trigger is healthy
+func (t *Trigger) Health() error {
+	if !t.IsRunning() {
+		return errors.InternalError("trigger is not running", nil)
+	}
+	
+	// Check broker connection
+	if t.broker != nil {
+		if err := t.broker.Health(); err != nil {
+			return errors.ConnectionError("broker unhealthy", err)
+		}
+	}
+	
+	// Check error rate
+	msgCount := atomic.LoadInt64(&t.messageCount)
+	errCount := atomic.LoadInt64(&t.errorCount)
+	
+	if msgCount > 100 && float64(errCount)/float64(msgCount) > 0.5 {
+		return errors.InternalError(
+			fmt.Sprintf("high error rate: %d errors out of %d messages", errCount, msgCount),
+			nil,
+		)
 	}
 	
 	return nil
 }
 
-func (t *Trigger) processBodyTemplate(message *brokers.IncomingMessage) (string, error) {
-	// Create template variables
-	vars := map[string]interface{}{
-		"message_id":     message.ID,
-		"body":           string(message.Body),
-		"timestamp":      message.Timestamp,
-		"source":         message.Source,
-		"headers":        message.Headers,
-		"metadata":       message.Metadata,
-		"trigger_name":   t.config.Name,
-		"trigger_id":     t.config.ID,
-		"broker_type":    t.config.BrokerType,
-		"topic":          t.config.Topic,
-	}
-	
-	// Process template
-	tmpl, err := template.New("body").Parse(t.config.Transformation.BodyTemplate)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse template: %w", err)
-	}
-	
-	var buf strings.Builder
-	if err := tmpl.Execute(&buf, vars); err != nil {
-		return "", fmt.Errorf("failed to execute template: %w", err)
-	}
-	
-	return buf.String(), nil
-}
-
-func (t *Trigger) extractField(field ExtractFieldConfig, message *brokers.IncomingMessage) (interface{}, error) {
-	switch field.Source {
-	case "header":
-		value, exists := message.Headers[field.Path]
-		if !exists {
-			return nil, fmt.Errorf("header '%s' not found", field.Path)
-		}
-		return value, nil
-		
-	case "metadata":
-		value, exists := message.Metadata[field.Path]
-		if !exists {
-			return nil, fmt.Errorf("metadata '%s' not found", field.Path)
-		}
-		return value, nil
-		
-	case "body":
-		// For body extraction, use JSONPath or simple field name
-		if field.Path != "" {
-			return t.extractFromJSON(string(message.Body), field.Path)
-		}
-		return string(message.Body), nil
-		
-	default:
-		return nil, fmt.Errorf("unsupported source: %s", field.Source)
+// GetStats returns trigger statistics
+func (t *Trigger) GetStats() map[string]interface{} {
+	return map[string]interface{}{
+		"message_count": atomic.LoadInt64(&t.messageCount),
+		"error_count":   atomic.LoadInt64(&t.errorCount),
+		"broker_type":   t.config.BrokerType,
+		"topic":         t.config.Topic,
 	}
 }
 
-func (t *Trigger) extractFromJSON(body, path string) (interface{}, error) {
-	// Simple JSON extraction (would use a proper JSONPath library in production)
-	var data interface{}
-	if err := json.Unmarshal([]byte(body), &data); err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-	
-	// Simple field extraction (path is field name)
-	if m, ok := data.(map[string]interface{}); ok {
-		if value, exists := m[path]; exists {
-			return value, nil
-		}
-	}
-	
-	return nil, fmt.Errorf("field '%s' not found in JSON", path)
-}
-
-func (t *Trigger) sendToDeadLetterQueue(message *brokers.IncomingMessage, err error) {
-	// Create dead letter message
-	dlqMessage := &brokers.Message{
-		Queue:      t.config.ErrorHandling.DeadLetterQueue,
-		RoutingKey: "error",
-		Headers: map[string]string{
-			"original_trigger": t.config.Name,
-			"error_message":    err.Error(),
-			"error_time":       time.Now().Format(time.RFC3339),
-			"original_topic":   t.config.Topic,
-		},
-		Body:      message.Body,
-		Timestamp: time.Now(),
-		MessageID: fmt.Sprintf("dlq-%s", message.ID),
-	}
-	
-	// Copy original headers with prefix
-	for key, value := range message.Headers {
-		dlqMessage.Headers["original_"+key] = value
-	}
-	
-	// Send to dead letter queue
-	if err := t.broker.Publish(dlqMessage); err != nil {
-		log.Printf("Failed to send message to dead letter queue: %v", err)
-	} else {
-		log.Printf("Message sent to dead letter queue: %s", t.config.ErrorHandling.DeadLetterQueue)
-	}
-}
-
-func (t *Trigger) sendErrorAlert(message *brokers.IncomingMessage, err error, attempt int) {
-	// Create alert (this would integrate with alerting system)
-	alert := map[string]interface{}{
-		"trigger_name":     t.config.Name,
-		"trigger_id":       t.config.ID,
-		"error_message":    err.Error(),
-		"message_id":       message.ID,
-		"attempt":          attempt,
-		"timestamp":        time.Now(),
-		"broker_type":      t.config.BrokerType,
-		"topic":            t.config.Topic,
-		"total_errors":     t.errorCount,
-		"total_messages":   t.messageCount,
-	}
-	
-	log.Printf("ALERT: Broker trigger error: %+v", alert)
-	// In production, this would send to an alerting system
-}
-
-func (t *Trigger) generateEventID() string {
-	return fmt.Sprintf("broker-%d-%d", t.config.ID, time.Now().UnixNano())
-}
-
-// Helper function to create broker config from trigger config
-func createBrokerConfig(config *Config) (brokers.BrokerConfig, error) {
+// createBrokerConfig creates broker-specific configuration
+func createBrokerConfig(config *Config) (interface{}, error) {
 	switch config.BrokerType {
 	case "rabbitmq":
-		// Would import and use the appropriate broker config types
-		return nil, fmt.Errorf("RabbitMQ broker config creation not implemented")
+		return createRabbitMQConfig(config.BrokerConfig)
 	case "kafka":
-		return nil, fmt.Errorf("Kafka broker config creation not implemented")
+		return createKafkaConfig(config.BrokerConfig)
 	case "redis":
-		return nil, fmt.Errorf("Redis broker config creation not implemented")
+		return createRedisConfig(config.BrokerConfig)
 	case "aws":
-		return nil, fmt.Errorf("AWS broker config creation not implemented")
+		return createAWSConfig(config.BrokerConfig)
+	case "gcp":
+		return createGCPConfig(config.BrokerConfig)
 	default:
 		return nil, fmt.Errorf("unsupported broker type: %s", config.BrokerType)
 	}
 }
 
-// Factory for creating broker triggers
-type Factory struct {
-	brokerRegistry *brokers.Registry
-}
-
-func NewFactory(brokerRegistry *brokers.Registry) *Factory {
-	return &Factory{
-		brokerRegistry: brokerRegistry,
+func createRabbitMQConfig(configMap map[string]interface{}) (*rabbitmq.Config, error) {
+	cfg := &rabbitmq.Config{}
+	
+	if url, ok := configMap["url"].(string); ok {
+		cfg.URL = url
 	}
-}
-
-func (f *Factory) Create(config triggers.TriggerConfig) (triggers.Trigger, error) {
-	brokerConfig, ok := config.(*Config)
-	if !ok {
-		return nil, fmt.Errorf("invalid config type for broker trigger")
+	if poolSize, ok := configMap["pool_size"].(float64); ok {
+		cfg.PoolSize = int(poolSize)
+	} else {
+		cfg.PoolSize = 5 // default
 	}
 	
-	if err := brokerConfig.Validate(); err != nil {
-		return nil, err
-	}
-	
-	return NewTrigger(brokerConfig, f.brokerRegistry)
+	return cfg, nil
 }
 
-func (f *Factory) GetType() string {
-	return "broker"
+func createKafkaConfig(configMap map[string]interface{}) (*kafka.Config, error) {
+	cfg := &kafka.Config{}
+	
+	if brokers, ok := configMap["brokers"].([]interface{}); ok {
+		for _, broker := range brokers {
+			if b, ok := broker.(string); ok {
+				cfg.Brokers = append(cfg.Brokers, b)
+			}
+		}
+	}
+	if clientID, ok := configMap["client_id"].(string); ok {
+		cfg.ClientID = clientID
+	}
+	if groupID, ok := configMap["group_id"].(string); ok {
+		cfg.GroupID = groupID
+	}
+	
+	return cfg, nil
+}
+
+func createRedisConfig(configMap map[string]interface{}) (*redisbroker.Config, error) {
+	cfg := &redisbroker.Config{}
+	
+	if address, ok := configMap["address"].(string); ok {
+		cfg.Address = address
+	}
+	if password, ok := configMap["password"].(string); ok {
+		cfg.Password = password
+	}
+	if db, ok := configMap["db"].(float64); ok {
+		cfg.DB = int(db)
+	}
+	if poolSize, ok := configMap["pool_size"].(float64); ok {
+		cfg.PoolSize = int(poolSize)
+	} else {
+		cfg.PoolSize = 10 // default
+	}
+	if consumerGroup, ok := configMap["consumer_group"].(string); ok {
+		cfg.ConsumerGroup = consumerGroup
+	}
+	
+	return cfg, nil
+}
+
+func createAWSConfig(configMap map[string]interface{}) (*aws.Config, error) {
+	cfg := &aws.Config{}
+	
+	if region, ok := configMap["region"].(string); ok {
+		cfg.Region = region
+	}
+	if accessKeyID, ok := configMap["access_key_id"].(string); ok {
+		cfg.AccessKeyID = accessKeyID
+	}
+	if secretAccessKey, ok := configMap["secret_access_key"].(string); ok {
+		cfg.SecretAccessKey = secretAccessKey
+	}
+	if queueURL, ok := configMap["queue_url"].(string); ok {
+		cfg.QueueURL = queueURL
+	}
+	if topicArn, ok := configMap["topic_arn"].(string); ok {
+		cfg.TopicArn = topicArn
+	}
+	
+	return cfg, nil
+}
+
+// Config returns the trigger configuration
+func (t *Trigger) Config() triggers.TriggerConfig {
+	return t.config
+}
+
+// checkJSONCondition checks if the JSON message body matches the specified condition
+func (t *Trigger) checkJSONCondition(body []byte, condition *JSONConditionConfig) bool {
+	var data map[string]interface{}
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.builder.Logger().Debug("Failed to parse JSON for condition check",
+			logging.Field{"error", err.Error()},
+		)
+		return false
+	}
+	
+	// Extract the value at the specified path
+	var testValue interface{}
+	if condition.Path == "" {
+		// No path means check the entire body
+		testValue = data
+	} else {
+		testValue = common.GetFieldValue(data, condition.Path)
+	}
+	
+	// Check "exists" operator first
+	if condition.Operator == "exists" {
+		return testValue != nil
+	}
+	
+	// If value doesn't exist and operator is not "exists", condition fails
+	if testValue == nil {
+		return false
+	}
+	
+	// Convert test value to string for comparison
+	testValueStr := fmt.Sprintf("%v", testValue)
+	
+	// Handle numeric comparisons if value type is number
+	if condition.ValueType == "number" {
+		return t.checkNumericCondition(testValueStr, condition.Operator, condition.Value)
+	}
+	
+	// Handle boolean comparisons
+	if condition.ValueType == "boolean" {
+		return t.checkBooleanCondition(testValueStr, condition.Operator, condition.Value)
+	}
+	
+	// String comparisons
+	switch condition.Operator {
+	case "eq":
+		return testValueStr == condition.Value
+	case "ne":
+		return testValueStr != condition.Value
+	case "contains":
+		return strings.Contains(testValueStr, condition.Value)
+	case "starts_with":
+		return strings.HasPrefix(testValueStr, condition.Value)
+	case "ends_with":
+		return strings.HasSuffix(testValueStr, condition.Value)
+	case "regex":
+		if regex, err := regexp.Compile(condition.Value); err == nil {
+			return regex.MatchString(testValueStr)
+		}
+		return false
+	case "in":
+		// Value should be comma-separated list
+		values := strings.Split(condition.Value, ",")
+		for _, v := range values {
+			if strings.TrimSpace(v) == testValueStr {
+				return true
+			}
+		}
+		return false
+	default:
+		t.builder.Logger().Warn("Unknown JSON condition operator",
+			logging.Field{"operator", condition.Operator},
+		)
+		return false
+	}
+}
+
+func (t *Trigger) checkNumericCondition(testValue, operator, compareValue string) bool {
+	testNum, err := strconv.ParseFloat(testValue, 64)
+	if err != nil {
+		return false
+	}
+	
+	compareNum, err := strconv.ParseFloat(compareValue, 64)
+	if err != nil {
+		return false
+	}
+	
+	switch operator {
+	case "eq":
+		return testNum == compareNum
+	case "ne":
+		return testNum != compareNum
+	case "gt":
+		return testNum > compareNum
+	case "lt":
+		return testNum < compareNum
+	case "gte":
+		return testNum >= compareNum
+	case "lte":
+		return testNum <= compareNum
+	default:
+		return false
+	}
+}
+
+func (t *Trigger) checkBooleanCondition(testValue, operator, compareValue string) bool {
+	testBool := testValue == "true" || testValue == "1"
+	compareBool := compareValue == "true" || compareValue == "1"
+	
+	switch operator {
+	case "eq":
+		return testBool == compareBool
+	case "ne":
+		return testBool != compareBool
+	default:
+		return false
+	}
+}
+
+func createGCPConfig(configMap map[string]interface{}) (*gcp.Config, error) {
+	cfg := &gcp.Config{}
+	
+	if projectID, ok := configMap["project_id"].(string); ok {
+		cfg.ProjectID = projectID
+	}
+	if topicID, ok := configMap["topic_id"].(string); ok {
+		cfg.TopicID = topicID
+	}
+	if subscriptionID, ok := configMap["subscription_id"].(string); ok {
+		cfg.SubscriptionID = subscriptionID
+	}
+	if credentialsJSON, ok := configMap["credentials_json"].(string); ok {
+		cfg.CredentialsJSON = credentialsJSON
+	}
+	if credentialsPath, ok := configMap["credentials_path"].(string); ok {
+		cfg.CredentialsPath = credentialsPath
+	}
+	if createSubscription, ok := configMap["create_subscription"].(bool); ok {
+		cfg.CreateSubscription = createSubscription
+	}
+	if ackDeadline, ok := configMap["ack_deadline"].(float64); ok {
+		cfg.AckDeadline = int(ackDeadline)
+	}
+	if maxOutstandingMessages, ok := configMap["max_outstanding_messages"].(float64); ok {
+		cfg.MaxOutstandingMessages = int(maxOutstandingMessages)
+	}
+	if enableOrdering, ok := configMap["enable_message_ordering"].(bool); ok {
+		cfg.EnableMessageOrdering = enableOrdering
+	}
+	if orderingKey, ok := configMap["ordering_key"].(string); ok {
+		cfg.OrderingKey = orderingKey
+	}
+	
+	return cfg, nil
 }

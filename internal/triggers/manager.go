@@ -4,26 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 	"webhook-router/internal/brokers"
+	"webhook-router/internal/common/logging"
+	"webhook-router/internal/oauth2"
 	"webhook-router/internal/storage"
 )
 
 // Manager manages all triggers in the system
 type Manager struct {
-	registry        *TriggerRegistry
-	storage         storage.Storage
-	brokerRegistry  *brokers.Registry
-	triggers        map[int]Trigger
-	mu              sync.RWMutex
-	ctx             context.Context
-	cancel          context.CancelFunc
-	broker          brokers.Broker
-	isRunning       bool
-	healthCheck     *time.Ticker
-	syncTicker      *time.Ticker
+	registry            *TriggerRegistry
+	storage             storage.Storage
+	brokerRegistry      *brokers.Registry
+	triggers            map[int]Trigger
+	mu                  sync.RWMutex
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	broker              brokers.Broker
+	isRunning           bool
+	healthCheck         *time.Ticker
+	syncTicker          *time.Ticker
+	distributedExecutor func(triggerID int, taskID string, handler func() error) error
+	oauthManager        *oauth2.Manager // OAuth2 manager for triggers
+	logger              logging.Logger
 }
 
 // ManagerConfig contains configuration for the trigger manager
@@ -41,9 +45,13 @@ func NewManager(storage storage.Storage, brokerRegistry *brokers.Registry, broke
 			MaxRetries:          3,
 		}
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
+	logger := logging.GetGlobalLogger().WithFields(
+		logging.Field{"component", "trigger_manager"},
+	)
+
 	manager := &Manager{
 		registry:       NewTriggerRegistry(),
 		storage:        storage,
@@ -53,57 +61,66 @@ func NewManager(storage storage.Storage, brokerRegistry *brokers.Registry, broke
 		cancel:         cancel,
 		broker:         broker,
 		isRunning:      false,
+		logger:         logger,
 	}
-	
+
 	// Register built-in trigger factories
 	manager.registerBuiltinFactories()
-	
+
 	return manager
 }
 
+// SetOAuthManager sets the OAuth2 manager for triggers
+func (m *Manager) SetOAuthManager(oauthManager *oauth2.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.oauthManager = oauthManager
+}
+
+// GetRegistry returns the trigger registry for external factory registration
+func (m *Manager) GetRegistry() *TriggerRegistry {
+	return m.registry
+}
+
+// SetDistributedExecutor sets the distributed execution function
+func (m *Manager) SetDistributedExecutor(executor func(triggerID int, taskID string, handler func() error) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.distributedExecutor = executor
+}
+
 func (m *Manager) registerBuiltinFactories() {
-	// Register HTTP trigger factory
-	httpFactory := &httpFactory{} // This would be imported from http package
-	m.registry.Register("http", httpFactory)
-	
-	// Register schedule trigger factory
-	scheduleFactory := &scheduleFactory{} // This would be imported from schedule package
-	m.registry.Register("schedule", scheduleFactory)
-	
-	// Register polling trigger factory
-	pollingFactory := &pollingFactory{} // This would be imported from polling package
-	m.registry.Register("polling", pollingFactory)
-	
-	// Register broker trigger factory
-	brokerFactory := &brokerFactory{brokerRegistry: m.brokerRegistry} // This would be imported from broker package
-	m.registry.Register("broker", brokerFactory)
+	// Trigger factories are registered externally in main.go
+	// This allows for flexible configuration and testing
 }
 
 // Start initializes and starts the trigger manager
 func (m *Manager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.isRunning {
 		return fmt.Errorf("trigger manager is already running")
 	}
-	
+
 	// Load triggers from database
 	if err := m.loadTriggersFromDatabase(); err != nil {
 		return fmt.Errorf("failed to load triggers from database: %w", err)
 	}
-	
+
 	// Start health checking
 	m.healthCheck = time.NewTicker(m.getHealthCheckInterval())
 	go m.healthCheckLoop()
-	
+
 	// Start database synchronization
 	m.syncTicker = time.NewTicker(m.getSyncInterval())
 	go m.syncLoop()
-	
+
 	m.isRunning = true
-	log.Printf("Trigger manager started with %d triggers", len(m.triggers))
-	
+	m.logger.Info("Trigger manager started",
+		logging.Field{"trigger_count", len(m.triggers)},
+	)
+
 	return nil
 }
 
@@ -111,20 +128,22 @@ func (m *Manager) Start() error {
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if !m.isRunning {
 		return fmt.Errorf("trigger manager is not running")
 	}
-	
+
 	// Stop all triggers
 	for id, trigger := range m.triggers {
 		if trigger.IsRunning() {
 			if err := trigger.Stop(); err != nil {
-				log.Printf("Error stopping trigger %d: %v", id, err)
+				m.logger.Error("Error stopping trigger", err,
+					logging.Field{"trigger_id", id},
+				)
 			}
 		}
 	}
-	
+
 	// Stop background tasks
 	if m.healthCheck != nil {
 		m.healthCheck.Stop()
@@ -132,13 +151,13 @@ func (m *Manager) Stop() error {
 	if m.syncTicker != nil {
 		m.syncTicker.Stop()
 	}
-	
+
 	// Cancel context
 	m.cancel()
-	
+
 	m.isRunning = false
-	log.Println("Trigger manager stopped")
-	
+	m.logger.Info("Trigger manager stopped")
+
 	return nil
 }
 
@@ -149,32 +168,50 @@ func (m *Manager) LoadTrigger(triggerID int) error {
 	if err != nil {
 		return fmt.Errorf("failed to get trigger from database: %w", err)
 	}
-	
+
 	// Create trigger config from database trigger
 	config, err := m.createTriggerConfig(dbTrigger)
 	if err != nil {
 		return fmt.Errorf("failed to create trigger config: %w", err)
 	}
-	
+
 	// Create trigger instance
 	trigger, err := m.registry.Create(dbTrigger.Type, config)
 	if err != nil {
 		return fmt.Errorf("failed to create trigger: %w", err)
 	}
-	
+
+	// Set OAuth2 manager if trigger supports it
+	if m.oauthManager != nil {
+		if oauth2Trigger, ok := trigger.(OAuth2Trigger); ok {
+			oauth2Trigger.SetOAuthManager(m.oauthManager)
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	// Stop existing trigger if it exists
 	if existingTrigger, exists := m.triggers[triggerID]; exists {
 		if existingTrigger.IsRunning() {
 			existingTrigger.Stop()
 		}
 	}
-	
+
 	// Add to managed triggers
 	m.triggers[triggerID] = trigger
-	
+
+	// Configure distributed executor for schedule triggers
+	if dbTrigger.Type == "schedule" && m.distributedExecutor != nil {
+		// Use reflection or type assertion to set distributed executor
+		// This avoids import cycles
+		if setter, ok := trigger.(interface {
+			SetDistributedExecutor(func(triggerID int, taskID string, handler func() error) error)
+		}); ok {
+			setter.SetDistributedExecutor(m.distributedExecutor)
+		}
+	}
+
 	// Start trigger if it's active
 	if dbTrigger.Active {
 		handler := m.createTriggerHandler(trigger)
@@ -182,10 +219,17 @@ func (m *Manager) LoadTrigger(triggerID int) error {
 			return fmt.Errorf("failed to start trigger: %w", err)
 		}
 	}
-	
-	log.Printf("Trigger %d (%s) loaded and %s", triggerID, dbTrigger.Name, 
-		map[bool]string{true: "started", false: "loaded"}[dbTrigger.Active])
-	
+
+	status := "loaded"
+	if dbTrigger.Active {
+		status = "started"
+	}
+	m.logger.Info("Trigger loaded",
+		logging.Field{"trigger_id", triggerID},
+		logging.Field{"name", dbTrigger.Name},
+		logging.Field{"status", status},
+	)
+
 	return nil
 }
 
@@ -193,23 +237,27 @@ func (m *Manager) LoadTrigger(triggerID int) error {
 func (m *Manager) UnloadTrigger(triggerID int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	trigger, exists := m.triggers[triggerID]
 	if !exists {
 		return fmt.Errorf("trigger %d not found", triggerID)
 	}
-	
+
 	// Stop trigger if running
 	if trigger.IsRunning() {
 		if err := trigger.Stop(); err != nil {
-			log.Printf("Error stopping trigger %d: %v", triggerID, err)
+			m.logger.Error("Error stopping trigger", err,
+				logging.Field{"trigger_id", triggerID},
+			)
 		}
 	}
-	
+
 	// Remove from managed triggers
 	delete(m.triggers, triggerID)
-	
-	log.Printf("Trigger %d unloaded", triggerID)
+
+	m.logger.Info("Trigger unloaded",
+		logging.Field{"trigger_id", triggerID},
+	)
 	return nil
 }
 
@@ -218,28 +266,30 @@ func (m *Manager) StartTrigger(triggerID int) error {
 	m.mu.RLock()
 	trigger, exists := m.triggers[triggerID]
 	m.mu.RUnlock()
-	
+
 	if !exists {
 		return fmt.Errorf("trigger %d not found", triggerID)
 	}
-	
+
 	if trigger.IsRunning() {
 		return fmt.Errorf("trigger %d is already running", triggerID)
 	}
-	
+
 	handler := m.createTriggerHandler(trigger)
 	if err := trigger.Start(m.ctx, handler); err != nil {
 		return fmt.Errorf("failed to start trigger %d: %w", triggerID, err)
 	}
-	
+
 	// Update trigger status in database
 	dbTrigger, err := m.storage.GetTrigger(triggerID)
 	if err == nil {
 		dbTrigger.Status = "running"
 		m.storage.UpdateTrigger(dbTrigger)
 	}
-	
-	log.Printf("Trigger %d started", triggerID)
+
+	m.logger.Info("Trigger started",
+		logging.Field{"trigger_id", triggerID},
+	)
 	return nil
 }
 
@@ -248,27 +298,29 @@ func (m *Manager) StopTrigger(triggerID int) error {
 	m.mu.RLock()
 	trigger, exists := m.triggers[triggerID]
 	m.mu.RUnlock()
-	
+
 	if !exists {
 		return fmt.Errorf("trigger %d not found", triggerID)
 	}
-	
+
 	if !trigger.IsRunning() {
 		return fmt.Errorf("trigger %d is not running", triggerID)
 	}
-	
+
 	if err := trigger.Stop(); err != nil {
 		return fmt.Errorf("failed to stop trigger %d: %w", triggerID, err)
 	}
-	
+
 	// Update trigger status in database
 	dbTrigger, err := m.storage.GetTrigger(triggerID)
 	if err == nil {
 		dbTrigger.Status = "stopped"
 		m.storage.UpdateTrigger(dbTrigger)
 	}
-	
-	log.Printf("Trigger %d stopped", triggerID)
+
+	m.logger.Info("Trigger stopped",
+		logging.Field{"trigger_id", triggerID},
+	)
 	return nil
 }
 
@@ -276,12 +328,12 @@ func (m *Manager) StopTrigger(triggerID int) error {
 func (m *Manager) GetTrigger(triggerID int) (Trigger, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	trigger, exists := m.triggers[triggerID]
 	if !exists {
 		return nil, fmt.Errorf("trigger %d not found", triggerID)
 	}
-	
+
 	return trigger, nil
 }
 
@@ -289,13 +341,13 @@ func (m *Manager) GetTrigger(triggerID int) (Trigger, error) {
 func (m *Manager) GetAllTriggers() map[int]Trigger {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	// Return a copy to avoid race conditions
 	triggers := make(map[int]Trigger)
 	for id, trigger := range m.triggers {
 		triggers[id] = trigger
 	}
-	
+
 	return triggers
 }
 
@@ -304,11 +356,11 @@ func (m *Manager) GetTriggerStatus(triggerID int) (*TriggerStatus, error) {
 	m.mu.RLock()
 	trigger, exists := m.triggers[triggerID]
 	m.mu.RUnlock()
-	
+
 	if !exists {
 		return nil, fmt.Errorf("trigger %d not found", triggerID)
 	}
-	
+
 	status := &TriggerStatus{
 		ID:            trigger.ID(),
 		Name:          trigger.Name(),
@@ -318,13 +370,13 @@ func (m *Manager) GetTriggerStatus(triggerID int) (*TriggerStatus, error) {
 		NextExecution: trigger.NextExecution(),
 		Health:        "healthy",
 	}
-	
+
 	// Check health
 	if err := trigger.Health(); err != nil {
 		status.Health = "unhealthy"
 		status.HealthError = err.Error()
 	}
-	
+
 	return status, nil
 }
 
@@ -332,11 +384,11 @@ func (m *Manager) GetTriggerStatus(triggerID int) (*TriggerStatus, error) {
 func (m *Manager) Health() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	if !m.isRunning {
 		return fmt.Errorf("trigger manager is not running")
 	}
-	
+
 	// Check if any triggers are unhealthy
 	unhealthyCount := 0
 	for _, trigger := range m.triggers {
@@ -344,11 +396,11 @@ func (m *Manager) Health() error {
 			unhealthyCount++
 		}
 	}
-	
+
 	if unhealthyCount > 0 {
 		return fmt.Errorf("%d triggers are unhealthy", unhealthyCount)
 	}
-	
+
 	return nil
 }
 
@@ -357,19 +409,21 @@ func (m *Manager) loadTriggersFromDatabase() error {
 	filters := storage.TriggerFilters{
 		Active: &[]bool{true}[0], // Active triggers only
 	}
-	
+
 	dbTriggers, err := m.storage.GetTriggers(filters)
 	if err != nil {
 		return fmt.Errorf("failed to get triggers from database: %w", err)
 	}
-	
+
 	for _, dbTrigger := range dbTriggers {
 		if err := m.LoadTrigger(dbTrigger.ID); err != nil {
-			log.Printf("Failed to load trigger %d: %v", dbTrigger.ID, err)
+			m.logger.Error("Failed to load trigger", err,
+				logging.Field{"trigger_id", dbTrigger.ID},
+			)
 			// Continue loading other triggers
 		}
 	}
-	
+
 	return nil
 }
 
@@ -388,8 +442,10 @@ func (m *Manager) createTriggerConfig(dbTrigger *storage.Trigger) (TriggerConfig
 			UpdatedAt: dbTrigger.UpdatedAt,
 		}
 		return config, nil
-		
+
 	case "schedule":
+		// For now, return basic config - schedule-specific config conversion
+		// should be handled by the schedule factory
 		config := &BaseTriggerConfig{
 			ID:        dbTrigger.ID,
 			Name:      dbTrigger.Name,
@@ -400,7 +456,7 @@ func (m *Manager) createTriggerConfig(dbTrigger *storage.Trigger) (TriggerConfig
 			UpdatedAt: dbTrigger.UpdatedAt,
 		}
 		return config, nil
-		
+
 	case "polling":
 		config := &BaseTriggerConfig{
 			ID:        dbTrigger.ID,
@@ -412,7 +468,7 @@ func (m *Manager) createTriggerConfig(dbTrigger *storage.Trigger) (TriggerConfig
 			UpdatedAt: dbTrigger.UpdatedAt,
 		}
 		return config, nil
-		
+
 	case "broker":
 		config := &BaseTriggerConfig{
 			ID:        dbTrigger.ID,
@@ -424,7 +480,7 @@ func (m *Manager) createTriggerConfig(dbTrigger *storage.Trigger) (TriggerConfig
 			UpdatedAt: dbTrigger.UpdatedAt,
 		}
 		return config, nil
-		
+
 	default:
 		return nil, fmt.Errorf("unsupported trigger type: %s", dbTrigger.Type)
 	}
@@ -438,7 +494,7 @@ func (m *Manager) createTriggerHandler(trigger Trigger) TriggerHandler {
 		if err != nil {
 			return fmt.Errorf("failed to marshal event data: %w", err)
 		}
-		
+
 		message := &brokers.Message{
 			Queue:      "trigger-events",
 			Exchange:   "",
@@ -455,24 +511,30 @@ func (m *Manager) createTriggerHandler(trigger Trigger) TriggerHandler {
 			Timestamp: event.Timestamp,
 			MessageID: event.ID,
 		}
-		
+
 		// Add custom headers from the event
 		for key, value := range event.Headers {
 			message.Headers["event_"+key] = value
 		}
-		
+
 		// Publish to broker if available
 		if m.broker != nil {
 			if err := m.broker.Publish(message); err != nil {
-				log.Printf("Failed to publish trigger event: %v", err)
+				m.logger.Error("Failed to publish trigger event", err,
+					logging.Field{"event_id", event.ID},
+					logging.Field{"trigger_id", event.TriggerID},
+				)
 				return err
 			}
 		}
-		
+
 		// Log successful trigger execution
-		log.Printf("Trigger event processed: %s from %s (%d)", 
-			event.Type, event.TriggerName, event.TriggerID)
-		
+		m.logger.Debug("Trigger event processed",
+			logging.Field{"event_type", event.Type},
+			logging.Field{"trigger_name", event.TriggerName},
+			logging.Field{"trigger_id", event.TriggerID},
+		)
+
 		return nil
 	}
 }
@@ -509,15 +571,18 @@ func (m *Manager) performHealthCheck() {
 		triggers[id] = trigger
 	}
 	m.mu.RUnlock()
-	
+
 	for id, trigger := range triggers {
 		if err := trigger.Health(); err != nil {
-			log.Printf("Trigger %d health check failed: %v", id, err)
-			
+			m.logger.Warn("Trigger health check failed",
+				logging.Field{"trigger_id", id},
+				logging.Field{"error", err.Error()},
+			)
+
 			// Update trigger status in database
 			if dbTrigger, err := m.storage.GetTrigger(id); err == nil {
 				dbTrigger.Status = "error"
-				dbTrigger.ErrorMessage = &err.Error()
+				dbTrigger.ErrorMessage = err.Error()
 				m.storage.UpdateTrigger(dbTrigger)
 			}
 		}
@@ -530,24 +595,26 @@ func (m *Manager) performDatabaseSync() {
 	filters := storage.TriggerFilters{}
 	dbTriggers, err := m.storage.GetTriggers(filters)
 	if err != nil {
-		log.Printf("Failed to sync with database: %v", err)
+		m.logger.Error("Failed to sync with database", err)
 		return
 	}
-	
+
 	// Check for new/updated triggers
 	for _, dbTrigger := range dbTriggers {
 		m.mu.RLock()
 		_, exists := m.triggers[dbTrigger.ID]
 		m.mu.RUnlock()
-		
+
 		if !exists && dbTrigger.Active {
 			// New active trigger, load it
 			if err := m.LoadTrigger(dbTrigger.ID); err != nil {
-				log.Printf("Failed to load new trigger %d: %v", dbTrigger.ID, err)
+				m.logger.Error("Failed to load new trigger", err,
+					logging.Field{"trigger_id", dbTrigger.ID},
+				)
 			}
 		}
 	}
-	
+
 	// Check for deleted triggers
 	m.mu.RLock()
 	managedIDs := make([]int, 0, len(m.triggers))
@@ -555,17 +622,19 @@ func (m *Manager) performDatabaseSync() {
 		managedIDs = append(managedIDs, id)
 	}
 	m.mu.RUnlock()
-	
+
 	dbTriggerMap := make(map[int]*storage.Trigger)
 	for _, dbTrigger := range dbTriggers {
 		dbTriggerMap[dbTrigger.ID] = dbTrigger
 	}
-	
+
 	for _, id := range managedIDs {
 		if _, exists := dbTriggerMap[id]; !exists {
 			// Trigger deleted from database, unload it
 			if err := m.UnloadTrigger(id); err != nil {
-				log.Printf("Failed to unload deleted trigger %d: %v", id, err)
+				m.logger.Error("Failed to unload deleted trigger", err,
+					logging.Field{"trigger_id", id},
+				)
 			}
 		}
 	}
@@ -591,19 +660,4 @@ type TriggerStatus struct {
 	HealthError   string     `json:"health_error,omitempty"`
 }
 
-// Placeholder factory implementations (these would be imported from their respective packages)
-type httpFactory struct{}
-func (f *httpFactory) Create(config TriggerConfig) (Trigger, error) { return nil, nil }
-func (f *httpFactory) GetType() string { return "http" }
-
-type scheduleFactory struct{}
-func (f *scheduleFactory) Create(config TriggerConfig) (Trigger, error) { return nil, nil }
-func (f *scheduleFactory) GetType() string { return "schedule" }
-
-type pollingFactory struct{}
-func (f *pollingFactory) Create(config TriggerConfig) (Trigger, error) { return nil, nil }
-func (f *pollingFactory) GetType() string { return "polling" }
-
-type brokerFactory struct{ brokerRegistry *brokers.Registry }
-func (f *brokerFactory) Create(config TriggerConfig) (Trigger, error) { return nil, nil }
-func (f *brokerFactory) GetType() string { return "broker" }
+// Note: Trigger factories are registered in main.go when actual implementations are ready

@@ -1,21 +1,16 @@
 package redis
 
 import (
-	"fmt"
 	"webhook-router/internal/brokers"
+	"webhook-router/internal/common/factory"
 )
 
-type Factory struct{}
-
-func (f *Factory) Create(config brokers.BrokerConfig) (brokers.Broker, error) {
-	redisConfig, ok := config.(*Config)
-	if !ok {
-		return nil, fmt.Errorf("invalid config type for Redis broker, expected *redis.Config")
-	}
-
-	return NewBroker(redisConfig)
-}
-
-func (f *Factory) GetType() string {
-	return "redis"
+// GetFactory returns a Redis broker factory using the generic factory pattern
+func GetFactory() brokers.BrokerFactory {
+	return factory.NewBrokerFactory[*Config](
+		"redis",
+		func(config *Config) (brokers.Broker, error) {
+			return NewBroker(config)
+		},
+	)
 }

@@ -1,60 +1,63 @@
 package http
 
 import (
-	"fmt"
 	"strings"
 	"time"
+	"webhook-router/internal/common/config"
+	"webhook-router/internal/common/validation"
 	"webhook-router/internal/triggers"
 )
 
-// Config represents the configuration for HTTP webhook triggers
+// Config represents the configuration for HTTP webhook triggers.
+// It defines how incoming HTTP requests are validated, authenticated, rate-limited,
+// transformed, and responded to.
 type Config struct {
 	triggers.BaseTriggerConfig
 	
-	// HTTP-specific settings
-	Methods         []string          `json:"methods"`          // Allowed HTTP methods (GET, POST, etc.)
-	Path            string            `json:"path"`             // URL path for the webhook
-	Headers         map[string]string `json:"headers"`          // Required headers
-	ContentType     string            `json:"content_type"`     // Expected content type
-	Authentication  AuthConfig        `json:"authentication"`   // Authentication requirements
-	RateLimiting    RateLimitConfig   `json:"rate_limiting"`    // Rate limiting settings
-	Validation      ValidationConfig  `json:"validation"`       // Request validation
-	Transformation  TransformConfig   `json:"transformation"`   // Data transformation
+	// Methods lists the allowed HTTP methods for this endpoint (e.g., ["POST", "PUT"])
+	Methods         []string          `json:"methods"`
+	// Path is the HTTP endpoint path where webhooks will be received (e.g., "/webhook/github")
+	Path            string            `json:"path"`
+	// Headers are key-value pairs that must be present in incoming requests
+	Headers         map[string]string `json:"headers"`
+	// ContentType is the expected Content-Type header value (default: "application/json")
+	ContentType     string            `json:"content_type"`
+	// Authentication defines how requests are authenticated
+	Authentication  config.AuthConfig        `json:"authentication"`
+	// RateLimiting defines rate limiting rules to prevent abuse
+	RateLimiting    config.RateLimitConfig   `json:"rate_limiting"`
+	// Validation defines request validation rules
+	Validation      config.ValidationConfig  `json:"validation"`
+	// Transformation defines optional request transformations before processing
+	Transformation  config.TransformConfig   `json:"transformation"`
+	// Response defines how the webhook endpoint responds to requests
+	Response        HTTPResponseConfig    `json:"response"`
 }
 
-// AuthConfig defines authentication requirements
-type AuthConfig struct {
-	Type     string            `json:"type"`     // none, basic, bearer, apikey, hmac
-	Required bool              `json:"required"` // Whether auth is required
-	Settings map[string]string `json:"settings"` // Auth-specific settings
+// HTTPResponseConfig extends the common ResponseConfig with HTTP-specific features
+// for dynamic response generation using templates.
+type HTTPResponseConfig struct {
+	config.ResponseConfig
+	
+	// Body is the static response body (can be string, map, or any JSON-serializable type)
+	Body         interface{} `json:"body"`
+	// BodyTemplate is a Go template string for dynamic response generation.
+	// Available template variables:
+	// - {{.Event}} - The trigger event object
+	// - {{.Headers}} - Request headers
+	// - {{.Query}} - Query parameters
+	// - {{.Path}} - Request path
+	BodyTemplate string      `json:"body_template"`
 }
 
-// RateLimitConfig defines rate limiting settings
-type RateLimitConfig struct {
-	Enabled     bool          `json:"enabled"`      // Enable rate limiting
-	MaxRequests int           `json:"max_requests"` // Max requests per window
-	Window      time.Duration `json:"window"`       // Time window
-	ByIP        bool          `json:"by_ip"`        // Rate limit by IP
-	ByHeader    string        `json:"by_header"`    // Rate limit by header value
-}
-
-// ValidationConfig defines request validation rules
-type ValidationConfig struct {
-	RequiredHeaders []string `json:"required_headers"` // Headers that must be present
-	RequiredParams  []string `json:"required_params"`  // Query params that must be present
-	MinBodySize     int64    `json:"min_body_size"`    // Minimum body size
-	MaxBodySize     int64    `json:"max_body_size"`    // Maximum body size
-	JSONSchema      string   `json:"json_schema"`      // JSON schema for validation
-}
-
-// TransformConfig defines data transformation settings
-type TransformConfig struct {
-	Enabled       bool              `json:"enabled"`        // Enable transformation
-	HeaderMapping map[string]string `json:"header_mapping"` // Map incoming headers to new names
-	BodyTemplate  string            `json:"body_template"`  // Template for body transformation
-	AddHeaders    map[string]string `json:"add_headers"`    // Additional headers to add
-}
-
+// NewConfig creates a new HTTP trigger configuration with sensible defaults.
+// The webhook path is derived from the name (spaces replaced with hyphens).
+// Default settings include:
+// - Method: POST only
+// - Authentication: none
+// - Rate limiting: disabled
+// - Max body size: 10MB
+// - Response: 200 OK with {"status": "accepted"}
 func NewConfig(name string) *Config {
 	return &Config{
 		BaseTriggerConfig: triggers.BaseTriggerConfig{
@@ -67,141 +70,98 @@ func NewConfig(name string) *Config {
 		Path:        "/" + strings.ToLower(strings.ReplaceAll(name, " ", "-")),
 		Headers:     make(map[string]string),
 		ContentType: "application/json",
-		Authentication: AuthConfig{
-			Type:     "none",
-			Required: false,
-			Settings: make(map[string]string),
-		},
-		RateLimiting: RateLimitConfig{
+		Authentication: config.NewAuthConfig(),
+		RateLimiting: config.RateLimitConfig{
 			Enabled:     false,
 			MaxRequests: 100,
 			Window:      time.Minute,
 			ByIP:        true,
 		},
-		Validation: ValidationConfig{
+		Validation: config.ValidationConfig{
 			RequiredHeaders: []string{},
 			RequiredParams:  []string{},
 			MinBodySize:     0,
 			MaxBodySize:     10 * 1024 * 1024, // 10MB default
 		},
-		Transformation: TransformConfig{
-			Enabled:       false,
-			HeaderMapping: make(map[string]string),
-			AddHeaders:    make(map[string]string),
+		Transformation: config.NewTransformConfig(),
+		Response: HTTPResponseConfig{
+			ResponseConfig: config.ResponseConfig{
+				StatusCode:  200,
+				Headers:     make(map[string]string),
+				Body:        `{"status": "accepted"}`,
+				ContentType: "application/json",
+			},
 		},
 	}
 }
 
+// Validate checks the configuration for errors and applies defaults where needed.
+// It ensures:
+// - Required fields are present
+// - HTTP methods are valid
+// - Authentication settings are consistent
+// - Body size limits are reasonable
+// - Response status code is valid (100-599)
 func (c *Config) Validate() error {
-	if c.Name == "" {
-		return fmt.Errorf("trigger name is required")
+	// Validate base configuration
+	validator := triggers.NewValidationHelper()
+	if err := validator.ValidateBaseTriggerConfig(&c.BaseTriggerConfig); err != nil {
+		return err
 	}
 	
-	if c.Path == "" {
-		return fmt.Errorf("HTTP path is required")
-	}
+	v := validation.NewValidator()
 	
-	if !strings.HasPrefix(c.Path, "/") {
+	// Basic validation
+	v.RequireString(c.Path, "path")
+	
+	// Ensure path starts with /
+	if c.Path != "" && !strings.HasPrefix(c.Path, "/") {
 		c.Path = "/" + c.Path
 	}
 	
+	// Default methods if none specified
 	if len(c.Methods) == 0 {
 		c.Methods = []string{"POST"}
 	}
 	
-	// Validate HTTP methods
-	validMethods := map[string]bool{
-		"GET": true, "POST": true, "PUT": true, "DELETE": true,
-		"PATCH": true, "HEAD": true, "OPTIONS": true,
-	}
+	// Validate HTTP methods using common validation
+	config.ValidateHTTPMethods(c.Methods, v, "methods")
 	
-	for _, method := range c.Methods {
-		if !validMethods[strings.ToUpper(method)] {
-			return fmt.Errorf("invalid HTTP method: %s", method)
-		}
-	}
+	// Validate authentication using common validation
+	config.ValidateAuthConfig(&c.Authentication, v)
 	
-	// Validate authentication
-	if err := c.validateAuth(); err != nil {
-		return fmt.Errorf("authentication config error: %w", err)
-	}
+	// Validate rate limiting using common validation
+	config.ValidateRateLimit(&c.RateLimiting, v, "rate_limiting")
 	
-	// Validate rate limiting
-	if c.RateLimiting.Enabled {
-		if c.RateLimiting.MaxRequests <= 0 {
-			return fmt.Errorf("max_requests must be positive when rate limiting is enabled")
-		}
-		if c.RateLimiting.Window <= 0 {
-			c.RateLimiting.Window = time.Minute
-		}
-	}
+	// Validate request validation using common validation
+	config.ValidateValidationConfig(&c.Validation, v, "validation")
 	
-	// Validate body size limits
-	if c.Validation.MaxBodySize <= 0 {
-		c.Validation.MaxBodySize = 10 * 1024 * 1024 // 10MB
-	}
-	if c.Validation.MinBodySize < 0 {
-		c.Validation.MinBodySize = 0
-	}
-	if c.Validation.MinBodySize > c.Validation.MaxBodySize {
-		return fmt.Errorf("min_body_size cannot be greater than max_body_size")
-	}
+	// Validate transformation using common validation
+	config.ValidateTransformConfig(&c.Transformation, v, "transformation")
 	
-	return nil
+	// Validate headers using common validation
+	config.ValidateHTTPHeaders(c.Headers, v, "headers")
+	
+	// Set response defaults and validate
+	c.Response.SetResponseDefaults()
+	v.RequireRange(c.Response.StatusCode, 100, 599, "response.status_code")
+	
+	return v.Error()
 }
 
-func (c *Config) validateAuth() error {
-	validAuthTypes := map[string]bool{
-		"none": true, "basic": true, "bearer": true, "apikey": true, "hmac": true,
-	}
-	
-	if !validAuthTypes[c.Authentication.Type] {
-		return fmt.Errorf("invalid authentication type: %s", c.Authentication.Type)
-	}
-	
-	if c.Authentication.Required && c.Authentication.Type == "none" {
-		return fmt.Errorf("authentication cannot be required when type is 'none'")
-	}
-	
-	// Validate auth-specific settings
-	switch c.Authentication.Type {
-	case "basic":
-		if c.Authentication.Required {
-			if c.Authentication.Settings["username"] == "" || c.Authentication.Settings["password"] == "" {
-				return fmt.Errorf("username and password required for basic auth")
-			}
-		}
-	case "bearer":
-		if c.Authentication.Required {
-			if c.Authentication.Settings["token"] == "" {
-				return fmt.Errorf("token required for bearer auth")
-			}
-		}
-	case "apikey":
-		if c.Authentication.Required {
-			if c.Authentication.Settings["key"] == "" || c.Authentication.Settings["header"] == "" {
-				return fmt.Errorf("key and header required for API key auth")
-			}
-		}
-	case "hmac":
-		if c.Authentication.Required {
-			if c.Authentication.Settings["secret"] == "" || c.Authentication.Settings["algorithm"] == "" {
-				return fmt.Errorf("secret and algorithm required for HMAC auth")
-			}
-		}
-	}
-	
-	return nil
-}
 
+// GetEndpoint returns the HTTP path where this webhook will listen
 func (c *Config) GetEndpoint() string {
 	return c.Path
 }
 
+// GetMethods returns the list of allowed HTTP methods for this webhook
 func (c *Config) GetMethods() []string {
 	return c.Methods
 }
 
+// IsMethodAllowed checks if the given HTTP method is allowed for this webhook.
+// The comparison is case-insensitive.
 func (c *Config) IsMethodAllowed(method string) bool {
 	for _, allowedMethod := range c.Methods {
 		if strings.EqualFold(allowedMethod, method) {
@@ -209,4 +169,14 @@ func (c *Config) IsMethodAllowed(method string) bool {
 		}
 	}
 	return false
+}
+
+// GetName returns the trigger name (implements base.TriggerConfig)
+func (c *Config) GetName() string {
+	return c.Name
+}
+
+// GetID returns the trigger ID (implements base.TriggerConfig)
+func (c *Config) GetID() int {
+	return c.ID
 }
