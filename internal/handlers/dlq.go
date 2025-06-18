@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	
+	"strconv"
+
 	"github.com/gorilla/mux"
 )
 
@@ -24,22 +25,27 @@ func (h *Handlers) GetDLQStats(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("Failed to get broker DLQ stats", err)
 		brokerStats = []map[string]interface{}{} // Continue with empty stats
 	}
-	
-	// Get global DLQ stats if available
+
+	// Get stats from storage
+	stats, err := h.storage.GetDLQStats()
+	if err != nil {
+		h.logger.Error("Failed to get DLQ stats from storage", err)
+	}
+
 	var globalStats map[string]interface{}
-	if h.dlq != nil {
-		var err error
-		globalStats, err = h.dlq.GetStats()
-		if err != nil {
-			h.logger.Error("Failed to get global DLQ stats", err)
+	if stats != nil {
+		globalStats = map[string]interface{}{
+			"total_messages":     stats.TotalMessages,
+			"pending_messages":   stats.PendingMessages,
+			"abandoned_messages": stats.AbandonedMessages,
 		}
 	}
-	
+
 	response := map[string]interface{}{
 		"per_broker_stats": brokerStats,
 		"global_stats":     globalStats,
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -57,24 +63,23 @@ func (h *Handlers) GetDLQStats(w http.ResponseWriter, r *http.Request) {
 // @Failure 503 {string} string "DLQ not configured"
 // @Router /api/dlq/messages [get]
 func (h *Handlers) ListDLQMessages(w http.ResponseWriter, r *http.Request) {
-	if h.dlq == nil {
-		http.Error(w, "DLQ not configured", http.StatusServiceUnavailable)
-		return
-	}
-	
-	// This is a simplified implementation
-	// In production, you'd implement proper filtering and pagination
-	stats, err := h.dlq.GetStats()
+	// Get DLQ messages from storage
+	messages, err := h.storage.ListDLQMessages(100, 0)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get DLQ messages: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
+	stats, err := h.storage.GetDLQStats()
+	if err != nil {
+		h.logger.Error("Failed to get DLQ stats", err)
+	}
+
 	response := map[string]interface{}{
-		"messages": []interface{}{}, // Empty for now, would fetch actual messages
+		"messages": messages,
 		"stats":    stats,
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -91,33 +96,17 @@ func (h *Handlers) ListDLQMessages(w http.ResponseWriter, r *http.Request) {
 // @Failure 503 {string} string "DLQ not configured"
 // @Router /api/dlq/retry [post]
 func (h *Handlers) RetryDLQMessages(w http.ResponseWriter, r *http.Request) {
-	if h.dlq == nil {
-		http.Error(w, "DLQ not configured", http.StatusServiceUnavailable)
-		return
-	}
-	
-	// Parse optional limit from request body
-	var options struct {
-		Limit int `json:"limit"`
-	}
-	options.Limit = 10 // Default
-	
-	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&options)
-	}
-	
-	// Trigger retry
-	err := h.dlq.RetryFailedMessages()
+	// Trigger retry via broker manager for per-broker DLQs
+	err := h.brokerManager.RetryDLQMessages()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to retry messages: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	response := map[string]interface{}{
 		"status": "retry initiated",
-		"limit":  options.Limit,
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -133,22 +122,23 @@ func (h *Handlers) RetryDLQMessages(w http.ResponseWriter, r *http.Request) {
 // @Failure 503 {string} string "DLQ not configured"
 // @Router /api/dlq/messages/{id} [delete]
 func (h *Handlers) DeleteDLQMessage(w http.ResponseWriter, r *http.Request) {
-	if h.dlq == nil {
-		http.Error(w, "DLQ not configured", http.StatusServiceUnavailable)
+	vars := mux.Vars(r)
+	messageIDStr := vars["id"]
+
+	// Convert message ID to int
+	messageID, err := strconv.Atoi(messageIDStr)
+	if err != nil {
+		http.Error(w, "Invalid message ID", http.StatusBadRequest)
 		return
 	}
-	
-	vars := mux.Vars(r)
-	messageID := vars["id"]
-	
+
 	// Delete from storage
-	key := fmt.Sprintf("dlq:%s", messageID)
-	err := h.storage.SetSetting(key, "__DELETED__")
+	err = h.storage.DeleteDLQMessage(messageID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to delete message: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Message deleted"))
 }
@@ -165,18 +155,14 @@ func (h *Handlers) DeleteDLQMessage(w http.ResponseWriter, r *http.Request) {
 // @Failure 503 {string} string "DLQ not configured"
 // @Router /api/dlq/policy [put]
 func (h *Handlers) ConfigureDLQRetryPolicy(w http.ResponseWriter, r *http.Request) {
-	if h.dlq == nil {
-		http.Error(w, "DLQ not configured", http.StatusServiceUnavailable)
-		return
-	}
-	
+
 	// In production, you'd parse and update the retry policy
 	var policy map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	
+
 	// For now, just return the current policy
 	response := map[string]interface{}{
 		"status": "policy updated",
@@ -188,7 +174,7 @@ func (h *Handlers) ConfigureDLQRetryPolicy(w http.ResponseWriter, r *http.Reques
 			"abandon_after":      "24h",
 		},
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }

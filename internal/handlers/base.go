@@ -12,7 +12,6 @@ import (
 
 	"webhook-router/internal/auth"
 	"webhook-router/internal/brokers"
-	"webhook-router/internal/brokers/dlq"
 	"webhook-router/internal/brokers/manager"
 	"webhook-router/internal/common/logging"
 	"webhook-router/internal/config"
@@ -34,7 +33,6 @@ type Handlers struct {
 	pipelineEngine pipeline.Engine
 	triggerManager *triggers.Manager
 	logger         logging.Logger
-	dlq            *dlq.SimpleDLQ
 	encryptor      *crypto.ConfigEncryptor
 }
 
@@ -52,16 +50,12 @@ func New(storage storage.Storage, broker brokers.Broker, cfg *config.Config, web
 	logger := logging.GetGlobalLogger().WithFields(
 		logging.Field{"component", "handlers"},
 	)
-	
+
 	// Create broker manager
 	brokerManager := manager.NewManager(storage)
-	
+
 	// Create DLQ if broker is available
-	var simpleDLQ *dlq.SimpleDLQ
-	if broker != nil {
-		simpleDLQ = dlq.NewSimpleDLQ(storage, broker)
-	}
-	
+
 	return &Handlers{
 		storage:        storage,
 		broker:         broker,
@@ -73,14 +67,8 @@ func New(storage storage.Storage, broker brokers.Broker, cfg *config.Config, web
 		pipelineEngine: pipelineEngine,
 		triggerManager: triggerManager,
 		logger:         logger,
-		dlq:            simpleDLQ,
 		encryptor:      encryptor,
 	}
-}
-
-// GetDLQ returns the DLQ instance
-func (h *Handlers) GetDLQ() *dlq.SimpleDLQ {
-	return h.dlq
 }
 
 // GetBrokerManager returns the broker manager instance
@@ -99,13 +87,13 @@ func (h *Handlers) extractToken(r *http.Request) (string, string) {
 	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimPrefix(authHeader, "Bearer "), "header"
 	}
-	
+
 	// Try cookie
 	cookie, err := r.Cookie("token")
 	if err == nil {
 		return cookie.Value, "cookie"
 	}
-	
+
 	return "", ""
 }
 
@@ -117,13 +105,13 @@ func (h *Handlers) validateSession(w http.ResponseWriter, r *http.Request) (*aut
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return nil, false
 	}
-	
+
 	session, valid := h.auth.ValidateSession(token)
 	if !valid {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return nil, false
 	}
-	
+
 	return session, true
 }
 
@@ -186,7 +174,7 @@ func (h *Handlers) serveStaticFile(w http.ResponseWriter, filename, contentType,
 		http.Error(w, notFoundMessage, http.StatusNotFound)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", contentType)
 	w.Write(content)
 }
@@ -196,11 +184,11 @@ func (h *Handlers) validatePasswordChange(newPassword, confirmPassword string) e
 	if newPassword != confirmPassword {
 		return fmt.Errorf("passwords do not match")
 	}
-	
+
 	if len(newPassword) < 8 {
 		return fmt.Errorf("password must be at least 8 characters")
 	}
-	
+
 	return nil
 }
 
@@ -223,9 +211,9 @@ func (h *Handlers) findMatchingRoutes(endpoint, method string) ([]*storage.Route
 	if err != nil {
 		return nil, fmt.Errorf("failed to get routes: %w", err)
 	}
-	
+
 	var matchedRoutes []*storage.Route
-	
+
 	// First try to match by endpoint name or path
 	if endpoint != "" {
 		for _, route := range routes {
@@ -234,7 +222,7 @@ func (h *Handlers) findMatchingRoutes(endpoint, method string) ([]*storage.Route
 			}
 		}
 	}
-	
+
 	// If no specific routes match, match by method
 	if len(matchedRoutes) == 0 {
 		for _, route := range routes {
@@ -243,7 +231,7 @@ func (h *Handlers) findMatchingRoutes(endpoint, method string) ([]*storage.Route
 			}
 		}
 	}
-	
+
 	return matchedRoutes, nil
 }
 
@@ -252,7 +240,7 @@ func (h *Handlers) createBrokerMessage(prefix, queue, routingKey string, body []
 	if routingKey == "" {
 		routingKey = queue
 	}
-	
+
 	return &brokers.Message{
 		MessageID:  fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()),
 		Queue:      queue,
@@ -270,26 +258,17 @@ func (h *Handlers) publishMessageWithDLQ(routeID int, message *brokers.Message, 
 		if h.broker == nil {
 			return fmt.Errorf("no broker configured")
 		}
-		
+
 		if err := h.broker.Publish(message); err != nil {
-			// Send to DLQ if configured
-			if h.dlq != nil {
-				if dlqErr := h.dlq.SendToFail(routeID, message, err); dlqErr != nil {
-					h.logger.Error("Failed to send message to DLQ", dlqErr,
-						logging.Field{"route_id", routeID},
-						logging.Field{"original_error", err.Error()},
-					)
-				}
-			}
+			// Note: DLQ is now handled per-broker via broker manager
 			return err
 		}
 		return nil
 	}
-	
+
 	// Use broker manager for specific broker when available
 	if brokerID != nil {
-		// TODO: Implement PublishWithFallback in broker manager
-		// return h.brokerManager.PublishWithFallback(*brokerID, routeID, message)
+		return h.brokerManager.PublishWithFallback(*brokerID, routeID, message)
 	}
 	// Fallback to default broker
 	return h.broker.Publish(message)
@@ -300,12 +279,12 @@ func (h *Handlers) processFilters(payload WebhookPayload, filtersJSON string) (b
 	if filtersJSON == "" || filtersJSON == "{}" {
 		return true, nil
 	}
-	
+
 	var filters map[string]interface{}
 	if err := json.Unmarshal([]byte(filtersJSON), &filters); err != nil {
 		return false, fmt.Errorf("failed to parse filters: %w", err)
 	}
-	
+
 	return h.matchesFilters(payload, filters), nil
 }
 
@@ -347,12 +326,12 @@ func (h *Handlers) parseHeaders(headersJSON string) (map[string]string, error) {
 	if headersJSON == "" || headersJSON == "{}" {
 		return make(map[string]string), nil
 	}
-	
+
 	var headers map[string]string
 	if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
 		return nil, fmt.Errorf("failed to parse headers: %w", err)
 	}
-	
+
 	return headers, nil
 }
 
@@ -374,12 +353,12 @@ func (h *Handlers) addSystemMetrics(status map[string]interface{}) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	status["system_metrics"] = map[string]interface{}{
-		"goroutines":     runtime.NumGoroutine(),
-		"memory_alloc":   m.Alloc / 1024 / 1024,      // MB
-		"memory_total":   m.TotalAlloc / 1024 / 1024, // MB
-		"memory_sys":     m.Sys / 1024 / 1024,        // MB
-		"gc_runs":        m.NumGC,
-		"cpu_count":      runtime.NumCPU(),
+		"goroutines":   runtime.NumGoroutine(),
+		"memory_alloc": m.Alloc / 1024 / 1024,      // MB
+		"memory_total": m.TotalAlloc / 1024 / 1024, // MB
+		"memory_sys":   m.Sys / 1024 / 1024,        // MB
+		"gc_runs":      m.NumGC,
+		"cpu_count":    runtime.NumCPU(),
 	}
 }
 
@@ -403,10 +382,9 @@ func (h *Handlers) addBrokerMetrics(status map[string]interface{}) {
 		status["dlq_statistics"] = brokerStats
 		status["configured_brokers"] = len(brokerStats)
 	}
-	
-	if h.dlq != nil {
-		if dlqStats, err := h.dlq.GetStats(); err == nil {
-			status["global_dlq_stats"] = dlqStats
-		}
+
+	// Get DLQ stats from storage
+	if dlqStats, err := h.storage.GetDLQStats(); err == nil {
+		status["dlq_stats"] = dlqStats
 	}
 }

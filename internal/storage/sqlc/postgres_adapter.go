@@ -730,17 +730,9 @@ func (s *PostgreSQLCAdapter) Ping() error {
 	return s.conn.Ping(ctx)
 }
 
-func (s *PostgreSQLCAdapter) GetStatistics(since time.Time) (*storage.Statistics, error) {
-	// TODO: Implement statistics gathering
-	return &storage.Statistics{
-		TotalRequests:      0,
-		SuccessfulRequests: 0,
-		FailedRequests:     0,
-		Since:              since,
-		TopEndpoints:       []storage.EndpointStats{},
-		ErrorBreakdown:     map[string]int{},
-	}, nil
-}
+// GetStatistics is not part of the Storage interface and is not used anywhere.
+// The actual statistics methods are GetStats() and GetRouteStats() which are already implemented.
+// This TODO was misleading - statistics functionality is already working.
 
 // Storage interface implementations
 

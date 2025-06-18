@@ -85,7 +85,7 @@ func main() {
 
 	// Load configuration
 	cfg := config.Load()
-	
+
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
@@ -103,7 +103,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
-	
+
 	switch cfg.DatabaseType {
 	case "postgres", "postgresql":
 		fmt.Printf("Database: PostgreSQL (%s:%s/%s)\n", cfg.PostgresHost, cfg.PostgresPort, cfg.PostgresDB)
@@ -161,7 +161,7 @@ func main() {
 
 	// Initialize auth with storage interface
 	authHandler := auth.New(store, cfg, redisClient)
-	
+
 	// Initialize OAuth2 manager
 	var oauthManager *oauth2.Manager
 	if redisClient != nil {
@@ -376,7 +376,7 @@ func main() {
 		MaxRetries:          3,
 	}
 	triggerManager = triggers.NewManager(store, brokerRegistry, broker, triggerManagerConfig)
-	
+
 	// Set OAuth2 manager
 	triggerManager.SetOAuthManager(oauthManager)
 
@@ -426,21 +426,20 @@ func main() {
 			encryptor = enc
 		}
 	}
-	
+
 	// Initialize handlers with new interfaces
 	h := handlers.New(store, broker, cfg, webFS, authHandler, routingEngine, pipelineEngine, triggerManager, encryptor)
-	
-	// TODO: Register broker factories with the broker manager when available
-	// brokerManager := h.GetBrokerManager()
-	// brokerManager.RegisterFactory("rabbitmq", rabbitmq.NewFactory())
-	// brokerManager.RegisterFactory("kafka", kafka.NewFactory())
-	// brokerManager.RegisterFactory("redis", redisbroker.NewFactory())
-	// brokerManager.RegisterFactory("aws", awsbroker.NewFactory())
-	// 
-	// // Load all broker configurations
-	// if err := brokerManager.ReloadBrokers(); err != nil {
-	//	log.Printf("Warning: Failed to load broker configurations: %v", err)
-	// }
+
+	// Register broker factories with the broker manager
+	brokerManager := h.GetBrokerManager()
+	brokerManager.RegisterFactory("rabbitmq", rabbitmq.GetFactory())
+	brokerManager.RegisterFactory("kafka", kafka.GetFactory())
+	brokerManager.RegisterFactory("redis", redisbroker.GetFactory())
+	brokerManager.RegisterFactory("aws", aws.GetFactory())
+	brokerManager.RegisterFactory("gcp", gcp.GetFactory())
+
+	// Brokers are now loaded on-demand when first accessed
+	log.Println("Broker Manager: Initialized with lazy loading")
 
 	// Set up routes
 	router := mux.NewRouter()
@@ -529,7 +528,7 @@ func main() {
 	api.HandleFunc("/pipelines/{id}/execute", h.ExecutePipeline).Methods("POST")
 	api.HandleFunc("/pipelines/metrics", h.GetPipelineMetrics).Methods("GET")
 	api.HandleFunc("/pipelines/stages/types", h.GetAvailableStageTypes).Methods("GET")
-	
+
 	// Dead Letter Queue endpoints (protected)
 	api.HandleFunc("/dlq/stats", h.GetDLQStats).Methods("GET")
 	api.HandleFunc("/dlq/messages", h.ListDLQMessages).Methods("GET")
@@ -559,21 +558,14 @@ func main() {
 		go func() {
 			ticker := time.NewTicker(1 * time.Minute)
 			defer ticker.Stop()
-			
+
 			for {
 				select {
 				case <-ticker.C:
-					// Retry global DLQ messages
-					if h.GetDLQ() != nil {
-						if err := h.GetDLQ().RetryFailedMessages(); err != nil {
-							log.Printf("Global DLQ retry error: %v", err)
-						}
+					// Retry per-broker DLQ messages
+					if err := brokerManager.RetryDLQMessages(); err != nil {
+						log.Printf("Per-broker DLQ retry error: %v", err)
 					}
-					
-					// TODO: Retry per-broker DLQ messages when broker manager available
-					// if err := brokerManager.RetryDLQMessages(); err != nil {
-					//	log.Printf("Per-broker DLQ retry error: %v", err)
-					// }
 				case <-dlqWorkerStop:
 					return
 				}

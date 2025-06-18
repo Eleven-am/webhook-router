@@ -13,6 +13,7 @@ type BrokerDLQ struct {
 	dlqBroker      Broker
 	storage        storage.Storage
 	retryPolicy    RetryPolicy
+	brokerGetter   func(int) (Broker, error) // Function to get broker by ID
 }
 
 // NewBrokerDLQ creates a new per-broker DLQ instance
@@ -23,7 +24,13 @@ func NewBrokerDLQ(sourceBrokerID, dlqBrokerID int, dlqBroker Broker, storage sto
 		dlqBroker:      dlqBroker,
 		storage:        storage,
 		retryPolicy:    *DefaultRetryPolicy(),
+		brokerGetter:   nil, // Will be set by broker manager
 	}
+}
+
+// SetBrokerGetter sets the function to get brokers by ID
+func (b *BrokerDLQ) SetBrokerGetter(getter func(int) (Broker, error)) {
+	b.brokerGetter = getter
 }
 
 // SendToFail sends a failed message to this broker's DLQ
@@ -89,8 +96,23 @@ func (b *BrokerDLQ) SendToFail(routeID int, message *Message, err error) error {
 		dlqMessage.Headers["X-Original-"+key] = value
 	}
 
+	// Get DLQ broker if not set (lazy loading)
+	dlqBroker := b.dlqBroker
+	if dlqBroker == nil && b.brokerGetter != nil {
+		broker, err := b.brokerGetter(b.dlqBrokerID)
+		if err != nil {
+			return fmt.Errorf("failed to get DLQ broker: %w", err)
+		}
+		dlqBroker = broker
+		defer broker.Close() // Decrement ref count when done
+	}
+
+	if dlqBroker == nil {
+		return fmt.Errorf("DLQ broker not available")
+	}
+
 	// Send to DLQ broker
-	if err := b.dlqBroker.Publish(dlqMessage); err != nil {
+	if err := dlqBroker.Publish(dlqMessage); err != nil {
 		return fmt.Errorf("failed to publish to DLQ broker: %w", err)
 	}
 
@@ -129,14 +151,37 @@ func (b *BrokerDLQ) RetryFailedMessages() error {
 		retryMessage.Headers["X-Retry-Count"] = fmt.Sprintf("%d", msg.FailureCount)
 		retryMessage.Headers["X-Original-Failure"] = msg.ErrorMessage
 
-		// TODO: Get the original broker instance and publish to it
-		// For now, we'll just update the tracking
+		// Get the original broker instance and publish to it
+		var publishErr error
+		if b.brokerGetter != nil {
+			sourceBroker, err := b.brokerGetter(b.sourceBrokerID)
+			if err != nil {
+				publishErr = fmt.Errorf("failed to get source broker: %w", err)
+			} else {
+				// Attempt to publish to the original broker
+				publishErr = sourceBroker.Publish(retryMessage)
+			}
+		} else {
+			publishErr = fmt.Errorf("broker getter not configured")
+		}
 
 		// Update failure tracking
-		msg.FailureCount++
+		if publishErr != nil {
+			// Retry failed
+			msg.FailureCount++
+			msg.ErrorMessage = publishErr.Error()
+		} else {
+			// Retry succeeded - mark as processed
+			msg.Status = "processed"
+		}
+
 		msg.LastFailure = time.Now()
-		nextRetry := b.calculateNextRetry(msg.FailureCount)
-		msg.NextRetry = &nextRetry
+		if publishErr != nil {
+			nextRetry := b.calculateNextRetry(msg.FailureCount)
+			msg.NextRetry = &nextRetry
+		} else {
+			msg.NextRetry = nil
+		}
 
 		if err := b.storage.UpdateDLQMessage(msg); err != nil {
 			return fmt.Errorf("failed to update DLQ message: %w", err)
