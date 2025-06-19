@@ -27,7 +27,6 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -72,10 +71,10 @@ import (
 	"webhook-router/internal/triggers/schedule"
 )
 
-// Embed the web directory
+// Embed the frontend build
 //
-//go:embed web/*
-var webFS embed.FS
+//go:embed frontend/dist/*
+var frontendFS embed.FS
 
 func main() {
 	// Set up CPU usage
@@ -389,6 +388,7 @@ func main() {
 	pipelineEngine.RegisterStageFactory("filter", &stages.FilterStageFactory{})
 	pipelineEngine.RegisterStageFactory("enrich", stages.NewEnrichmentStageFactory(redisClient))
 	pipelineEngine.RegisterStageFactory("aggregate", &stages.AggregationStageFactory{})
+	pipelineEngine.RegisterStageFactory("branch", stages.NewBranchStageFactory(pipelineEngine))
 
 	// Start pipeline engine
 	if err := pipelineEngine.Start(context.Background()); err != nil {
@@ -453,7 +453,7 @@ func main() {
 	// Encryptor is already initialized above if EncryptionKey is set
 
 	// Initialize handlers with new interfaces
-	h := handlers.New(store, broker, cfg, webFS, authHandler, routingEngine, pipelineEngine, triggerManager, encryptor)
+	h := handlers.New(store, broker, cfg, frontendFS, authHandler, routingEngine, pipelineEngine, triggerManager, encryptor)
 
 	// Register broker factories with the broker manager
 	brokerManager := h.GetBrokerManager()
@@ -564,18 +564,9 @@ func main() {
 	api.HandleFunc("/dlq/retry", h.RetryDLQMessages).Methods("POST")
 	api.HandleFunc("/dlq/policy", h.ConfigureDLQRetryPolicy).Methods("PUT")
 
-	// Serve static files from embedded filesystem (protected)
-	staticFS, err := fs.Sub(webFS, "web/static")
-	if err != nil {
-		logging.Error("Failed to create static filesystem", err)
-	os.Exit(1)
-	}
-	protected.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
-
-	// Frontend routes (protected)
-	protected.HandleFunc("/", h.ServeFrontend).Methods("GET")
-	protected.HandleFunc("/admin", h.ServeFrontend).Methods("GET")
-	protected.HandleFunc("/settings", h.ServeSettings).Methods("GET")
+	// Serve SPA for all non-API routes (protected)
+	// This must be the last route to catch all paths
+	protected.PathPrefix("/").Handler(h.ServeSPA())
 
 	// JWT tokens are stateless and don't need cleanup
 	// No session cleanup routine needed
