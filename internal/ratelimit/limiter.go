@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/redis"
 )
 
@@ -54,7 +55,7 @@ func (l *Limiter) CheckLimit(ctx context.Context, key string, limit int, window 
 
 	_, current, err := l.redis.CheckRateLimit(ctx, fmt.Sprintf("rate_limit:%s", key), limit, window)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check rate limit: %w", err)
+		return nil, errors.InternalError("failed to check rate limit", err)
 	}
 
 	remaining := limit - current

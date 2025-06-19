@@ -2,11 +2,12 @@ package rabbitmq
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/streadway/amqp"
+	"webhook-router/internal/common/errors"
+	"webhook-router/internal/common/logging"
 )
 
 type ConnectionPool struct {
@@ -36,7 +37,7 @@ func NewConnectionPool(url string, maxSize int) (*ConnectionPool, error) {
 		if err != nil {
 			// Close any connections we've already created
 			pool.Close()
-			return nil, fmt.Errorf("failed to create initial RabbitMQ connection: %w", err)
+			return nil, errors.ConnectionError("failed to create initial RabbitMQ connection", err)
 		}
 		pool.connections <- conn
 	}
@@ -153,7 +154,9 @@ func (c *Client) PublishWebhook(queue, exchange, routingKey string, body []byte)
 	if queue != "" {
 		_, err := c.QueueDeclare(queue, true, false, false, false, nil)
 		if err != nil {
-			log.Printf("Warning: failed to declare queue %s: %v", queue, err)
+			logging.Warn("Failed to declare queue", 
+				logging.Field{"queue", queue},
+				logging.Field{"error", err})
 		}
 	}
 
@@ -161,14 +164,19 @@ func (c *Client) PublishWebhook(queue, exchange, routingKey string, body []byte)
 	if exchange != "" {
 		err := c.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
 		if err != nil {
-			log.Printf("Warning: failed to declare exchange %s: %v", exchange, err)
+			logging.Warn("Failed to declare exchange", 
+				logging.Field{"exchange", exchange},
+				logging.Field{"error", err})
 		}
 
 		// Bind queue to exchange if both are specified
 		if queue != "" {
 			err = c.QueueBind(queue, routingKey, exchange, false, nil)
 			if err != nil {
-				log.Printf("Warning: failed to bind queue %s to exchange %s: %v", queue, exchange, err)
+				logging.Warn("Failed to bind queue to exchange", 
+					logging.Field{"queue", queue},
+					logging.Field{"exchange", exchange},
+					logging.Field{"error", err})
 			}
 		}
 	}

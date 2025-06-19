@@ -1,6 +1,6 @@
-// @title Webhook Router API
+// @title Event Router API
 // @version 1.0
-// @description Enterprise-grade webhook routing and data transformation platform
+// @description Enterprise-grade event processing and routing platform with 7 event sources
 // @termsOfService http://swagger.io/terms/
 
 // @contact.name API Support
@@ -49,6 +49,7 @@ import (
 	"webhook-router/internal/brokers/kafka"
 	"webhook-router/internal/brokers/rabbitmq"
 	redisbroker "webhook-router/internal/brokers/redis"
+	"webhook-router/internal/common/logging"
 	"webhook-router/internal/config"
 	"webhook-router/internal/crypto"
 	"webhook-router/internal/handlers"
@@ -86,9 +87,14 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
+	// Initialize logging
+	logging.InitGlobalLogger()
+	defer logging.MustSync() // Flush logs on exit
+
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("Configuration validation failed: %v", err)
+		logging.Error("Configuration validation failed", err)
+	os.Exit(1)
 	}
 
 	// Initialize storage registry
@@ -101,7 +107,8 @@ func main() {
 	}
 	store, err := storageRegistry.Create("sqlc", genericConfig)
 	if err != nil {
-		log.Fatalf("Failed to initialize storage: %v", err)
+		logging.Error("Failed to initialize storage", err)
+	os.Exit(1)
 	}
 
 	switch cfg.DatabaseType {
@@ -119,7 +126,7 @@ func main() {
 	// Initialize Redis client for rate limiting and distributed locks (optional)
 	var redisClient *redis.Client
 	var rateLimiter *ratelimit.Limiter
-	var lockManager *locks.Manager
+	var lockManager locks.LockManagerInterface
 
 	if cfg.RedisAddress != "" {
 		redisDB, _ := strconv.Atoi(cfg.RedisDB)
@@ -133,7 +140,7 @@ func main() {
 
 		redisClient, err = redis.NewClient(redisConfig)
 		if err != nil {
-			log.Printf("Warning: Failed to initialize Redis client: %v", err)
+			logging.Warn("Failed to initialize Redis client", logging.Field{"error", err})
 		} else {
 			fmt.Printf("Redis: Connected (%s)\n", cfg.RedisAddress)
 			defer redisClient.Close()
@@ -149,7 +156,11 @@ func main() {
 			rateLimiter = ratelimit.NewLimiter(redisClient, rateLimitConfig)
 
 			// Initialize distributed lock manager
-			lockManager = locks.NewManager(redisClient)
+			var err error
+			lockManager, err = locks.NewDistributedLockManager(redisClient)
+			if err != nil {
+				log.Fatalf("Failed to create distributed lock manager: %v", err)
+			}
 			defer lockManager.Close()
 
 			fmt.Printf("Rate Limiting: Enabled (%d req/%s)\n", defaultLimit, window)
@@ -162,18 +173,36 @@ func main() {
 	// Initialize auth with storage interface
 	authHandler := auth.New(store, cfg, redisClient)
 
+	// Initialize encryption if key is available
+	var encryptor *crypto.ConfigEncryptor
+	if encryptionKey := cfg.EncryptionKey; encryptionKey != "" {
+		var err error
+		encryptor, err = crypto.NewConfigEncryptor(encryptionKey)
+		if err != nil {
+			logging.Warn("Failed to initialize encryption", logging.Field{"error", err})
+		} else {
+			logging.Info("Configuration encryption enabled")
+		}
+	}
+
 	// Initialize OAuth2 manager
 	var oauthManager *oauth2.Manager
 	if redisClient != nil {
 		// Use Redis for distributed token storage
 		tokenStorage := oauth2.NewRedisTokenStorage(redisClient)
 		oauthManager = oauth2.NewManager(tokenStorage)
-		fmt.Printf("OAuth2 Manager: Initialized with Redis storage\n")
+		logging.Info("OAuth2 manager initialized", logging.Field{"storage", "Redis"})
 	} else {
-		// Use database for token storage
-		tokenStorage := oauth2.NewDBTokenStorage(store)
+		// Use database for token storage with optional encryption
+		var tokenStorage oauth2.TokenStorage
+		if encryptor != nil {
+			tokenStorage = oauth2.NewSecureDBTokenStorage(store, encryptor)
+			logging.Info("OAuth2 manager initialized", logging.Field{"storage", "Database (encrypted)"})
+		} else {
+			tokenStorage = oauth2.NewDBTokenStorage(store)
+			logging.Info("OAuth2 manager initialized", logging.Field{"storage", "Database (plaintext)"})
+		}
 		oauthManager = oauth2.NewManager(tokenStorage)
-		fmt.Printf("OAuth2 Manager: Initialized with database storage\n")
 	}
 	defer oauthManager.Close()
 
@@ -200,10 +229,10 @@ func main() {
 		if rmqURL == "" || rmqURL == "amqp://guest:guest@localhost:5672/" {
 			if dbURL, err := store.GetSetting("rabbitmq_url"); err == nil && dbURL != "" {
 				rmqURL = dbURL
-				log.Println("Using RabbitMQ URL from database settings")
+				logging.Info("Using RabbitMQ URL from database settings")
 			}
 		} else {
-			log.Println("Using RabbitMQ URL from environment variable")
+			logging.Info("Using RabbitMQ URL from environment variable")
 		}
 
 		if rmqURL != "" && rmqURL != "amqp://guest:guest@localhost:5672/" {
@@ -214,7 +243,7 @@ func main() {
 
 			broker, err = brokerRegistry.Create("rabbitmq", rmqConfig)
 			if err != nil {
-				log.Printf("Warning: Failed to initialize RabbitMQ broker: %v", err)
+				logging.Warn("Failed to initialize RabbitMQ broker", logging.Field{"error", err})
 			} else {
 				defer broker.Close()
 				fmt.Printf("RabbitMQ: Connected\n")
@@ -236,7 +265,7 @@ func main() {
 
 			broker, err = brokerRegistry.Create("kafka", kafkaConfig)
 			if err != nil {
-				log.Printf("Warning: Failed to initialize Kafka broker: %v", err)
+				logging.Warn("Failed to initialize Kafka broker", logging.Field{"error", err})
 			} else {
 				defer broker.Close()
 				fmt.Printf("Kafka: Connected\n")
@@ -259,7 +288,7 @@ func main() {
 
 			broker, err = brokerRegistry.Create("redis", redisConfig)
 			if err != nil {
-				log.Printf("Warning: Failed to initialize Redis broker: %v", err)
+				logging.Warn("Failed to initialize Redis broker", logging.Field{"error", err})
 			} else {
 				defer broker.Close()
 				fmt.Printf("Redis: Connected\n")
@@ -286,7 +315,7 @@ func main() {
 
 			broker, err = brokerRegistry.Create("aws", awsConfig)
 			if err != nil {
-				log.Printf("Warning: Failed to initialize AWS broker: %v", err)
+				logging.Warn("Failed to initialize AWS broker", logging.Field{"error", err})
 			} else {
 				defer broker.Close()
 				fmt.Printf("AWS: Connected\n")
@@ -322,7 +351,7 @@ func main() {
 
 			broker, err = brokerRegistry.Create("gcp", gcpConfig)
 			if err != nil {
-				log.Printf("Warning: Failed to initialize GCP Pub/Sub broker: %v", err)
+				logging.Warn("Failed to initialize GCP Pub/Sub broker", logging.Field{"error", err})
 			} else {
 				defer broker.Close()
 				fmt.Printf("GCP Pub/Sub: Connected\n")
@@ -330,11 +359,11 @@ func main() {
 		}
 
 	default:
-		log.Printf("Unknown broker type: %s", brokerType)
+		logging.Warn("Unknown broker type", logging.Field{"type", brokerType})
 	}
 
 	if broker == nil {
-		log.Println("No broker configured. Brokers can be configured through the admin interface.")
+		logging.Info("No broker configured", logging.Field{"note", "Brokers can be configured through the admin interface"})
 	}
 
 	// Initialize routing engine
@@ -344,7 +373,7 @@ func main() {
 
 	// Start routing engine
 	if err := routingEngine.Start(context.Background()); err != nil {
-		log.Printf("Warning: Failed to start routing engine: %v", err)
+		logging.Warn("Failed to start routing engine", logging.Field{"error", err})
 	}
 	fmt.Printf("Routing Engine: Started\n")
 
@@ -355,6 +384,7 @@ func main() {
 	pipelineEngine.RegisterStageFactory("json_transform", &stages.JSONTransformStageFactory{})
 	pipelineEngine.RegisterStageFactory("xml_transform", &stages.XMLTransformStageFactory{})
 	pipelineEngine.RegisterStageFactory("template", &stages.TemplateStageFactory{})
+	pipelineEngine.RegisterStageFactory("js_transform", &stages.JSTransformStageFactory{})
 	pipelineEngine.RegisterStageFactory("validate", &stages.ValidationStageFactory{})
 	pipelineEngine.RegisterStageFactory("filter", &stages.FilterStageFactory{})
 	pipelineEngine.RegisterStageFactory("enrich", stages.NewEnrichmentStageFactory(redisClient))
@@ -362,7 +392,7 @@ func main() {
 
 	// Start pipeline engine
 	if err := pipelineEngine.Start(context.Background()); err != nil {
-		log.Printf("Warning: Failed to start pipeline engine: %v", err)
+		logging.Warn("Failed to start pipeline engine", logging.Field{"error", err})
 	}
 	fmt.Printf("Pipeline Engine: Started\n")
 
@@ -379,6 +409,10 @@ func main() {
 
 	// Set OAuth2 manager
 	triggerManager.SetOAuthManager(oauthManager)
+	
+	// Set Pipeline engine for response transformations
+	pipelineAdapter := pipeline.NewEngineAdapter(pipelineEngine)
+	triggerManager.SetPipelineEngine(pipelineAdapter)
 
 	// Register trigger factories
 	triggerManager.GetRegistry().Register("schedule", schedule.GetFactory())
@@ -402,30 +436,21 @@ func main() {
 		// Start distributed trigger management
 		go func() {
 			if err := distributedTriggerManager.Start(); err != nil {
-				log.Printf("Warning: Failed to start distributed trigger manager: %v", err)
+				logging.Warn("Failed to start distributed trigger manager", logging.Field{"error", err})
 			}
 		}()
-		fmt.Printf("Distributed Trigger Manager: Started\n")
+		logging.Info("Distributed trigger manager started")
 	} else {
 		// Start regular trigger manager
 		go func() {
 			if err := triggerManager.Start(); err != nil {
-				log.Printf("Warning: Failed to start trigger manager: %v", err)
+				logging.Warn("Failed to start trigger manager", logging.Field{"error", err})
 			}
 		}()
-		fmt.Printf("Trigger Manager: Started\n")
+		logging.Info("Trigger manager started")
 	}
 
-	// Initialize encryptor for sensitive data
-	var encryptor *crypto.ConfigEncryptor
-	if cfg.EncryptionKey != "" {
-		enc, err := crypto.NewConfigEncryptor(cfg.EncryptionKey)
-		if err != nil {
-			log.Printf("Warning: Failed to create encryptor: %v", err)
-		} else {
-			encryptor = enc
-		}
-	}
+	// Encryptor is already initialized above if EncryptionKey is set
 
 	// Initialize handlers with new interfaces
 	h := handlers.New(store, broker, cfg, webFS, authHandler, routingEngine, pipelineEngine, triggerManager, encryptor)
@@ -439,7 +464,10 @@ func main() {
 	brokerManager.RegisterFactory("gcp", gcp.GetFactory())
 
 	// Brokers are now loaded on-demand when first accessed
-	log.Println("Broker Manager: Initialized with lazy loading")
+	logging.Info("Broker manager initialized", logging.Field{"mode", "lazy loading"})
+	
+	// Set broker manager on trigger manager for DLQ support
+	triggerManager.SetBrokerManager(brokerManager)
 
 	// Set up routes
 	router := mux.NewRouter()
@@ -539,7 +567,8 @@ func main() {
 	// Serve static files from embedded filesystem (protected)
 	staticFS, err := fs.Sub(webFS, "web/static")
 	if err != nil {
-		log.Fatalf("Failed to create static filesystem: %v", err)
+		logging.Error("Failed to create static filesystem", err)
+	os.Exit(1)
 	}
 	protected.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 
@@ -564,14 +593,14 @@ func main() {
 				case <-ticker.C:
 					// Retry per-broker DLQ messages
 					if err := brokerManager.RetryDLQMessages(); err != nil {
-						log.Printf("Per-broker DLQ retry error: %v", err)
+						logging.Warn("Per-broker DLQ retry error", logging.Field{"error", err})
 					}
 				case <-dlqWorkerStop:
 					return
 				}
 			}
 		}()
-		fmt.Println("DLQ Retry Worker: Started")
+		logging.Info("DLQ retry worker started")
 	}
 
 	// Set up HTTP server
@@ -585,9 +614,10 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		fmt.Printf("Server starting on port %s...\n", cfg.Port)
+		logging.Info("Server starting", logging.Field{"port", cfg.Port})
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v", err)
+			logging.Error("Server failed to start", err)
+		os.Exit(1)
 		}
 	}()
 
@@ -595,7 +625,7 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	fmt.Println("Shutting down server...")
+	logging.Info("Shutting down server...")
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -603,42 +633,43 @@ func main() {
 
 	// Stop routing engine
 	if err := routingEngine.Stop(); err != nil {
-		log.Printf("Error stopping routing engine: %v", err)
+		logging.Warn("Error stopping routing engine", logging.Field{"error", err})
 	} else {
-		fmt.Println("Routing Engine: Stopped")
+		logging.Info("Routing engine stopped")
 	}
 
 	// Stop pipeline engine
 	if err := pipelineEngine.Stop(); err != nil {
-		log.Printf("Error stopping pipeline engine: %v", err)
+		logging.Warn("Error stopping pipeline engine", logging.Field{"error", err})
 	} else {
-		fmt.Println("Pipeline Engine: Stopped")
+		logging.Info("Pipeline engine stopped")
 	}
 
 	// Stop DLQ worker
 	if dlqWorkerStop != nil {
 		close(dlqWorkerStop)
-		fmt.Println("DLQ Retry Worker: Stopped")
+		logging.Info("DLQ retry worker stopped")
 	}
 
 	// Stop trigger managers
 	if distributedTriggerManager != nil {
 		if err := distributedTriggerManager.Stop(); err != nil {
-			log.Printf("Error stopping distributed trigger manager: %v", err)
+			logging.Warn("Error stopping distributed trigger manager", logging.Field{"error", err})
 		} else {
-			fmt.Println("Distributed Trigger Manager: Stopped")
+			logging.Info("Distributed trigger manager stopped")
 		}
 	} else if triggerManager != nil {
 		if err := triggerManager.Stop(); err != nil {
-			log.Printf("Error stopping trigger manager: %v", err)
+			logging.Warn("Error stopping trigger manager", logging.Field{"error", err})
 		} else {
-			fmt.Println("Trigger Manager: Stopped")
+			logging.Info("Trigger manager stopped")
 		}
 	}
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		logging.Error("Server forced to shutdown", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("Server exited")
+	logging.Info("Server exited")
 }

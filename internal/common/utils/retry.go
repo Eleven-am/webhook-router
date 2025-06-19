@@ -3,8 +3,9 @@ package utils
 import (
 	"context"
 	"crypto/rand"
-	"fmt"
 	"time"
+
+	"webhook-router/internal/common/errors"
 )
 
 // RetryConfig holds configuration for retry operations with exponential backoff.
@@ -100,7 +101,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 		// Wait before next attempt
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("retry cancelled: %w", ctx.Err())
+			return errors.InternalError("retry cancelled", ctx.Err())
 		case <-time.After(delay):
 			// Calculate next delay with exponential backoff
 			delay = time.Duration(float64(delay) * config.BackoffFactor)
@@ -116,7 +117,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 		}
 	}
 	
-	return fmt.Errorf("max retries exceeded: %w", lastErr)
+	return errors.InternalError("max retries exceeded", lastErr)
 }
 
 // Retry executes a function with simple fixed-delay retry logic.

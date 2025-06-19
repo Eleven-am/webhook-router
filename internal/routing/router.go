@@ -2,10 +2,11 @@ package routing
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
+	
+	"webhook-router/internal/common/errors"
 )
 
 // BasicRouter implements the Router interface with priority-based routing.
@@ -160,7 +161,7 @@ func (r *BasicRouter) AddRule(rule *RouteRule) error {
 	
 	// Compile rule for faster evaluation
 	if err := r.ruleEngine.CompileRule(rule); err != nil {
-		return fmt.Errorf("failed to compile rule: %w", err)
+		return errors.InternalError("failed to compile rule", err)
 	}
 	
 	r.mu.Lock()
@@ -169,7 +170,7 @@ func (r *BasicRouter) AddRule(rule *RouteRule) error {
 	// Check for duplicate IDs
 	for _, existingRule := range r.rules {
 		if existingRule.ID == rule.ID {
-			return fmt.Errorf("rule with ID %s already exists", rule.ID)
+			return errors.ValidationError("rule with ID " + rule.ID + " already exists")
 		}
 	}
 	
@@ -189,7 +190,7 @@ func (r *BasicRouter) UpdateRule(rule *RouteRule) error {
 	
 	// Compile rule for faster evaluation
 	if err := r.ruleEngine.CompileRule(rule); err != nil {
-		return fmt.Errorf("failed to compile rule: %w", err)
+		return errors.InternalError("failed to compile rule", err)
 	}
 	
 	r.mu.Lock()

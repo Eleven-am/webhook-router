@@ -8,7 +8,6 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"hash"
 	"io"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 	"strings"
 	"time"
 	
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/common/logging"
 )
 
@@ -137,12 +137,12 @@ func (v *Verifier) parseSignatureFormat(headerValue, format string) (signature s
 	// Match against header value
 	re, err := regexp.Compile("^" + pattern + "$")
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid format pattern: %v", err)
+		return "", nil, errors.InternalError("invalid format pattern", err)
 	}
 	
 	matches := re.FindStringSubmatch(headerValue)
 	if matches == nil {
-		return "", nil, fmt.Errorf("header value doesn't match format")
+		return "", nil, errors.ValidationError("header value doesn't match format")
 	}
 	
 	// Extract captured values
@@ -160,7 +160,7 @@ func (v *Verifier) parseSignatureFormat(headerValue, format string) (signature s
 	}
 	
 	if signature == "" {
-		return "", nil, fmt.Errorf("signature not found in header value")
+		return "", nil, errors.ValidationError("signature not found in header value")
 	}
 	
 	return signature, metadata, nil
@@ -170,7 +170,7 @@ func (v *Verifier) parseSignatureFormat(headerValue, format string) (signature s
 func (v *Verifier) getSecret(source string, r *http.Request) (string, error) {
 	parts := strings.SplitN(source, ":", 2)
 	if len(parts) != 2 {
-		return "", fmt.Errorf("invalid secret source format")
+		return "", errors.ValidationError("invalid secret source format")
 	}
 	
 	sourceType, sourceValue := parts[0], parts[1]
@@ -179,7 +179,7 @@ func (v *Verifier) getSecret(source string, r *http.Request) (string, error) {
 	case "env":
 		secret := os.Getenv(sourceValue)
 		if secret == "" {
-			return "", fmt.Errorf("environment variable %s not set", sourceValue)
+			return "", errors.ConfigError("environment variable " + sourceValue + " not set")
 		}
 		return secret, nil
 		
@@ -190,12 +190,12 @@ func (v *Verifier) getSecret(source string, r *http.Request) (string, error) {
 	case "header":
 		secret := r.Header.Get(sourceValue)
 		if secret == "" {
-			return "", fmt.Errorf("header %s not found", sourceValue)
+			return "", errors.ValidationError("header " + sourceValue + " not found")
 		}
 		return secret, nil
 		
 	default:
-		return "", fmt.Errorf("unsupported secret source type: %s", sourceType)
+		return "", errors.ValidationError("unsupported secret source type: " + sourceType)
 	}
 }
 
@@ -289,7 +289,7 @@ func (v *Verifier) computeSignature(data []byte, secret, algorithm, encoding str
 	case "hmac-sha512":
 		h = hmac.New(sha512.New, []byte(secret))
 	default:
-		return "", fmt.Errorf("unsupported algorithm: %s", algorithm)
+		return "", errors.ValidationError("unsupported algorithm: " + algorithm)
 	}
 	
 	h.Write(data)
@@ -301,7 +301,7 @@ func (v *Verifier) computeSignature(data []byte, secret, algorithm, encoding str
 	case "base64":
 		return base64.StdEncoding.EncodeToString(signature), nil
 	default:
-		return "", fmt.Errorf("unsupported encoding: %s", encoding)
+		return "", errors.ValidationError("unsupported encoding: " + encoding)
 	}
 }
 

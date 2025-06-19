@@ -32,9 +32,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
+	"webhook-router/internal/common/errors"
 )
 
 // ConfigEncryptor handles encryption and decryption of sensitive configuration data
@@ -72,7 +71,7 @@ type ConfigEncryptor struct {
 //	}
 func NewConfigEncryptor(key string) (*ConfigEncryptor, error) {
 	if key == "" {
-		return nil, errors.New("encryption key cannot be empty")
+		return nil, errors.ValidationError("encryption key cannot be empty")
 	}
 	
 	// Convert key to bytes and ensure it's 32 bytes for AES-256
@@ -119,19 +118,19 @@ func (e *ConfigEncryptor) Encrypt(plaintext string) (string, error) {
 	
 	block, err := aes.NewCipher(e.key)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
+		return "", errors.InternalError("failed to create cipher", err)
 	}
 	
 	// Create GCM mode
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
+		return "", errors.InternalError("failed to create GCM", err)
 	}
 	
 	// Create nonce
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("failed to create nonce: %w", err)
+		return "", errors.InternalError("failed to create nonce", err)
 	}
 	
 	// Encrypt data
@@ -177,28 +176,28 @@ func (e *ConfigEncryptor) Decrypt(ciphertext string) (string, error) {
 	// Decode from base64
 	data, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode ciphertext: %w", err)
+		return "", errors.InternalError("failed to decode ciphertext", err)
 	}
 	
 	block, err := aes.NewCipher(e.key)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
+		return "", errors.InternalError("failed to create cipher", err)
 	}
 	
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
+		return "", errors.InternalError("failed to create GCM", err)
 	}
 	
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
-		return "", errors.New("ciphertext too short")
+		return "", errors.ValidationError("ciphertext too short")
 	}
 	
 	nonce, ciphertextBytes := data[:nonceSize], data[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertextBytes, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to decrypt: %w", err)
+		return "", errors.InternalError("failed to decrypt", err)
 	}
 	
 	return string(plaintext), nil
@@ -206,18 +205,6 @@ func (e *ConfigEncryptor) Decrypt(ciphertext string) (string, error) {
 
 // EncryptJSON encrypts a JSON-serializable object by marshaling it to JSON
 // and then encrypting the resulting string.
-//
-// This method is currently not implemented. As a workaround, you can manually
-// marshal the object to JSON and then use the Encrypt method:
-//
-//	jsonBytes, err := json.Marshal(myObject)
-//	if err != nil {
-//		return "", fmt.Errorf("failed to marshal JSON: %w", err)
-//	}
-//	encrypted, err := encryptor.Encrypt(string(jsonBytes))
-//	if err != nil {
-//		return "", fmt.Errorf("failed to encrypt JSON: %w", err)
-//	}
 //
 // Parameters:
 //   - v: The object to marshal to JSON and encrypt
@@ -229,7 +216,7 @@ func (e *ConfigEncryptor) EncryptJSON(v interface{}) (string, error) {
 	// Marshal to JSON first
 	jsonBytes, err := json.Marshal(v)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal JSON: %w", err)
+		return "", errors.InternalError("failed to marshal JSON", err)
 	}
 	
 	// Encrypt the JSON string

@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/storage"
 
 	"github.com/gorilla/mux"
@@ -137,20 +137,22 @@ func (h *Handlers) CreateRoute(w http.ResponseWriter, r *http.Request) {
 // @Tags routes
 // @Produce json
 // @Security SessionAuth
-// @Param id path int true "Route ID"
+// @Param id path string true "Route ID"
 // @Success 200 {object} storage.Route "Route details"
 // @Failure 400 {string} string "Invalid route ID"
 // @Failure 404 {string} string "Route not found"
 // @Router /routes/{id} [get]
 func (h *Handlers) GetRoute(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
+	id := vars["id"]
+
+	userID, err := h.getUserIDFromRequest(r)
 	if err != nil {
-		http.Error(w, "Invalid route ID", http.StatusBadRequest)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	route, err := h.storage.GetRoute(id)
+	route, err := h.storage.GetRoute(id, userID)
 	if err != nil {
 		http.Error(w, "Route not found", http.StatusNotFound)
 		return
@@ -167,7 +169,7 @@ func (h *Handlers) GetRoute(w http.ResponseWriter, r *http.Request) {
 // @Accept json
 // @Produce json
 // @Security SessionAuth
-// @Param id path int true "Route ID"
+// @Param id path string true "Route ID"
 // @Param route body storage.Route true "Route configuration"
 // @Success 200 {object} storage.Route "Updated route"
 // @Failure 400 {string} string "Invalid JSON or route ID"
@@ -175,9 +177,11 @@ func (h *Handlers) GetRoute(w http.ResponseWriter, r *http.Request) {
 // @Router /routes/{id} [put]
 func (h *Handlers) UpdateRoute(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
+	id := vars["id"]
+
+	userID, err := h.getUserIDFromRequest(r)
 	if err != nil {
-		http.Error(w, "Invalid route ID", http.StatusBadRequest)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -198,7 +202,7 @@ func (h *Handlers) UpdateRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	
-	if err := h.storage.UpdateRoute(&route); err != nil {
+	if err := h.storage.UpdateRoute(&route, userID); err != nil {
 		http.Error(w, "Failed to update route", http.StatusInternalServerError)
 		return
 	}
@@ -212,20 +216,22 @@ func (h *Handlers) UpdateRoute(w http.ResponseWriter, r *http.Request) {
 // @Description Removes a webhook route configuration
 // @Tags routes
 // @Security SessionAuth
-// @Param id path int true "Route ID"
+// @Param id path string true "Route ID"
 // @Success 204 "No Content"
 // @Failure 400 {string} string "Invalid route ID"
 // @Failure 500 {string} string "Failed to delete route"
 // @Router /routes/{id} [delete]
 func (h *Handlers) DeleteRoute(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
+	id := vars["id"]
+
+	userID, err := h.getUserIDFromRequest(r)
 	if err != nil {
-		http.Error(w, "Invalid route ID", http.StatusBadRequest)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	if err := h.storage.DeleteRoute(id); err != nil {
+	if err := h.storage.DeleteRoute(id, userID); err != nil {
 		http.Error(w, "Failed to delete route", http.StatusInternalServerError)
 		return
 	}
@@ -238,21 +244,24 @@ func (h *Handlers) DeleteRoute(w http.ResponseWriter, r *http.Request) {
 // @Description Tests a webhook route by sending a sample payload
 // @Tags routes
 // @Security SessionAuth
-// @Param id path int true "Route ID"
+// @Param id path string true "Route ID"
 // @Success 200 {object} map[string]interface{} "Test result"
 // @Failure 400 {string} string "Invalid route ID"
+// @Failure 401 {string} string "Unauthorized"
 // @Failure 404 {string} string "Route not found"
 // @Failure 503 {string} string "No broker configured"
 // @Router /routes/{id}/test [post]
 func (h *Handlers) TestRoute(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
+	id := vars["id"]
+
+	userID, err := h.getUserIDFromRequest(r)
 	if err != nil {
-		http.Error(w, "Invalid route ID", http.StatusBadRequest)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	route, err := h.storage.GetRoute(id)
+	route, err := h.storage.GetRoute(id, userID)
 	if err != nil {
 		http.Error(w, "Route not found", http.StatusNotFound)
 		return
@@ -287,4 +296,31 @@ func (h *Handlers) TestRoute(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(result)
 	}
+}
+
+// getUserIDFromRequest extracts the user ID from JWT token in the request
+func (h *Handlers) getUserIDFromRequest(r *http.Request) (string, error) {
+	// Get JWT token from cookie or Authorization header
+	var tokenString string
+	
+	// Try cookie first
+	if cookie, err := r.Cookie("jwt_token"); err == nil {
+		tokenString = cookie.Value
+	} else {
+		// Try Authorization header
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+		} else {
+			return "", errors.AuthError("no JWT token found")
+		}
+	}
+	
+	// Validate JWT and extract claims
+	claims, err := h.auth.ValidateJWT(tokenString)
+	if err != nil {
+		return "", errors.AuthError("invalid JWT token")
+	}
+	
+	return claims.UserID, nil
 }
