@@ -9,8 +9,7 @@ import (
 )
 
 // Empty embed for running without frontend
-//
-//go:embed docs/swagger.j
+
 //go:embed docs/swagger.json
 var emptyFS embed.FS
 
