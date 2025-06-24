@@ -1,0 +1,178 @@
+package app
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/lucsky/cuid"
+	"webhook-router/internal/common/logging"
+	"webhook-router/internal/storage"
+)
+
+// PopulateExecutionLogs creates sample execution log data for demo purposes
+func PopulateExecutionLogs(store storage.Storage) error {
+	// Try to find demo_user, otherwise use a generated ID
+	userID := "demo_user_" + cuid.New()[8:] // Use last part of CUID for demo user
+
+	sampleLogs := []*storage.ExecutionLog{
+		{
+			ID:                   cuid.New(),
+			TriggerID:            &[]string{"trigger_http_github"}[0],
+			TriggerType:          "http",
+			TriggerConfig:        `{"endpoint":"/webhooks/github","method":"POST","secret":"github_secret"}`,
+			InputMethod:          "POST",
+			InputEndpoint:        "/webhooks/github",
+			InputHeaders:         `{"Content-Type":"application/json","X-GitHub-Event":"push","X-GitHub-Delivery":"12345678-1234-1234-1234-123456789012"}`,
+			InputBody:            `{"ref":"refs/heads/main","commits":[{"id":"abc123","message":"Update README.md","author":{"name":"John Doe","email":"john@example.com"}}]}`,
+			PipelineID:           &[]string{"pipeline_transform"}[0],
+			PipelineStages:       `["validate","transform","enrich"]`,
+			TransformationData:   `{"original_size":256,"transformed_size":180,"fields_added":["timestamp","environment"]}`,
+			TransformationTimeMS: 15,
+			BrokerID:             &[]string{"broker_rabbitmq"}[0],
+			BrokerType:           "rabbitmq",
+			BrokerQueue:          "github-events",
+			BrokerExchange:       "webhooks",
+			BrokerRoutingKey:     "github.push",
+			BrokerPublishTimeMS:  8,
+			BrokerResponse:       "Published successfully to queue github-events",
+			Status:               "success",
+			StatusCode:           200,
+			ErrorMessage:         "",
+			OutputData:           `{"event":"push","repo":"webhook-router","branch":"main","author":"John Doe","timestamp":"2024-06-19T14:32:18Z"}`,
+			TotalLatencyMS:       25,
+			StartedAt:            time.Now().Add(-2 * time.Hour),
+			CompletedAt:          &[]time.Time{time.Now().Add(-2 * time.Hour).Add(25 * time.Millisecond)}[0],
+			UserID:               userID,
+		},
+		{
+			ID:                   cuid.New(),
+			TriggerID:            &[]string{"trigger_schedule_backup"}[0],
+			TriggerType:          "schedule",
+			TriggerConfig:        `{"cron":"0 0 * * *","timezone":"UTC","description":"Daily backup"}`,
+			InputMethod:          "CRON",
+			InputEndpoint:        "daily-backup",
+			InputHeaders:         `{"X-Trigger-Type":"schedule","X-Cron":"0 0 * * *"}`,
+			InputBody:            `{"task":"backup","database":"users","retention_days":30}`,
+			PipelineID:           &[]string{"pipeline_backup"}[0],
+			PipelineStages:       `["validate","prepare","execute"]`,
+			TransformationData:   `{"backup_size":"2.5GB","compression":"gzip","encrypted":true}`,
+			TransformationTimeMS: 120,
+			BrokerID:             &[]string{"broker_kafka"}[0],
+			BrokerType:           "kafka",
+			BrokerQueue:          "backup-tasks",
+			BrokerExchange:       "",
+			BrokerRoutingKey:     "backup.daily",
+			BrokerPublishTimeMS:  5,
+			BrokerResponse:       "Message sent to Kafka topic backup-tasks",
+			Status:               "success",
+			StatusCode:           0,
+			ErrorMessage:         "",
+			OutputData:           `{"backup_id":"backup_20240619_000000","status":"initiated","estimated_duration":"5m"}`,
+			TotalLatencyMS:       125,
+			StartedAt:            time.Now().Add(-30 * time.Minute),
+			CompletedAt:          &[]time.Time{time.Now().Add(-30 * time.Minute).Add(125 * time.Millisecond)}[0],
+			UserID:               userID,
+		},
+		{
+			ID:                   cuid.New(),
+			TriggerID:            &[]string{"trigger_polling_api"}[0],
+			TriggerType:          "polling",
+			TriggerConfig:        `{"url":"https://api.example.com/status","interval":"30s","timeout":"10s"}`,
+			InputMethod:          "GET",
+			InputEndpoint:        "https://api.example.com/status",
+			InputHeaders:         `{"User-Agent":"webhook-router/1.0","Accept":"application/json"}`,
+			InputBody:            `{}`,
+			PipelineID:           &[]string{"pipeline_status_check"}[0],
+			PipelineStages:       `["validate","filter","notify"]`,
+			TransformationData:   `{"status_changed":true,"previous":"healthy","current":"degraded"}`,
+			TransformationTimeMS: 8,
+			BrokerID:             &[]string{"broker_redis"}[0],
+			BrokerType:           "redis",
+			BrokerQueue:          "status-alerts",
+			BrokerExchange:       "",
+			BrokerRoutingKey:     "status.changed",
+			BrokerPublishTimeMS:  3,
+			BrokerResponse:       "Published to Redis channel status-alerts",
+			Status:               "success",
+			StatusCode:           200,
+			ErrorMessage:         "",
+			OutputData:           `{"alert":"Service degraded","severity":"warning","service":"api.example.com","timestamp":"2024-06-19T14:45:00Z"}`,
+			TotalLatencyMS:       11,
+			StartedAt:            time.Now().Add(-15 * time.Minute),
+			CompletedAt:          &[]time.Time{time.Now().Add(-15 * time.Minute).Add(11 * time.Millisecond)}[0],
+			UserID:               userID,
+		},
+		{
+			ID:                   cuid.New(),
+			TriggerID:            &[]string{"trigger_broker_orders"}[0],
+			TriggerType:          "broker",
+			TriggerConfig:        `{"source_queue":"new-orders","source_broker":"kafka","consumer_group":"order-processor"}`,
+			InputMethod:          "CONSUME",
+			InputEndpoint:        "new-orders",
+			InputHeaders:         `{"X-Kafka-Topic":"new-orders","X-Kafka-Partition":"0","X-Kafka-Offset":"12345"}`,
+			InputBody:            `{"order_id":"order_789","customer_id":"cust_456","items":[{"sku":"PROD001","quantity":2,"price":29.99}],"total":59.98}`,
+			PipelineID:           &[]string{"pipeline_order_processing"}[0],
+			PipelineStages:       `["validate","inventory_check","payment_process","fulfillment"]`,
+			TransformationData:   `{"inventory_available":true,"payment_method":"credit_card","shipping_method":"standard"}`,
+			TransformationTimeMS: 45,
+			BrokerID:             &[]string{"broker_rabbitmq"}[0],
+			BrokerType:           "rabbitmq",
+			BrokerQueue:          "order-fulfillment",
+			BrokerExchange:       "orders",
+			BrokerRoutingKey:     "fulfillment.standard",
+			BrokerPublishTimeMS:  12,
+			BrokerResponse:       "Order queued for fulfillment",
+			Status:               "success",
+			StatusCode:           0,
+			ErrorMessage:         "",
+			OutputData:           `{"fulfillment_id":"fulfill_789","estimated_ship_date":"2024-06-20","tracking_will_be_provided":true}`,
+			TotalLatencyMS:       57,
+			StartedAt:            time.Now().Add(-5 * time.Minute),
+			CompletedAt:          &[]time.Time{time.Now().Add(-5 * time.Minute).Add(57 * time.Millisecond)}[0],
+			UserID:               userID,
+		},
+		{
+			ID:                   cuid.New(),
+			TriggerID:            &[]string{"trigger_http_webhook_error"}[0],
+			TriggerType:          "http",
+			TriggerConfig:        `{"endpoint":"/webhooks/stripe","method":"POST","secret":"stripe_secret"}`,
+			InputMethod:          "POST",
+			InputEndpoint:        "/webhooks/stripe",
+			InputHeaders:         `{"Content-Type":"application/json","Stripe-Signature":"t=1234567890,v1=signature"}`,
+			InputBody:            `{"id":"evt_test_webhook","object":"event","type":"payment_intent.succeeded","data":{"object":{"id":"pi_test","amount":2000}}}`,
+			PipelineID:           &[]string{"pipeline_payment"}[0],
+			PipelineStages:       `["validate","signature_verify"]`,
+			TransformationData:   `{"signature_valid":false,"error":"Invalid signature"}`,
+			TransformationTimeMS: 5,
+			BrokerID:             &[]string{"broker_rabbitmq"}[0],
+			BrokerType:           "rabbitmq",
+			BrokerQueue:          "payment-events",
+			BrokerExchange:       "payments",
+			BrokerRoutingKey:     "stripe.failed",
+			BrokerPublishTimeMS:  0,
+			BrokerResponse:       "Error: Signature validation failed",
+			Status:               "error",
+			StatusCode:           401,
+			ErrorMessage:         "Webhook signature validation failed",
+			OutputData:           "",
+			TotalLatencyMS:       5,
+			StartedAt:            time.Now().Add(-1 * time.Hour),
+			CompletedAt:          &[]time.Time{time.Now().Add(-1 * time.Hour).Add(5 * time.Millisecond)}[0],
+			UserID:               userID,
+		},
+	}
+
+	// Insert all sample logs
+	for i, logEntry := range sampleLogs {
+		if err := store.CreateExecutionLog(logEntry); err != nil {
+			return fmt.Errorf("failed to create execution log %d: %w", i+1, err)
+		}
+		logging.Debug("Created sample execution log",
+			logging.Field{"index", i + 1},
+			logging.Field{"trigger_type", logEntry.TriggerType},
+			logging.Field{"status", logEntry.Status},
+		)
+	}
+
+	return nil
+}

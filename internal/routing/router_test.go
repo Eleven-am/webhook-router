@@ -9,9 +9,9 @@ import (
 
 // MockRuleEngine for testing
 type MockRuleEngine struct {
-	evaluateRuleFunc     func(rule *RouteRule, request *RouteRequest) (bool, error)
+	evaluateRuleFunc      func(rule *RouteRule, request *RouteRequest) (bool, error)
 	evaluateConditionFunc func(condition *RuleCondition, request *RouteRequest) (bool, error)
-	compileRuleFunc      func(rule *RouteRule) error
+	compileRuleFunc       func(rule *RouteRule) error
 }
 
 func (m *MockRuleEngine) EvaluateRule(rule *RouteRule, request *RouteRequest) (bool, error) {
@@ -85,25 +85,25 @@ func (m *MockDestinationManager) RecordDestinationMetrics(destinationID string, 
 func TestNewBasicRouter(t *testing.T) {
 	ruleEngine := &MockRuleEngine{}
 	destManager := &MockDestinationManager{}
-	
+
 	router := NewBasicRouter(ruleEngine, destManager)
-	
+
 	if router == nil {
 		t.Fatal("NewBasicRouter() returned nil")
 	}
-	
+
 	if router.ruleEngine != ruleEngine {
 		t.Error("NewBasicRouter() ruleEngine not set correctly")
 	}
-	
+
 	if router.destManager != destManager {
 		t.Error("NewBasicRouter() destManager not set correctly")
 	}
-	
+
 	if len(router.rules) != 0 {
 		t.Error("NewBasicRouter() should initialize with empty rules")
 	}
-	
+
 	if router.isRunning {
 		t.Error("NewBasicRouter() should initialize as not running")
 	}
@@ -112,33 +112,33 @@ func TestNewBasicRouter(t *testing.T) {
 func TestBasicRouter_StartStop(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
 	ctx := context.Background()
-	
+
 	// Test Start
 	err := router.Start(ctx)
 	if err != nil {
 		t.Errorf("Start() unexpected error = %v", err)
 	}
-	
+
 	if !router.isRunning {
 		t.Error("Start() should set isRunning to true")
 	}
-	
+
 	// Test Start when already running
 	err = router.Start(ctx)
 	if err != ErrEngineAlreadyRunning {
 		t.Errorf("Start() when already running should return ErrEngineAlreadyRunning, got %v", err)
 	}
-	
+
 	// Test Stop
 	err = router.Stop()
 	if err != nil {
 		t.Errorf("Stop() unexpected error = %v", err)
 	}
-	
+
 	if router.isRunning {
 		t.Error("Stop() should set isRunning to false")
 	}
-	
+
 	// Test Stop when not running
 	err = router.Stop()
 	if err != ErrEngineNotRunning {
@@ -148,7 +148,7 @@ func TestBasicRouter_StartStop(t *testing.T) {
 
 func TestBasicRouter_AddRule(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	tests := []struct {
 		name      string
 		rule      *RouteRule
@@ -201,7 +201,7 @@ func TestBasicRouter_AddRule(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := router.AddRule(tt.rule)
@@ -217,7 +217,7 @@ func TestBasicRouter_AddRule(t *testing.T) {
 
 func TestBasicRouter_UpdateRule(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	// Add initial rule
 	rule := &RouteRule{
 		ID:   "test-rule",
@@ -229,12 +229,12 @@ func TestBasicRouter_UpdateRule(t *testing.T) {
 			{ID: "dest1", Type: "http"},
 		},
 	}
-	
+
 	err := router.AddRule(rule)
 	if err != nil {
 		t.Fatalf("Failed to add initial rule: %v", err)
 	}
-	
+
 	tests := []struct {
 		name      string
 		rule      *RouteRule
@@ -274,7 +274,7 @@ func TestBasicRouter_UpdateRule(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := router.UpdateRule(tt.rule)
@@ -290,7 +290,7 @@ func TestBasicRouter_UpdateRule(t *testing.T) {
 
 func TestBasicRouter_RemoveRule(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	// Add a rule to remove
 	rule := &RouteRule{
 		ID:   "test-rule",
@@ -302,24 +302,24 @@ func TestBasicRouter_RemoveRule(t *testing.T) {
 			{ID: "dest1", Type: "http"},
 		},
 	}
-	
+
 	err := router.AddRule(rule)
 	if err != nil {
 		t.Fatalf("Failed to add rule for removal test: %v", err)
 	}
-	
+
 	// Test successful removal
 	err = router.RemoveRule("test-rule")
 	if err != nil {
 		t.Errorf("RemoveRule() unexpected error = %v", err)
 	}
-	
+
 	// Verify rule was removed
 	_, err = router.GetRule("test-rule")
 	if err != ErrRuleNotFound {
 		t.Errorf("Rule should be removed, got error = %v", err)
 	}
-	
+
 	// Test removing non-existing rule
 	err = router.RemoveRule("non-existing")
 	if err != ErrRuleNotFound {
@@ -329,7 +329,7 @@ func TestBasicRouter_RemoveRule(t *testing.T) {
 
 func TestBasicRouter_GetRule(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	// Add a rule
 	rule := &RouteRule{
 		ID:   "test-rule",
@@ -341,22 +341,22 @@ func TestBasicRouter_GetRule(t *testing.T) {
 			{ID: "dest1", Type: "http"},
 		},
 	}
-	
+
 	err := router.AddRule(rule)
 	if err != nil {
 		t.Fatalf("Failed to add rule for get test: %v", err)
 	}
-	
+
 	// Test getting existing rule
 	retrieved, err := router.GetRule("test-rule")
 	if err != nil {
 		t.Errorf("GetRule() unexpected error = %v", err)
 	}
-	
+
 	if retrieved.ID != rule.ID {
 		t.Errorf("GetRule() returned rule with ID %s, want %s", retrieved.ID, rule.ID)
 	}
-	
+
 	// Test getting non-existing rule
 	_, err = router.GetRule("non-existing")
 	if err != ErrRuleNotFound {
@@ -366,17 +366,17 @@ func TestBasicRouter_GetRule(t *testing.T) {
 
 func TestBasicRouter_GetRules(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	// Test with no rules
 	rules, err := router.GetRules()
 	if err != nil {
 		t.Errorf("GetRules() unexpected error = %v", err)
 	}
-	
+
 	if len(rules) != 0 {
 		t.Errorf("GetRules() with no rules should return empty slice")
 	}
-	
+
 	// Add some rules
 	rule1 := &RouteRule{
 		ID:   "rule1",
@@ -388,7 +388,7 @@ func TestBasicRouter_GetRules(t *testing.T) {
 			{ID: "dest1", Type: "http"},
 		},
 	}
-	
+
 	rule2 := &RouteRule{
 		ID:   "rule2",
 		Name: "Rule 2",
@@ -399,16 +399,16 @@ func TestBasicRouter_GetRules(t *testing.T) {
 			{ID: "dest2", Type: "http"},
 		},
 	}
-	
+
 	router.AddRule(rule1)
 	router.AddRule(rule2)
-	
+
 	// Test with rules
 	rules, err = router.GetRules()
 	if err != nil {
 		t.Errorf("GetRules() unexpected error = %v", err)
 	}
-	
+
 	if len(rules) != 2 {
 		t.Errorf("GetRules() returned %d rules, want 2", len(rules))
 	}
@@ -421,10 +421,10 @@ func TestBasicRouter_Route(t *testing.T) {
 			return request.Path == "/test", nil
 		},
 	}
-	
+
 	destManager := &MockDestinationManager{}
 	router := NewBasicRouter(ruleEngine, destManager)
-	
+
 	// Add a rule
 	rule := &RouteRule{
 		ID:       "test-rule",
@@ -438,9 +438,9 @@ func TestBasicRouter_Route(t *testing.T) {
 			{ID: "dest1", Type: "http"},
 		},
 	}
-	
+
 	router.AddRule(rule)
-	
+
 	tests := []struct {
 		name            string
 		request         *RouteRequest
@@ -466,28 +466,28 @@ func TestBasicRouter_Route(t *testing.T) {
 			expectDestCount: 0,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			result, err := router.Route(ctx, tt.request)
-			
+
 			if err != nil {
 				t.Errorf("Route() unexpected error = %v", err)
 			}
-			
+
 			if tt.expectMatch && len(result.MatchedRules) == 0 {
 				t.Errorf("Route() expected matched rules but got none")
 			}
-			
+
 			if !tt.expectMatch && len(result.MatchedRules) > 0 {
 				t.Errorf("Route() expected no matched rules but got %d", len(result.MatchedRules))
 			}
-			
+
 			if len(result.Destinations) != tt.expectDestCount {
 				t.Errorf("Route() destination count = %d, want %d", len(result.Destinations), tt.expectDestCount)
 			}
-			
+
 			if result.RequestID != tt.request.ID {
 				t.Errorf("Route() result RequestID = %s, want %s", result.RequestID, tt.request.ID)
 			}
@@ -497,13 +497,13 @@ func TestBasicRouter_Route(t *testing.T) {
 
 func TestBasicRouter_Health(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	// Test health when not running
 	err := router.Health()
 	if err != ErrEngineNotRunning {
 		t.Errorf("Health() when not running should return ErrEngineNotRunning, got %v", err)
 	}
-	
+
 	// Start router and test health
 	router.Start(context.Background())
 	err = router.Health()
@@ -514,7 +514,7 @@ func TestBasicRouter_Health(t *testing.T) {
 
 func TestBasicRouter_validateRule(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	tests := []struct {
 		name      string
 		rule      *RouteRule
@@ -566,9 +566,9 @@ func TestBasicRouter_validateRule(t *testing.T) {
 		{
 			name: "no conditions",
 			rule: &RouteRule{
-				ID:          "rule-no-conditions",
-				Name:        "Rule Without Conditions",
-				Conditions:  []RuleCondition{},
+				ID:         "rule-no-conditions",
+				Name:       "Rule Without Conditions",
+				Conditions: []RuleCondition{},
 				Destinations: []RouteDestination{
 					{ID: "dest1", Type: "http"},
 				},
@@ -588,7 +588,7 @@ func TestBasicRouter_validateRule(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := router.validateRule(tt.rule)
@@ -604,20 +604,20 @@ func TestBasicRouter_validateRule(t *testing.T) {
 
 func TestBasicRouter_GetMetrics(t *testing.T) {
 	router := NewBasicRouter(&MockRuleEngine{}, &MockDestinationManager{})
-	
+
 	metrics, err := router.GetMetrics()
 	if err != nil {
 		t.Errorf("GetMetrics() unexpected error = %v", err)
 	}
-	
+
 	if metrics == nil {
 		t.Fatal("GetMetrics() returned nil metrics")
 	}
-	
+
 	if metrics.RuleHitCounts == nil {
 		t.Error("GetMetrics() RuleHitCounts should not be nil")
 	}
-	
+
 	if metrics.DestinationMetrics == nil {
 		t.Error("GetMetrics() DestinationMetrics should not be nil")
 	}
@@ -629,9 +629,9 @@ func BenchmarkBasicRouter_Route(b *testing.B) {
 			return request.Path == "/test", nil
 		},
 	}
-	
+
 	router := NewBasicRouter(ruleEngine, &MockDestinationManager{})
-	
+
 	// Add some rules
 	for i := 0; i < 10; i++ {
 		rule := &RouteRule{
@@ -648,14 +648,14 @@ func BenchmarkBasicRouter_Route(b *testing.B) {
 		}
 		router.AddRule(rule)
 	}
-	
+
 	request := &RouteRequest{
 		ID:   "bench-request",
 		Path: "/test",
 	}
-	
+
 	ctx := context.Background()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := router.Route(ctx, request)

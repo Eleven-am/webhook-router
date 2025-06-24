@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -88,7 +87,7 @@ func TestNewClient(t *testing.T) {
 		client, err := NewClient(config)
 		assert.NoError(t, err)
 		assert.NotNil(t, client)
-		
+
 		err = client.Close()
 		assert.NoError(t, err)
 	})
@@ -261,8 +260,8 @@ func TestClient_KeyValue(t *testing.T) {
 	t.Run("set and get JSON", func(t *testing.T) {
 		key := "test:json"
 		value := map[string]interface{}{
-			"name":  "test",
-			"count": 42,
+			"name":   "test",
+			"count":  42,
 			"active": true,
 		}
 
@@ -285,7 +284,7 @@ func TestClient_KeyValue(t *testing.T) {
 
 	t.Run("check key existence", func(t *testing.T) {
 		key := "test:exists"
-		
+
 		// Key doesn't exist
 		exists, err := client.Exists(ctx, key)
 		assert.NoError(t, err)
@@ -303,7 +302,7 @@ func TestClient_KeyValue(t *testing.T) {
 
 	t.Run("delete key", func(t *testing.T) {
 		key := "test:delete"
-		
+
 		// Set key
 		err := client.Set(ctx, key, "value", time.Hour)
 		assert.NoError(t, err)
@@ -430,7 +429,7 @@ func TestClient_ErrorHandling(t *testing.T) {
 
 	t.Run("invalid JSON unmarshaling", func(t *testing.T) {
 		key := "test:invalid:json"
-		
+
 		// Set invalid JSON data directly
 		err := client.Set(ctx, key, "not valid json", time.Hour)
 		assert.NoError(t, err)
@@ -580,7 +579,7 @@ func TestClient_Integration(t *testing.T) {
 		// 4. Publish a notification
 		channel := "workflow:notifications"
 		notification := map[string]interface{}{
-			"event": "workflow_started",
+			"event":     "workflow_started",
 			"timestamp": time.Now().Unix(),
 		}
 		err = client.Publish(ctx, channel, notification)

@@ -4,608 +4,496 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
-	"time"
-	"webhook-router/internal/common/errors"
-	"webhook-router/internal/pipeline"
-	"webhook-router/internal/pipeline/common"
+
+	"github.com/go-playground/validator/v10"
+	"webhook-router/internal/pipeline/core"
+	"webhook-router/internal/pipeline/expression"
 )
 
-// ValidationStage validates data according to configured rules
-type ValidationStage struct {
-	name     string
-	config   ValidationConfig
-	compiled bool
+var validate = validator.New()
+
+func init() {
+	Register("validate", &ValidateExecutor{})
 }
 
-type ValidationConfig struct {
-	Rules     []ValidationRule `json:"rules"`
-	OnFailure string           `json:"on_failure"` // stop, continue, transform
-	ErrorKey  string           `json:"error_key"`  // key to store validation errors
+// ValidateExecutor implements the validate stage
+type ValidateExecutor struct{}
+
+// ValidateAction represents validation configuration
+type ValidateAction struct {
+	// Simple format: "required,email"
+	SimpleRules string
+
+	// Structured format
+	Rules  map[string]string      `json:"rules"`  // Field-specific rules
+	Schema map[string]interface{} `json:"schema"` // JSON schema validation
 }
 
-type ValidationRule struct {
-	Field      string   `json:"field"`     // JSONPath or field name
-	Type       string   `json:"type"`      // required, type, format, range, custom
-	DataType   string   `json:"data_type"` // string, number, boolean, array, object
-	Required   bool     `json:"required"`
-	MinLength  int      `json:"min_length"`
-	MaxLength  int      `json:"max_length"`
-	MinValue   float64  `json:"min_value"`
-	MaxValue   float64  `json:"max_value"`
-	Pattern    string   `json:"pattern"`     // regex pattern
-	Enum       []string `json:"enum"`        // allowed values
-	CustomRule string   `json:"custom_rule"` // custom validation expression
-	ErrorMsg   string   `json:"error_msg"`   // custom error message
-}
+// Execute performs validation
+func (e *ValidateExecutor) Execute(ctx context.Context, runCtx *core.Context, stage *core.StageDefinition) (interface{}, error) {
+	// Get the value to validate from target
+	var valueToValidate interface{}
 
-func NewValidationStage(name string) *ValidationStage {
-	return &ValidationStage{
-		name:     name,
-		compiled: false,
+	// If target is specified, validate that specific value
+	if targetName, ok := stage.GetTargetName(); ok {
+		val, found := runCtx.Get(targetName)
+		if !found {
+			return nil, fmt.Errorf("target variable '%s' not found", targetName)
+		}
+		valueToValidate = val
+	} else {
+		// Validate entire context
+		valueToValidate = runCtx.GetAll()
 	}
+
+	// Parse action
+	var simpleRules string
+	if err := json.Unmarshal(stage.Action, &simpleRules); err == nil {
+		// Simple validation rules
+		return e.validateSimple(valueToValidate, simpleRules, runCtx)
+	}
+
+	// Parse as structured action
+	var action ValidateAction
+	if err := json.Unmarshal(stage.Action, &action); err != nil {
+		return nil, fmt.Errorf("invalid validate action: %w", err)
+	}
+
+	// Validate based on rules
+	if action.Rules != nil {
+		if err := e.validateWithRules(valueToValidate, action.Rules, runCtx); err != nil {
+			return nil, err
+		}
+	}
+
+	// JSON schema validation support
+	if action.Schema != nil {
+		if err := e.validateJSONSchema(valueToValidate, action.Schema); err != nil {
+			return nil, err
+		}
+	}
+
+	// Return the validated value
+	return valueToValidate, nil
 }
 
-func (s *ValidationStage) Name() string {
-	return s.name
-}
-
-func (s *ValidationStage) Type() string {
-	return "validate"
-}
-
-func (s *ValidationStage) Configure(config map[string]interface{}) error {
-	configData, err := json.Marshal(config)
+func (e *ValidateExecutor) validateSimple(value interface{}, rules string, runCtx *core.Context) (interface{}, error) {
+	// Resolve templates in rules
+	resolvedRules, err := expression.ResolveTemplates(rules, runCtx)
 	if err != nil {
-		return errors.InternalError("failed to marshal config", err)
+		return nil, fmt.Errorf("failed to resolve validation rules: %w", err)
 	}
 
-	if err := json.Unmarshal(configData, &s.config); err != nil {
-		return errors.InternalError("failed to unmarshal config", err)
+	// Validate using go-playground/validator
+	err = validate.Var(value, resolvedRules)
+	if err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	s.compiled = true
-	return nil
+	return value, nil
 }
 
-func (s *ValidationStage) Validate() error {
-	if !s.compiled {
-		return errors.ConfigError("stage not configured")
+func (e *ValidateExecutor) validateWithRules(value interface{}, rules map[string]string, runCtx *core.Context) error {
+	// Convert value to map if possible
+	valueMap, ok := value.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("structured validation requires object/map, got %T", value)
 	}
 
-	if len(s.config.Rules) == 0 {
-		return errors.ConfigError("validation stage requires at least one rule")
-	}
+	// Validate each field
+	for field, rule := range rules {
+		fieldValue, exists := valueMap[field]
+		if !exists && containsRequired(rule) {
+			return fmt.Errorf("required field '%s' is missing", field)
+		}
 
-	validFailureModes := map[string]bool{
-		"stop": true, "continue": true, "transform": true,
-	}
+		if exists {
+			// Resolve templates in rule
+			resolvedRule, err := expression.ResolveTemplates(rule, runCtx)
+			if err != nil {
+				return fmt.Errorf("failed to resolve rule for field '%s': %w", field, err)
+			}
 
-	if s.config.OnFailure != "" && !validFailureModes[s.config.OnFailure] {
-		return errors.ConfigError(fmt.Sprintf("invalid on_failure mode: %s", s.config.OnFailure))
-	}
-
-	return nil
-}
-
-func (s *ValidationStage) Process(ctx context.Context, data *pipeline.Data) (*pipeline.StageResult, error) {
-	start := time.Now()
-
-	result := &pipeline.StageResult{
-		Success:  false,
-		Metadata: make(map[string]interface{}),
-	}
-
-	// Parse input JSON
-	var inputData map[string]interface{}
-	if err := json.Unmarshal(data.Body, &inputData); err != nil {
-		result.Error = fmt.Sprintf("failed to parse JSON: %v", err)
-		result.Duration = time.Since(start)
-		return result, nil
-	}
-
-	// Validate all rules
-	validationErrors := make([]string, 0)
-	for _, rule := range s.config.Rules {
-		if err := s.validateRule(rule, inputData); err != nil {
-			if rule.ErrorMsg != "" {
-				validationErrors = append(validationErrors, rule.ErrorMsg)
-			} else {
-				validationErrors = append(validationErrors, err.Error())
+			// Validate field
+			err = validate.Var(fieldValue, resolvedRule)
+			if err != nil {
+				return fmt.Errorf("validation failed for field '%s': %w", field, err)
 			}
 		}
 	}
 
-	// Handle validation results
-	if len(validationErrors) > 0 {
-		switch s.config.OnFailure {
-		case "stop", "":
-			result.Error = strings.Join(validationErrors, "; ")
-			result.Duration = time.Since(start)
-			return result, nil
+	return nil
+}
 
-		case "continue":
-			// Add errors to metadata but continue processing
-			result.Metadata["validation_errors"] = validationErrors
-
-		case "transform":
-			// Add errors to the data itself
-			if s.config.ErrorKey != "" {
-				inputData[s.config.ErrorKey] = validationErrors
-			} else {
-				inputData["validation_errors"] = validationErrors
-			}
+func (e *ValidateExecutor) validateJSONSchema(value interface{}, schema map[string]interface{}) error {
+	// Parse the schema type if defined
+	if schemaType, ok := schema["type"].(string); ok {
+		switch schemaType {
+		case "object":
+			return e.validateObjectSchema(value, schema)
+		case "array":
+			return e.validateArraySchema(value, schema)
+		case "string":
+			return e.validateStringSchema(value, schema)
+		case "number", "integer":
+			return e.validateNumberSchema(value, schema)
+		case "boolean":
+			return e.validateBooleanSchema(value, schema)
+		default:
+			return fmt.Errorf("unsupported schema type: %s", schemaType)
 		}
 	}
 
-	// Marshal output JSON
-	outputBytes, err := json.Marshal(inputData)
-	if err != nil {
-		result.Error = fmt.Sprintf("failed to marshal output JSON: %v", err)
-		result.Duration = time.Since(start)
-		return result, nil
-	}
-
-	// Update pipeline data
-	resultData := data.Clone()
-	resultData.Body = outputBytes
-	resultData.SetHeader("Content-Type", "application/json")
-
-	result.Data = resultData
-	result.Success = true
-	result.Duration = time.Since(start)
-	result.Metadata["validation_passed"] = len(validationErrors) == 0
-	result.Metadata["error_count"] = len(validationErrors)
-
-	return result, nil
+	// Fall back to basic validation for backward compatibility
+	return e.validateBasicSchema(value, schema)
 }
 
-func (s *ValidationStage) validateRule(rule ValidationRule, data map[string]interface{}) error {
-	// Extract field value
-	value, exists := data[rule.Field]
+func (e *ValidateExecutor) validateObjectSchema(value interface{}, schema map[string]interface{}) error {
+	valueMap, ok := value.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("expected object, got %T", value)
+	}
 
 	// Check required fields
-	if rule.Required && (!exists || value == nil) {
-		return errors.ValidationError(fmt.Sprintf("field '%s' is required", rule.Field))
-	}
-
-	// Skip validation for non-existent optional fields
-	if !exists || value == nil {
-		return nil
-	}
-
-	// Validate data type
-	if rule.DataType != "" {
-		if err := s.validateDataType(rule.Field, value, rule.DataType); err != nil {
-			return err
-		}
-	}
-
-	// Convert to string for further validation
-	valueStr := fmt.Sprintf("%v", value)
-
-	// Validate length constraints
-	if rule.MinLength > 0 && len(valueStr) < rule.MinLength {
-		return fmt.Errorf("field '%s' must be at least %d characters", rule.Field, rule.MinLength)
-	}
-
-	if rule.MaxLength > 0 && len(valueStr) > rule.MaxLength {
-		return fmt.Errorf("field '%s' must be at most %d characters", rule.Field, rule.MaxLength)
-	}
-
-	// Validate numeric range
-	if rule.MinValue != 0 || rule.MaxValue != 0 {
-		if numValue, err := strconv.ParseFloat(valueStr, 64); err == nil {
-			if rule.MinValue != 0 && numValue < rule.MinValue {
-				return fmt.Errorf("field '%s' must be at least %f", rule.Field, rule.MinValue)
+	if required, ok := schema["required"].([]interface{}); ok {
+		for _, field := range required {
+			fieldName, ok := field.(string)
+			if !ok {
+				continue
 			}
-			if rule.MaxValue != 0 && numValue > rule.MaxValue {
-				return fmt.Errorf("field '%s' must be at most %f", rule.Field, rule.MaxValue)
+
+			if _, exists := valueMap[fieldName]; !exists {
+				return fmt.Errorf("required field '%s' is missing", fieldName)
 			}
 		}
 	}
 
-	// Validate pattern
-	if rule.Pattern != "" {
-		matched, err := regexp.MatchString(rule.Pattern, valueStr)
-		if err != nil {
-			return fmt.Errorf("invalid pattern for field '%s': %v", rule.Field, err)
-		}
-		if !matched {
-			return fmt.Errorf("field '%s' does not match required pattern", rule.Field)
+	// Check properties
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		for fieldName, fieldSchema := range properties {
+			if fieldValue, exists := valueMap[fieldName]; exists {
+				// Recursively validate nested schemas
+				if fieldSchemaMap, ok := fieldSchema.(map[string]interface{}); ok {
+					if err := e.validateJSONSchema(fieldValue, fieldSchemaMap); err != nil {
+						return fmt.Errorf("field '%s': %w", fieldName, err)
+					}
+				}
+			}
 		}
 	}
 
-	// Validate enum values
-	if len(rule.Enum) > 0 {
+	// Check additionalProperties
+	if additionalProps, ok := schema["additionalProperties"].(bool); ok && !additionalProps {
+		if properties, ok := schema["properties"].(map[string]interface{}); ok {
+			for key := range valueMap {
+				if _, allowed := properties[key]; !allowed {
+					return fmt.Errorf("additional property '%s' is not allowed", key)
+				}
+			}
+		}
+	}
+
+	// Check minProperties/maxProperties
+	if minProps, ok := schema["minProperties"].(float64); ok {
+		if len(valueMap) < int(minProps) {
+			return fmt.Errorf("object must have at least %d properties, got %d", int(minProps), len(valueMap))
+		}
+	}
+
+	if maxProps, ok := schema["maxProperties"].(float64); ok {
+		if len(valueMap) > int(maxProps) {
+			return fmt.Errorf("object must have at most %d properties, got %d", int(maxProps), len(valueMap))
+		}
+	}
+
+	return nil
+}
+
+func (e *ValidateExecutor) validateArraySchema(value interface{}, schema map[string]interface{}) error {
+	valueArray, ok := value.([]interface{})
+	if !ok {
+		return fmt.Errorf("expected array, got %T", value)
+	}
+
+	// Check minItems/maxItems
+	if minItems, ok := schema["minItems"].(float64); ok {
+		if len(valueArray) < int(minItems) {
+			return fmt.Errorf("array must have at least %d items, got %d", int(minItems), len(valueArray))
+		}
+	}
+
+	if maxItems, ok := schema["maxItems"].(float64); ok {
+		if len(valueArray) > int(maxItems) {
+			return fmt.Errorf("array must have at most %d items, got %d", int(maxItems), len(valueArray))
+		}
+	}
+
+	// Check uniqueItems
+	if unique, ok := schema["uniqueItems"].(bool); ok && unique {
+		seen := make(map[string]bool)
+		for i, item := range valueArray {
+			itemJSON, _ := json.Marshal(item)
+			itemStr := string(itemJSON)
+			if seen[itemStr] {
+				return fmt.Errorf("array items must be unique, duplicate found at index %d", i)
+			}
+			seen[itemStr] = true
+		}
+	}
+
+	// Validate items schema
+	if itemSchema, ok := schema["items"].(map[string]interface{}); ok {
+		for i, item := range valueArray {
+			if err := e.validateJSONSchema(item, itemSchema); err != nil {
+				return fmt.Errorf("item at index %d: %w", i, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *ValidateExecutor) validateStringSchema(value interface{}, schema map[string]interface{}) error {
+	valueStr, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("expected string, got %T", value)
+	}
+
+	// Check minLength/maxLength
+	if minLen, ok := schema["minLength"].(float64); ok {
+		if len(valueStr) < int(minLen) {
+			return fmt.Errorf("string must be at least %d characters, got %d", int(minLen), len(valueStr))
+		}
+	}
+
+	if maxLen, ok := schema["maxLength"].(float64); ok {
+		if len(valueStr) > int(maxLen) {
+			return fmt.Errorf("string must be at most %d characters, got %d", int(maxLen), len(valueStr))
+		}
+	}
+
+	// Check pattern
+	if pattern, ok := schema["pattern"].(string); ok {
+		// Use go-playground validator for pattern matching
+		if err := validate.Var(valueStr, fmt.Sprintf("regex=%s", pattern)); err != nil {
+			return fmt.Errorf("string does not match pattern '%s'", pattern)
+		}
+	}
+
+	// Check enum
+	if enum, ok := schema["enum"].([]interface{}); ok {
 		found := false
-		for _, enumValue := range rule.Enum {
-			if valueStr == enumValue {
+		for _, enumVal := range enum {
+			if enumStr, ok := enumVal.(string); ok && enumStr == valueStr {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return fmt.Errorf("field '%s' must be one of: %s", rule.Field, strings.Join(rule.Enum, ", "))
+			return fmt.Errorf("string must be one of the allowed values")
+		}
+	}
+
+	// Check format
+	if format, ok := schema["format"].(string); ok {
+		var validatorTag string
+		switch format {
+		case "email":
+			validatorTag = "email"
+		case "uri", "url":
+			validatorTag = "url"
+		case "uuid":
+			validatorTag = "uuid"
+		case "date-time":
+			validatorTag = "datetime=2006-01-02T15:04:05Z07:00"
+		case "date":
+			validatorTag = "datetime=2006-01-02"
+		case "time":
+			validatorTag = "datetime=15:04:05"
+		case "ipv4":
+			validatorTag = "ipv4"
+		case "ipv6":
+			validatorTag = "ipv6"
+		}
+
+		if validatorTag != "" {
+			if err := validate.Var(valueStr, validatorTag); err != nil {
+				return fmt.Errorf("string format validation failed for format '%s'", format)
+			}
 		}
 	}
 
 	return nil
 }
 
-func (s *ValidationStage) validateDataType(field string, value interface{}, expectedType string) error {
-	switch expectedType {
-	case "string":
-		if _, ok := value.(string); !ok {
-			return errors.ValidationError(fmt.Sprintf("field '%s' must be a string", field))
-		}
-	case "number":
-		switch value.(type) {
-		case float64, float32, int, int64, int32:
-			// Valid numeric types
-		default:
-			return errors.ValidationError(fmt.Sprintf("field '%s' must be a number", field))
-		}
-	case "boolean":
-		if _, ok := value.(bool); !ok {
-			return errors.ValidationError(fmt.Sprintf("field '%s' must be a boolean", field))
-		}
-	case "array":
-		if _, ok := value.([]interface{}); !ok {
-			return errors.ValidationError(fmt.Sprintf("field '%s' must be an array", field))
-		}
-	case "object":
-		if _, ok := value.(map[string]interface{}); !ok {
-			return errors.ValidationError(fmt.Sprintf("field '%s' must be an object", field))
-		}
-	}
-	return nil
-}
+func (e *ValidateExecutor) validateNumberSchema(value interface{}, schema map[string]interface{}) error {
+	var valueNum float64
 
-func (s *ValidationStage) Health() error {
-	if !s.compiled {
-		return errors.ConfigError("stage not configured")
-	}
-	return nil
-}
-
-// FilterStage filters data based on conditions
-type FilterStage struct {
-	name     string
-	config   FilterConfig
-	compiled bool
-}
-
-type FilterConfig struct {
-	Conditions  []FilterCondition `json:"conditions"`
-	Logic       string            `json:"logic"`        // and, or
-	Action      string            `json:"action"`       // include, exclude
-	DefaultPass bool              `json:"default_pass"` // what to do if no conditions match
-}
-
-type FilterCondition struct {
-	Field    string      `json:"field"`
-	Operator string      `json:"operator"` // eq, ne, contains, gt, lt, in, exists
-	Value    interface{} `json:"value"`
-	Negate   bool        `json:"negate"`
-}
-
-func NewFilterStage(name string) *FilterStage {
-	return &FilterStage{
-		name:     name,
-		compiled: false,
-	}
-}
-
-func (s *FilterStage) Name() string {
-	return s.name
-}
-
-func (s *FilterStage) Type() string {
-	return "filter"
-}
-
-func (s *FilterStage) Configure(config map[string]interface{}) error {
-	configData, err := json.Marshal(config)
-	if err != nil {
-		return errors.InternalError("failed to marshal config", err)
-	}
-
-	if err := json.Unmarshal(configData, &s.config); err != nil {
-		return errors.InternalError("failed to unmarshal config", err)
-	}
-
-	// Set defaults
-	if s.config.Logic == "" {
-		s.config.Logic = "and"
-	}
-	if s.config.Action == "" {
-		s.config.Action = "include"
-	}
-
-	s.compiled = true
-	return nil
-}
-
-func (s *FilterStage) Validate() error {
-	if !s.compiled {
-		return errors.ConfigError("stage not configured")
-	}
-
-	if len(s.config.Conditions) == 0 {
-		return errors.ConfigError("filter stage requires at least one condition")
-	}
-
-	validLogic := map[string]bool{"and": true, "or": true}
-	if !validLogic[s.config.Logic] {
-		return errors.ConfigError(fmt.Sprintf("invalid logic: %s", s.config.Logic))
-	}
-
-	validActions := map[string]bool{"include": true, "exclude": true}
-	if !validActions[s.config.Action] {
-		return errors.ConfigError(fmt.Sprintf("invalid action: %s", s.config.Action))
-	}
-
-	return nil
-}
-
-func (s *FilterStage) Process(ctx context.Context, data *pipeline.Data) (*pipeline.StageResult, error) {
-	start := time.Now()
-
-	result := &pipeline.StageResult{
-		Success:  false,
-		Metadata: make(map[string]interface{}),
-	}
-
-	// Parse input JSON
-	var inputData map[string]interface{}
-	if err := json.Unmarshal(data.Body, &inputData); err != nil {
-		result.Error = fmt.Sprintf("failed to parse JSON: %v", err)
-		result.Duration = time.Since(start)
-		return result, nil
-	}
-
-	// Evaluate filter conditions
-	conditionResults := make([]bool, len(s.config.Conditions))
-	for i, condition := range s.config.Conditions {
-		conditionResult, err := s.evaluateCondition(condition, inputData)
-		if err != nil {
-			result.Error = fmt.Sprintf("condition evaluation failed: %v", err)
-			result.Duration = time.Since(start)
-			return result, nil
-		}
-
-		if condition.Negate {
-			conditionResult = !conditionResult
-		}
-
-		conditionResults[i] = conditionResult
-	}
-
-	// Combine results based on logic
-	var finalResult bool
-	if s.config.Logic == "and" {
-		finalResult = true
-		for _, condResult := range conditionResults {
-			if !condResult {
-				finalResult = false
-				break
-			}
-		}
-	} else { // or
-		finalResult = false
-		for _, condResult := range conditionResults {
-			if condResult {
-				finalResult = true
-				break
-			}
-		}
-	}
-
-	// Apply action
-	var shouldPass bool
-	if s.config.Action == "include" {
-		shouldPass = finalResult
-	} else { // exclude
-		shouldPass = !finalResult
-	}
-
-	// If conditions don't match, use default
-	if len(conditionResults) == 0 {
-		shouldPass = s.config.DefaultPass
-	}
-
-	if !shouldPass {
-		result.Error = "data filtered out"
-		result.Duration = time.Since(start)
-		result.Metadata["filtered"] = true
-		return result, nil
-	}
-
-	// Data passes filter
-	resultData := data.Clone()
-	result.Data = resultData
-	result.Success = true
-	result.Duration = time.Since(start)
-	result.Metadata["filtered"] = false
-
-	return result, nil
-}
-
-func (s *FilterStage) evaluateCondition(condition FilterCondition, data map[string]interface{}) (bool, error) {
-	value, exists := data[condition.Field]
-
-	switch condition.Operator {
-	case "exists":
-		return exists && value != nil, nil
-
-	case "eq":
-		if !exists {
-			return false, nil
-		}
-		return fmt.Sprintf("%v", value) == fmt.Sprintf("%v", condition.Value), nil
-
-	case "ne":
-		if !exists {
-			return true, nil
-		}
-		return fmt.Sprintf("%v", value) != fmt.Sprintf("%v", condition.Value), nil
-
-	case "contains":
-		if !exists {
-			return false, nil
-		}
-		valueStr := fmt.Sprintf("%v", value)
-		searchStr := fmt.Sprintf("%v", condition.Value)
-		return strings.Contains(valueStr, searchStr), nil
-
-	case "gt", "lt":
-		if !exists {
-			return false, nil
-		}
-		return s.compareNumeric(value, condition.Operator, condition.Value)
-
-	case "in":
-		if !exists {
-			return false, nil
-		}
-		valueStr := fmt.Sprintf("%v", value)
-
-		// Handle different value types for 'in' operator
-		switch v := condition.Value.(type) {
-		case []interface{}:
-			for _, item := range v {
-				if valueStr == fmt.Sprintf("%v", item) {
-					return true, nil
-				}
-			}
-		case []string:
-			for _, item := range v {
-				if valueStr == item {
-					return true, nil
-				}
-			}
-		case string:
-			items := strings.Split(v, ",")
-			for _, item := range items {
-				if valueStr == strings.TrimSpace(item) {
-					return true, nil
-				}
-			}
-		}
-		return false, nil
-
+	switch v := value.(type) {
+	case float64:
+		valueNum = v
+	case float32:
+		valueNum = float64(v)
+	case int:
+		valueNum = float64(v)
+	case int64:
+		valueNum = float64(v)
+	case int32:
+		valueNum = float64(v)
 	default:
-		return false, errors.ValidationError(fmt.Sprintf("unsupported operator: %s", condition.Operator))
+		return fmt.Errorf("expected number, got %T", value)
 	}
+
+	// Check minimum/maximum
+	if minimum, ok := schema["minimum"].(float64); ok {
+		if valueNum < minimum {
+			return fmt.Errorf("number must be >= %f, got %f", minimum, valueNum)
+		}
+	}
+
+	if maximum, ok := schema["maximum"].(float64); ok {
+		if valueNum > maximum {
+			return fmt.Errorf("number must be <= %f, got %f", maximum, valueNum)
+		}
+	}
+
+	// Check exclusiveMinimum/exclusiveMaximum
+	if exMin, ok := schema["exclusiveMinimum"].(float64); ok {
+		if valueNum <= exMin {
+			return fmt.Errorf("number must be > %f, got %f", exMin, valueNum)
+		}
+	}
+
+	if exMax, ok := schema["exclusiveMaximum"].(float64); ok {
+		if valueNum >= exMax {
+			return fmt.Errorf("number must be < %f, got %f", exMax, valueNum)
+		}
+	}
+
+	// Check multipleOf
+	if multiple, ok := schema["multipleOf"].(float64); ok && multiple > 0 {
+		remainder := valueNum / multiple
+		if remainder != float64(int(remainder)) {
+			return fmt.Errorf("number must be multiple of %f", multiple)
+		}
+	}
+
+	// For integer type, check if it's actually an integer
+	if schemaType, ok := schema["type"].(string); ok && schemaType == "integer" {
+		if valueNum != float64(int(valueNum)) {
+			return fmt.Errorf("expected integer, got float")
+		}
+	}
+
+	return nil
 }
 
-func (s *FilterStage) compareNumeric(value interface{}, operator string, compareValue interface{}) (bool, error) {
-	val1, err := s.toFloat64(value)
-	if err != nil {
-		return false, err
-	}
-
-	val2, err := s.toFloat64(compareValue)
-	if err != nil {
-		return false, err
-	}
-
-	switch operator {
-	case "gt":
-		return val1 > val2, nil
-	case "lt":
-		return val1 < val2, nil
-	default:
-		return false, errors.ValidationError(fmt.Sprintf("unsupported numeric operator: %s", operator))
-	}
-}
-
-func (s *FilterStage) toFloat64(value interface{}) (float64, error) {
-	return common.ToFloat64(value)
-}
-
-func (s *FilterStage) Health() error {
-	if !s.compiled {
-		return errors.ConfigError("stage not configured")
+func (e *ValidateExecutor) validateBooleanSchema(value interface{}, schema map[string]interface{}) error {
+	_, ok := value.(bool)
+	if !ok {
+		return fmt.Errorf("expected boolean, got %T", value)
 	}
 	return nil
 }
 
-// Stage factories
-type ValidationStageFactory struct{}
-
-func (f *ValidationStageFactory) Create(config map[string]interface{}) (pipeline.Stage, error) {
-	name, ok := config["name"].(string)
+func (e *ValidateExecutor) validateBasicSchema(value interface{}, schema map[string]interface{}) error {
+	// Basic schema validation (backward compatibility)
+	valueMap, ok := value.(map[string]interface{})
 	if !ok {
-		name = "validate"
+		return fmt.Errorf("schema validation requires object/map, got %T", value)
 	}
 
-	stage := NewValidationStage(name)
-	if err := stage.Configure(config); err != nil {
-		return nil, err
+	// Check required fields
+	if required, ok := schema["required"].([]interface{}); ok {
+		for _, field := range required {
+			fieldName, ok := field.(string)
+			if !ok {
+				continue
+			}
+
+			if _, exists := valueMap[fieldName]; !exists {
+				return fmt.Errorf("required field '%s' is missing", fieldName)
+			}
+		}
 	}
 
-	return stage, nil
-}
-
-func (f *ValidationStageFactory) GetType() string {
-	return "validate"
-}
-
-func (f *ValidationStageFactory) GetConfigSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"rules": map[string]interface{}{
-			"type":        "array",
-			"description": "Validation rules to apply",
-			"required":    true,
-		},
-		"on_failure": map[string]interface{}{
-			"type":        "string",
-			"enum":        []string{"stop", "continue", "transform"},
-			"description": "What to do when validation fails",
-		},
+	// Check field types if properties are defined
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		for fieldName, fieldSchema := range properties {
+			if fieldValue, exists := valueMap[fieldName]; exists {
+				if err := e.validateFieldType(fieldName, fieldValue, fieldSchema); err != nil {
+					return err
+				}
+			}
+		}
 	}
+
+	return nil
 }
 
-type FilterStageFactory struct{}
-
-func (f *FilterStageFactory) Create(config map[string]interface{}) (pipeline.Stage, error) {
-	name, ok := config["name"].(string)
+func (e *ValidateExecutor) validateFieldType(fieldName string, value interface{}, schema interface{}) error {
+	schemaMap, ok := schema.(map[string]interface{})
 	if !ok {
-		name = "filter"
+		return nil
 	}
 
-	stage := NewFilterStage(name)
-	if err := stage.Configure(config); err != nil {
-		return nil, err
+	// Check type
+	if typeStr, ok := schemaMap["type"].(string); ok {
+		switch typeStr {
+		case "string":
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("field '%s' must be a string", fieldName)
+			}
+		case "number":
+			switch value.(type) {
+			case float64, float32, int, int64, int32:
+				// Valid number types
+			default:
+				return fmt.Errorf("field '%s' must be a number", fieldName)
+			}
+		case "boolean":
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("field '%s' must be a boolean", fieldName)
+			}
+		case "array":
+			if _, ok := value.([]interface{}); !ok {
+				return fmt.Errorf("field '%s' must be an array", fieldName)
+			}
+		case "object":
+			if _, ok := value.(map[string]interface{}); !ok {
+				return fmt.Errorf("field '%s' must be an object", fieldName)
+			}
+		}
 	}
 
-	return stage, nil
+	// Check additional constraints
+	if strValue, ok := value.(string); ok {
+		// MinLength
+		if minLen, ok := schemaMap["minLength"].(float64); ok {
+			if len(strValue) < int(minLen) {
+				return fmt.Errorf("field '%s' must be at least %d characters", fieldName, int(minLen))
+			}
+		}
+
+		// MaxLength
+		if maxLen, ok := schemaMap["maxLength"].(float64); ok {
+			if len(strValue) > int(maxLen) {
+				return fmt.Errorf("field '%s' must be at most %d characters", fieldName, int(maxLen))
+			}
+		}
+
+		// Pattern
+		if pattern, ok := schemaMap["pattern"].(string); ok {
+			if err := validate.Var(strValue, fmt.Sprintf("matches(%s)", pattern)); err != nil {
+				return fmt.Errorf("field '%s' does not match required pattern", fieldName)
+			}
+		}
+	}
+
+	return nil
 }
 
-func (f *FilterStageFactory) GetType() string {
-	return "filter"
-}
-
-func (f *FilterStageFactory) GetConfigSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"conditions": map[string]interface{}{
-			"type":        "array",
-			"description": "Filter conditions",
-			"required":    true,
-		},
-		"logic": map[string]interface{}{
-			"type":        "string",
-			"enum":        []string{"and", "or"},
-			"description": "Logic to combine conditions",
-		},
-		"action": map[string]interface{}{
-			"type":        "string",
-			"enum":        []string{"include", "exclude"},
-			"description": "Action to take when conditions match",
-		},
-	}
+func containsRequired(rule string) bool {
+	return strings.Contains(rule, "required")
 }

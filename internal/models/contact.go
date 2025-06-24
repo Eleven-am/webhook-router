@@ -7,25 +7,25 @@ import (
 // Contact represents a unified contact structure
 // regardless of source (CardDAV, vCard, Google Contacts, etc.)
 type Contact struct {
-	ID           string            `json:"id"`
-	UID          string            `json:"uid"`
-	FullName     string            `json:"full_name"`
-	Name         *StructuredName   `json:"name,omitempty"`
-	Emails       []EmailAddress    `json:"emails,omitempty"`
-	Phones       []PhoneNumber     `json:"phones,omitempty"`
-	Addresses    []PostalAddress   `json:"addresses,omitempty"`
-	Organization string            `json:"organization,omitempty"`
-	Title        string            `json:"title,omitempty"`
-	Department   string            `json:"department,omitempty"`
-	Birthday     *time.Time        `json:"birthday,omitempty"`
-	Anniversary  *time.Time        `json:"anniversary,omitempty"`
-	Photo        *Photo            `json:"photo,omitempty"`
-	URLs         []URL             `json:"urls,omitempty"`
-	Notes        string            `json:"notes,omitempty"`
-	Categories   []string          `json:"categories,omitempty"`
-	Created      time.Time         `json:"created"`
-	Updated      time.Time         `json:"updated"`
-	Metadata     ContactMetadata   `json:"metadata"`
+	ID           string          `json:"id"`
+	UID          string          `json:"uid"`
+	FullName     string          `json:"full_name"`
+	Name         *StructuredName `json:"name,omitempty"`
+	Emails       []EmailAddress  `json:"emails,omitempty"`
+	Phones       []PhoneNumber   `json:"phones,omitempty"`
+	Addresses    []PostalAddress `json:"addresses,omitempty"`
+	Organization string          `json:"organization,omitempty"`
+	Title        string          `json:"title,omitempty"`
+	Department   string          `json:"department,omitempty"`
+	Birthday     *time.Time      `json:"birthday,omitempty"`
+	Anniversary  *time.Time      `json:"anniversary,omitempty"`
+	Photo        *Photo          `json:"photo,omitempty"`
+	URLs         []URL           `json:"urls,omitempty"`
+	Notes        string          `json:"notes,omitempty"`
+	Categories   []string        `json:"categories,omitempty"`
+	Created      time.Time       `json:"created"`
+	Updated      time.Time       `json:"updated"`
+	Metadata     ContactMetadata `json:"metadata"`
 }
 
 // StructuredName represents a parsed name
@@ -64,8 +64,8 @@ type PostalAddress struct {
 
 // Photo represents a contact photo
 type Photo struct {
-	URL      string `json:"url,omitempty"`      // External URL
-	Data     string `json:"data,omitempty"`     // Base64 encoded data
+	URL      string `json:"url,omitempty"`       // External URL
+	Data     string `json:"data,omitempty"`      // Base64 encoded data
 	MimeType string `json:"mime_type,omitempty"` // image/jpeg, image/png
 }
 
@@ -89,17 +89,17 @@ const (
 	EmailTypeWork  = "work"
 	EmailTypeHome  = "home"
 	EmailTypeOther = "other"
-	
+
 	PhoneTypeWork   = "work"
 	PhoneTypeHome   = "home"
 	PhoneTypeMobile = "mobile"
 	PhoneTypeFax    = "fax"
 	PhoneTypeOther  = "other"
-	
+
 	AddressTypeWork  = "work"
 	AddressTypeHome  = "home"
 	AddressTypeOther = "other"
-	
+
 	URLTypeWork    = "work"
 	URLTypeHome    = "home"
 	URLTypeProfile = "profile"

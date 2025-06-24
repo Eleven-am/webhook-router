@@ -8,94 +8,94 @@ import (
 func TestLoad(t *testing.T) {
 	// Clear environment variables to test defaults
 	clearTestEnvVars()
-	
+
 	config := Load()
-	
+
 	// Test default values
 	if config.Port != "8080" {
 		t.Errorf("Load() Port = %v, want %v", config.Port, "8080")
 	}
-	
+
 	if config.DatabasePath != "./webhook_router.db" {
 		t.Errorf("Load() DatabasePath = %v, want %v", config.DatabasePath, "./webhook_router.db")
 	}
-	
+
 	if config.RabbitMQURL != "" {
 		t.Errorf("Load() RabbitMQURL = %v, want empty", config.RabbitMQURL)
 	}
-	
+
 	if config.DefaultQueue != "webhooks" {
 		t.Errorf("Load() DefaultQueue = %v, want %v", config.DefaultQueue, "webhooks")
 	}
-	
+
 	if config.LogLevel != "info" {
 		t.Errorf("Load() LogLevel = %v, want %v", config.LogLevel, "info")
 	}
-	
+
 	// Test Redis defaults
 	if config.RedisAddress != "localhost:6379" {
 		t.Errorf("Load() RedisAddress = %v, want %v", config.RedisAddress, "localhost:6379")
 	}
-	
+
 	if config.RedisPassword != "" {
 		t.Errorf("Load() RedisPassword = %v, want empty", config.RedisPassword)
 	}
-	
+
 	if config.RedisDB != "0" {
 		t.Errorf("Load() RedisDB = %v, want %v", config.RedisDB, "0")
 	}
-	
+
 	if config.RedisPoolSize != "10" {
 		t.Errorf("Load() RedisPoolSize = %v, want %v", config.RedisPoolSize, "10")
 	}
-	
+
 	// Test rate limiting defaults
 	if !config.RateLimitEnabled {
 		t.Errorf("Load() RateLimitEnabled = %v, want %v", config.RateLimitEnabled, true)
 	}
-	
+
 	if config.RateLimitDefault != "100" {
 		t.Errorf("Load() RateLimitDefault = %v, want %v", config.RateLimitDefault, "100")
 	}
-	
+
 	if config.RateLimitWindow != "60s" {
 		t.Errorf("Load() RateLimitWindow = %v, want %v", config.RateLimitWindow, "60s")
 	}
-	
+
 	// Test database defaults
 	if config.DatabaseType != "sqlite" {
 		t.Errorf("Load() DatabaseType = %v, want %v", config.DatabaseType, "sqlite")
 	}
-	
+
 	if config.PostgresHost != "localhost" {
 		t.Errorf("Load() PostgresHost = %v, want %v", config.PostgresHost, "localhost")
 	}
-	
+
 	if config.PostgresPort != "5432" {
 		t.Errorf("Load() PostgresPort = %v, want %v", config.PostgresPort, "5432")
 	}
-	
+
 	if config.PostgresDB != "webhook_router" {
 		t.Errorf("Load() PostgresDB = %v, want %v", config.PostgresDB, "webhook_router")
 	}
-	
+
 	if config.PostgresUser != "postgres" {
 		t.Errorf("Load() PostgresUser = %v, want %v", config.PostgresUser, "postgres")
 	}
-	
+
 	if config.PostgresPassword != "" {
 		t.Errorf("Load() PostgresPassword = %v, want empty", config.PostgresPassword)
 	}
-	
+
 	if config.PostgresSSLMode != "disable" {
 		t.Errorf("Load() PostgresSSLMode = %v, want %v", config.PostgresSSLMode, "disable")
 	}
-	
+
 	// Test JWT and encryption defaults
 	if config.JWTSecret != "" {
 		t.Errorf("Load() JWTSecret = %v, want empty", config.JWTSecret)
 	}
-	
+
 	if config.EncryptionKey != "" {
 		t.Errorf("Load() EncryptionKey = %v, want empty", config.EncryptionKey)
 	}
@@ -104,8 +104,8 @@ func TestLoad(t *testing.T) {
 func TestLoadWithEnvironmentVariables(t *testing.T) {
 	// Set environment variables
 	envVars := map[string]string{
-		"PORT":                   "9090",
-		"DATABASE_PATH":          "/custom/path/db.sqlite",
+		"PORT":                  "9090",
+		"DATABASE_PATH":         "/custom/path/db.sqlite",
 		"RABBITMQ_URL":          "amqp://custom:password@localhost:5672/",
 		"DEFAULT_QUEUE":         "custom-queue",
 		"LOG_LEVEL":             "debug",
@@ -126,93 +126,93 @@ func TestLoadWithEnvironmentVariables(t *testing.T) {
 		"JWT_SECRET":            "this-is-a-test-jwt-secret-key-that-is-long-enough",
 		"CONFIG_ENCRYPTION_KEY": "12345678901234567890123456789012",
 	}
-	
+
 	setTestEnvVars(envVars)
 	defer clearTestEnvVars()
-	
+
 	config := Load()
-	
+
 	// Verify all environment variables were loaded correctly
 	if config.Port != "9090" {
 		t.Errorf("Load() Port = %v, want %v", config.Port, "9090")
 	}
-	
+
 	if config.DatabasePath != "/custom/path/db.sqlite" {
 		t.Errorf("Load() DatabasePath = %v, want %v", config.DatabasePath, "/custom/path/db.sqlite")
 	}
-	
+
 	if config.RabbitMQURL != "amqp://custom:password@localhost:5672/" {
 		t.Errorf("Load() RabbitMQURL = %v, want %v", config.RabbitMQURL, "amqp://custom:password@localhost:5672/")
 	}
-	
+
 	if config.DefaultQueue != "custom-queue" {
 		t.Errorf("Load() DefaultQueue = %v, want %v", config.DefaultQueue, "custom-queue")
 	}
-	
+
 	if config.LogLevel != "debug" {
 		t.Errorf("Load() LogLevel = %v, want %v", config.LogLevel, "debug")
 	}
-	
+
 	if config.RedisAddress != "redis:6379" {
 		t.Errorf("Load() RedisAddress = %v, want %v", config.RedisAddress, "redis:6379")
 	}
-	
+
 	if config.RedisPassword != "redis-secret" {
 		t.Errorf("Load() RedisPassword = %v, want %v", config.RedisPassword, "redis-secret")
 	}
-	
+
 	if config.RedisDB != "2" {
 		t.Errorf("Load() RedisDB = %v, want %v", config.RedisDB, "2")
 	}
-	
+
 	if config.RedisPoolSize != "20" {
 		t.Errorf("Load() RedisPoolSize = %v, want %v", config.RedisPoolSize, "20")
 	}
-	
+
 	if config.RateLimitEnabled {
 		t.Errorf("Load() RateLimitEnabled = %v, want %v", config.RateLimitEnabled, false)
 	}
-	
+
 	if config.RateLimitDefault != "200" {
 		t.Errorf("Load() RateLimitDefault = %v, want %v", config.RateLimitDefault, "200")
 	}
-	
+
 	if config.RateLimitWindow != "120s" {
 		t.Errorf("Load() RateLimitWindow = %v, want %v", config.RateLimitWindow, "120s")
 	}
-	
+
 	if config.DatabaseType != "postgres" {
 		t.Errorf("Load() DatabaseType = %v, want %v", config.DatabaseType, "postgres")
 	}
-	
+
 	if config.PostgresHost != "pg-host" {
 		t.Errorf("Load() PostgresHost = %v, want %v", config.PostgresHost, "pg-host")
 	}
-	
+
 	if config.PostgresPort != "5433" {
 		t.Errorf("Load() PostgresPort = %v, want %v", config.PostgresPort, "5433")
 	}
-	
+
 	if config.PostgresDB != "custom_db" {
 		t.Errorf("Load() PostgresDB = %v, want %v", config.PostgresDB, "custom_db")
 	}
-	
+
 	if config.PostgresUser != "custom_user" {
 		t.Errorf("Load() PostgresUser = %v, want %v", config.PostgresUser, "custom_user")
 	}
-	
+
 	if config.PostgresPassword != "pg-secret" {
 		t.Errorf("Load() PostgresPassword = %v, want %v", config.PostgresPassword, "pg-secret")
 	}
-	
+
 	if config.PostgresSSLMode != "require" {
 		t.Errorf("Load() PostgresSSLMode = %v, want %v", config.PostgresSSLMode, "require")
 	}
-	
+
 	if config.JWTSecret != "this-is-a-test-jwt-secret-key-that-is-long-enough" {
 		t.Errorf("Load() JWTSecret = %v, want %v", config.JWTSecret, "this-is-a-test-jwt-secret-key-that-is-long-enough")
 	}
-	
+
 	if config.EncryptionKey != "12345678901234567890123456789012" {
 		t.Errorf("Load() EncryptionKey = %v, want %v", config.EncryptionKey, "12345678901234567890123456789012")
 	}
@@ -248,14 +248,14 @@ func TestGetEnv(t *testing.T) {
 			expected:     "default-value",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
 				os.Setenv(tt.key, tt.envValue)
 				defer os.Unsetenv(tt.key)
 			}
-			
+
 			result := getEnv(tt.key, tt.defaultValue)
 			if result != tt.expected {
 				t.Errorf("getEnv(%q, %q) = %q, want %q", tt.key, tt.defaultValue, result, tt.expected)
@@ -322,14 +322,14 @@ func TestGetBoolEnv(t *testing.T) {
 			expected:     true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
 				os.Setenv(tt.key, tt.envValue)
 				defer os.Unsetenv(tt.key)
 			}
-			
+
 			result := getBoolEnv(tt.key, tt.defaultValue)
 			if result != tt.expected {
 				t.Errorf("getBoolEnv(%q, %v) = %v, want %v", tt.key, tt.defaultValue, result, tt.expected)
@@ -340,19 +340,19 @@ func TestGetBoolEnv(t *testing.T) {
 
 func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         *Config
-		wantError      bool
-		errorContains  string
+		name          string
+		config        *Config
+		wantError     bool
+		errorContains string
 	}{
 		{
 			name: "valid minimal config",
 			config: &Config{
-				Port:      "8080",
-				JWTSecret: "this-is-a-valid-jwt-secret-key-with-32-plus-chars",
-				DatabaseType: "sqlite",
-				RedisDB:      "0",
-				RedisPoolSize: "10",
+				Port:             "8080",
+				JWTSecret:        "this-is-a-valid-jwt-secret-key-with-32-plus-chars",
+				DatabaseType:     "sqlite",
+				RedisDB:          "0",
+				RedisPoolSize:    "10",
 				RateLimitEnabled: false,
 			},
 			wantError: false,
@@ -540,11 +540,11 @@ func TestConfig_Validate(t *testing.T) {
 			errorContains: "CONFIG_ENCRYPTION_KEY must be exactly 32 characters",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.config.Validate()
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("Config.Validate() expected error but got none")
@@ -563,17 +563,17 @@ func TestConfig_Validate(t *testing.T) {
 func TestValidate_PostgreSQLVariant(t *testing.T) {
 	// Test that both "postgres" and "postgresql" are accepted as database types
 	config := &Config{
-		Port:         "8080",
-		JWTSecret:    "this-is-a-valid-jwt-secret-key-with-32-plus-chars",
-		DatabaseType: "postgresql", // Test the alternative name
-		PostgresHost: "localhost",
-		PostgresPort: "5432",
-		PostgresDB:   "test_db",
-		PostgresUser: "test_user",
-		RedisDB:      "0",
+		Port:          "8080",
+		JWTSecret:     "this-is-a-valid-jwt-secret-key-with-32-plus-chars",
+		DatabaseType:  "postgresql", // Test the alternative name
+		PostgresHost:  "localhost",
+		PostgresPort:  "5432",
+		PostgresDB:    "test_db",
+		PostgresUser:  "test_user",
+		RedisDB:       "0",
 		RedisPoolSize: "10",
 	}
-	
+
 	err := config.Validate()
 	if err != nil {
 		t.Errorf("Config.Validate() with postgresql database type should not error, got: %v", err)
@@ -582,7 +582,7 @@ func TestValidate_PostgreSQLVariant(t *testing.T) {
 
 func TestValidate_RateLimitWindow_ValidDurations(t *testing.T) {
 	validDurations := []string{"1s", "30s", "1m", "5m", "1h", "24h"}
-	
+
 	for _, duration := range validDurations {
 		t.Run("duration_"+duration, func(t *testing.T) {
 			config := &Config{
@@ -595,7 +595,7 @@ func TestValidate_RateLimitWindow_ValidDurations(t *testing.T) {
 				RedisDB:          "0",
 				RedisPoolSize:    "10",
 			}
-			
+
 			err := config.Validate()
 			if err != nil {
 				t.Errorf("Config.Validate() with duration %s should not error, got: %v", duration, err)
@@ -623,7 +623,7 @@ func clearTestEnvVars() {
 		"TEST_KEY_EXISTS", "TEST_KEY_EMPTY", "TEST_BOOL_TRUE", "TEST_BOOL_FALSE",
 		"TEST_BOOL_ONE", "TEST_BOOL_ZERO", "TEST_BOOL_INVALID", "TEST_BOOL_EMPTY",
 	}
-	
+
 	for _, key := range testKeys {
 		os.Unsetenv(key)
 	}
@@ -631,13 +631,13 @@ func clearTestEnvVars() {
 
 // Helper function to check if a string contains another string
 func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		   (len(substr) == 0 || 
-		    s == substr || 
-		    (len(s) > len(substr) && 
-		     (s[:len(substr)] == substr || 
-		      s[len(s)-len(substr):] == substr || 
-		      containsSubstring(s, substr))))
+	return len(s) >= len(substr) &&
+		(len(substr) == 0 ||
+			s == substr ||
+			(len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					containsSubstring(s, substr))))
 }
 
 func containsSubstring(s, substr string) bool {
@@ -652,7 +652,7 @@ func containsSubstring(s, substr string) bool {
 // Benchmark tests
 func BenchmarkLoad(b *testing.B) {
 	clearTestEnvVars()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = Load()
@@ -675,7 +675,7 @@ func BenchmarkConfig_Validate(b *testing.B) {
 		RateLimitWindow:  "60s",
 		EncryptionKey:    "12345678901234567890123456789012",
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = config.Validate()
@@ -685,7 +685,7 @@ func BenchmarkConfig_Validate(b *testing.B) {
 func BenchmarkGetEnv(b *testing.B) {
 	os.Setenv("BENCH_TEST_KEY", "test-value")
 	defer os.Unsetenv("BENCH_TEST_KEY")
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = getEnv("BENCH_TEST_KEY", "default")
@@ -695,7 +695,7 @@ func BenchmarkGetEnv(b *testing.B) {
 func BenchmarkGetBoolEnv(b *testing.B) {
 	os.Setenv("BENCH_TEST_BOOL", "true")
 	defer os.Unsetenv("BENCH_TEST_BOOL")
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = getBoolEnv("BENCH_TEST_BOOL", false)

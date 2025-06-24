@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"text/template"
 	"time"
-	
+
 	"webhook-router/internal/brokers"
 	"webhook-router/internal/brokers/aws"
 	"webhook-router/internal/brokers/gcp"
@@ -21,43 +21,42 @@ import (
 	"webhook-router/internal/common/base"
 	"webhook-router/internal/common/errors"
 	"webhook-router/internal/common/logging"
-	"webhook-router/internal/common/utils"
-	"webhook-router/internal/pipeline/common"
+	commonutils "webhook-router/internal/common/utils"
+	"webhook-router/internal/pipeline/utils"
 	"webhook-router/internal/triggers"
 )
 
 // Trigger implements the broker event trigger using BaseTrigger
 type Trigger struct {
 	*base.BaseTrigger
-	config        *Config
-	broker        brokers.Broker
-	messageCount  int64
-	errorCount    int64
-	mu            sync.RWMutex
-	builder       *triggers.TriggerBuilder
+	config       *Config
+	broker       brokers.Broker
+	messageCount int64
+	errorCount   int64
+	mu           sync.RWMutex
+	builder      *triggers.TriggerBuilder
 }
-
 
 func NewTrigger(config *Config, brokerRegistry *brokers.Registry) (*Trigger, error) {
 	builder := triggers.NewTriggerBuilder("broker", config)
-	
+
 	// Create broker instance from config
 	brokerConfig, err := createBrokerConfig(config)
 	if err != nil {
 		return nil, errors.ConfigError(fmt.Sprintf("failed to create broker config: %v", err))
 	}
-	
+
 	// Cast to BrokerConfig interface
 	bConfig, ok := brokerConfig.(brokers.BrokerConfig)
 	if !ok {
 		return nil, errors.ConfigError("invalid broker config type")
 	}
-	
+
 	broker, err := brokerRegistry.Create(config.BrokerType, bConfig)
 	if err != nil {
 		return nil, errors.InternalError("failed to create broker", err)
 	}
-	
+
 	trigger := &Trigger{
 		config:       config,
 		broker:       broker,
@@ -65,10 +64,10 @@ func NewTrigger(config *Config, brokerRegistry *brokers.Registry) (*Trigger, err
 		errorCount:   0,
 		builder:      builder,
 	}
-	
+
 	// Initialize BaseTrigger
 	trigger.BaseTrigger = builder.BuildBaseTrigger(nil)
-	
+
 	return trigger, nil
 }
 
@@ -81,7 +80,7 @@ func (t *Trigger) NextExecution() *time.Time {
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
 	// Build BaseTrigger with the handler
 	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
-	
+
 	// Use the BaseTrigger's Start method with our run function
 	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
 		return t.run(ctx, handler)
@@ -94,14 +93,14 @@ func (t *Trigger) Stop() error {
 	if err := t.BaseTrigger.Stop(); err != nil {
 		return err
 	}
-	
+
 	// Then close broker connection
 	if t.broker != nil {
 		if err := t.broker.Close(); err != nil {
 			t.builder.Logger().Error("Failed to close broker", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -111,32 +110,32 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 	if err != nil {
 		return errors.ConfigError(fmt.Sprintf("failed to create broker config: %v", err))
 	}
-	
+
 	bConfig, ok := brokerConfig.(brokers.BrokerConfig)
 	if !ok {
 		return errors.ConfigError("invalid broker config type")
 	}
-	
+
 	if err := t.broker.Connect(bConfig); err != nil {
 		return errors.ConnectionError("failed to connect to broker", err)
 	}
-	
+
 	t.builder.Logger().Info("Broker trigger started",
 		logging.Field{"topic", t.config.Topic},
 		logging.Field{"consumer_group", t.config.ConsumerGroup},
 	)
-	
+
 	// Create message handler
 	messageHandler := func(msg *brokers.IncomingMessage) error {
 		t.processMessage(ctx, msg, handler)
 		return nil
 	}
-	
+
 	// Subscribe to topic
 	if err := t.broker.Subscribe(ctx, t.config.Topic, messageHandler); err != nil {
 		return errors.ConnectionError("failed to subscribe to broker", err)
 	}
-	
+
 	// Wait for context cancellation
 	<-ctx.Done()
 	t.builder.Logger().Info("Broker trigger stopped")
@@ -145,7 +144,7 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 
 func (t *Trigger) processMessage(ctx context.Context, msg *brokers.IncomingMessage, handler triggers.TriggerHandler) {
 	atomic.AddInt64(&t.messageCount, 1)
-	
+
 	// Check if message passes filters
 	if !t.passesFilters(msg) {
 		t.builder.Logger().Debug("Message filtered out",
@@ -153,37 +152,48 @@ func (t *Trigger) processMessage(ctx context.Context, msg *brokers.IncomingMessa
 		)
 		return
 	}
-	
-	// Create trigger event
+
+	// Create trigger event with enhanced metadata
 	event := &triggers.TriggerEvent{
-		ID:          utils.GenerateEventID("broker", t.config.ID),
+		ID:          commonutils.GenerateEventID("broker", t.config.ID),
 		TriggerID:   t.config.ID,
 		TriggerName: t.config.Name,
 		Type:        "broker",
 		Timestamp:   time.Now(),
 		Data: map[string]interface{}{
-			"message_id":   msg.ID,
-			"body":         string(msg.Body),
-			"broker_type":  t.config.BrokerType,
-			"topic":        t.config.Topic,
-			"timestamp":    msg.Timestamp,
-			"metadata":     msg.Metadata,
+			"message_id":  msg.ID,
+			"body":        string(msg.Body),
+			"broker_type": t.config.BrokerType,
+			"topic":       t.config.Topic,
+			"timestamp":   msg.Timestamp,
+			"metadata":    msg.Metadata,
+			// Preserve original message for DLQ
+			"_original_message": map[string]interface{}{
+				"id":        msg.ID,
+				"headers":   msg.Headers,
+				"body":      msg.Body,
+				"timestamp": msg.Timestamp,
+				"source":    msg.Source,
+				"metadata":  msg.Metadata,
+			},
 		},
 		Headers: msg.Headers,
 		Source: triggers.TriggerSource{
-			Type: "broker",
-			Name: t.config.Name,
+			Type:     "broker",
+			Name:     t.config.Name,
+			Endpoint: t.config.BrokerType,
+			Metadata: t.buildSourceMetadata(msg),
 		},
 	}
-	
+
 	// Apply transformations
 	if t.config.Transformation.Enabled {
 		t.applyTransformations(event, msg)
 	}
-	
+
 	// Handle the event through the handler directly
 	err := handler(event)
-	
+
 	if err != nil {
 		atomic.AddInt64(&t.errorCount, 1)
 		t.handleMessageError(msg, err)
@@ -194,16 +204,16 @@ func (t *Trigger) passesFilters(msg *brokers.IncomingMessage) bool {
 	if !t.config.MessageFilter.Enabled {
 		return true
 	}
-	
+
 	filter := t.config.MessageFilter
-	
+
 	// Check headers
 	for name, value := range filter.Headers {
 		if msg.Headers[name] != value {
 			return false
 		}
 	}
-	
+
 	// Check content type
 	if filter.ContentType != "" {
 		contentType := msg.Headers["Content-Type"]
@@ -211,7 +221,7 @@ func (t *Trigger) passesFilters(msg *brokers.IncomingMessage) bool {
 			return false
 		}
 	}
-	
+
 	// Check body contains/not contains
 	bodyStr := string(msg.Body)
 	if filter.BodyContains != "" && !strings.Contains(bodyStr, filter.BodyContains) {
@@ -220,7 +230,7 @@ func (t *Trigger) passesFilters(msg *brokers.IncomingMessage) bool {
 	if filter.BodyNotContains != "" && strings.Contains(bodyStr, filter.BodyNotContains) {
 		return false
 	}
-	
+
 	// Check size limits
 	msgSize := int64(len(msg.Body))
 	if filter.MinSize > 0 && msgSize < filter.MinSize {
@@ -229,20 +239,20 @@ func (t *Trigger) passesFilters(msg *brokers.IncomingMessage) bool {
 	if filter.MaxSize > 0 && msgSize > filter.MaxSize {
 		return false
 	}
-	
+
 	// Check JSON conditions
 	if filter.JSONCondition.Enabled {
 		if !t.checkJSONCondition(msg.Body, &filter.JSONCondition) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
 func (t *Trigger) applyTransformations(event *triggers.TriggerEvent, msg *brokers.IncomingMessage) {
 	transform := t.config.Transformation
-	
+
 	// Apply header mapping
 	if len(transform.HeaderMapping) > 0 {
 		newHeaders := make(map[string]string)
@@ -256,12 +266,12 @@ func (t *Trigger) applyTransformations(event *triggers.TriggerEvent, msg *broker
 			event.Headers[k] = v
 		}
 	}
-	
+
 	// Add configured headers
 	for name, value := range transform.AddHeaders {
 		event.Headers[name] = value
 	}
-	
+
 	// Extract fields
 	for _, field := range transform.ExtractFields {
 		value := t.extractField(msg, field)
@@ -269,7 +279,7 @@ func (t *Trigger) applyTransformations(event *triggers.TriggerEvent, msg *broker
 			event.Data[field.Name] = value
 		}
 	}
-	
+
 	// Apply body template if configured
 	if transform.BodyTemplate != "" {
 		tmpl, err := template.New("body").Parse(transform.BodyTemplate)
@@ -277,18 +287,18 @@ func (t *Trigger) applyTransformations(event *triggers.TriggerEvent, msg *broker
 			t.builder.Logger().Error("Failed to parse body template", err)
 			return
 		}
-		
+
 		var buf strings.Builder
 		templateData := map[string]interface{}{
 			"Event":   event,
 			"Message": msg,
 		}
-		
+
 		if err := tmpl.Execute(&buf, templateData); err != nil {
 			t.builder.Logger().Error("Failed to execute body template", err)
 			return
 		}
-		
+
 		// Try to parse result as JSON
 		var transformedBody interface{}
 		if err := json.Unmarshal([]byte(buf.String()), &transformedBody); err == nil {
@@ -305,7 +315,7 @@ func (t *Trigger) extractField(msg *brokers.IncomingMessage, field ExtractFieldC
 		if value, exists := msg.Headers[field.Path]; exists {
 			return value
 		}
-		
+
 	case "metadata":
 		// Extract from message metadata
 		switch field.Path {
@@ -323,13 +333,13 @@ func (t *Trigger) extractField(msg *brokers.IncomingMessage, field ExtractFieldC
 				return fmt.Sprintf("%v", val)
 			}
 		}
-		
+
 	case "body":
 		// Extract from JSON body using dot notation
 		if field.Path == "" {
 			return string(msg.Body)
 		}
-		
+
 		// Parse JSON and extract field
 		var data map[string]interface{}
 		if err := json.Unmarshal(msg.Body, &data); err != nil {
@@ -339,13 +349,13 @@ func (t *Trigger) extractField(msg *brokers.IncomingMessage, field ExtractFieldC
 			)
 			return field.DefaultValue
 		}
-		
-		value := common.GetFieldValue(data, field.Path)
+
+		value := utils.GetFieldValue(data, field.Path)
 		if value != nil {
 			return fmt.Sprintf("%v", value)
 		}
 	}
-	
+
 	return field.DefaultValue
 }
 
@@ -353,30 +363,18 @@ func (t *Trigger) handleMessageError(msg *brokers.IncomingMessage, err error) {
 	t.builder.Logger().Error("Failed to process message", err,
 		logging.Field{"message_id", msg.ID},
 	)
-	
-	// Send to DLQ if configured
+
+	// DLQ handling is implemented at the trigger manager level.
+	// When this error is propagated up through the handler, the trigger manager
+	// will check if the trigger has DLQ configured and use PublishWithFallback.
 	if t.config.ErrorHandling.DeadLetterQueue != "" {
-		// Create a broker message from the incoming message for logging purposes
-		// Note: In a full implementation, this would be sent to the DLQ broker
-		
-		// Log that message should be sent to DLQ with detailed information
-		t.builder.Logger().Error("Message failed processing, should be sent to DLQ",
-			errors.InternalError("DLQ not implemented yet", err),
+		t.builder.Logger().Debug("Message processing failed - DLQ handling delegated to trigger manager",
 			logging.Field{"message_id", msg.ID},
-			logging.Field{"dlq_queue", t.config.ErrorHandling.DeadLetterQueue},
-			logging.Field{"original_error", err.Error()},
+			logging.Field{"configured_dlq", t.config.ErrorHandling.DeadLetterQueue},
+			logging.Field{"error", err.Error()},
 		)
-		
-		// TODO: When broker manager is accessible from trigger:
-		// if dlq, err := t.brokerManager.GetDLQ(t.brokerID); err == nil {
-		//     if err := dlq.SendToFail(t.config.ID, brokerMsg, err); err != nil {
-		//         t.builder.Logger().Error("Failed to send message to DLQ", err,
-		//             logging.Field{"message_id", msg.ID},
-		//         )
-		//     }
-		// }
 	}
-	
+
 	// Alert if configured (skipping for now as requested)
 	if t.config.ErrorHandling.AlertOnError {
 		t.builder.Logger().Warn("Alert should be sent for message processing failure",
@@ -390,25 +388,25 @@ func (t *Trigger) Health() error {
 	if !t.IsRunning() {
 		return errors.InternalError("trigger is not running", nil)
 	}
-	
+
 	// Check broker connection
 	if t.broker != nil {
 		if err := t.broker.Health(); err != nil {
 			return errors.ConnectionError("broker unhealthy", err)
 		}
 	}
-	
+
 	// Check error rate
 	msgCount := atomic.LoadInt64(&t.messageCount)
 	errCount := atomic.LoadInt64(&t.errorCount)
-	
+
 	if msgCount > 100 && float64(errCount)/float64(msgCount) > 0.5 {
 		return errors.InternalError(
 			fmt.Sprintf("high error rate: %d errors out of %d messages", errCount, msgCount),
 			nil,
 		)
 	}
-	
+
 	return nil
 }
 
@@ -442,7 +440,7 @@ func createBrokerConfig(config *Config) (interface{}, error) {
 
 func createRabbitMQConfig(configMap map[string]interface{}) (*rabbitmq.Config, error) {
 	cfg := &rabbitmq.Config{}
-	
+
 	if url, ok := configMap["url"].(string); ok {
 		cfg.URL = url
 	}
@@ -451,13 +449,13 @@ func createRabbitMQConfig(configMap map[string]interface{}) (*rabbitmq.Config, e
 	} else {
 		cfg.PoolSize = 5 // default
 	}
-	
+
 	return cfg, nil
 }
 
 func createKafkaConfig(configMap map[string]interface{}) (*kafka.Config, error) {
 	cfg := &kafka.Config{}
-	
+
 	if brokers, ok := configMap["brokers"].([]interface{}); ok {
 		for _, broker := range brokers {
 			if b, ok := broker.(string); ok {
@@ -471,13 +469,13 @@ func createKafkaConfig(configMap map[string]interface{}) (*kafka.Config, error) 
 	if groupID, ok := configMap["group_id"].(string); ok {
 		cfg.GroupID = groupID
 	}
-	
+
 	return cfg, nil
 }
 
 func createRedisConfig(configMap map[string]interface{}) (*redisbroker.Config, error) {
 	cfg := &redisbroker.Config{}
-	
+
 	if address, ok := configMap["address"].(string); ok {
 		cfg.Address = address
 	}
@@ -495,13 +493,13 @@ func createRedisConfig(configMap map[string]interface{}) (*redisbroker.Config, e
 	if consumerGroup, ok := configMap["consumer_group"].(string); ok {
 		cfg.ConsumerGroup = consumerGroup
 	}
-	
+
 	return cfg, nil
 }
 
 func createAWSConfig(configMap map[string]interface{}) (*aws.Config, error) {
 	cfg := &aws.Config{}
-	
+
 	if region, ok := configMap["region"].(string); ok {
 		cfg.Region = region
 	}
@@ -517,8 +515,70 @@ func createAWSConfig(configMap map[string]interface{}) (*aws.Config, error) {
 	if topicArn, ok := configMap["topic_arn"].(string); ok {
 		cfg.TopicArn = topicArn
 	}
-	
+
 	return cfg, nil
+}
+
+// buildSourceMetadata builds enhanced metadata for broker messages
+func (t *Trigger) buildSourceMetadata(msg *brokers.IncomingMessage) map[string]interface{} {
+	metadata := map[string]interface{}{
+		"broker_type": t.config.BrokerType,
+		"message_id":  msg.ID,
+		"timestamp":   msg.Timestamp.Format(time.RFC3339),
+	}
+
+	// Add generic metadata from the message
+	if msg.Metadata != nil {
+		for k, v := range msg.Metadata {
+			metadata[k] = v
+		}
+	}
+
+	// Add broker-specific configuration metadata from settings
+	if t.config.Settings != nil {
+		switch t.config.BrokerType {
+		case "kafka":
+			if group, ok := t.config.Settings["consumer_group"].(string); ok {
+				metadata["consumer_group"] = group
+			}
+			if topics, ok := t.config.Settings["topics"]; ok {
+				metadata["topics"] = topics
+			}
+
+		case "rabbitmq":
+			if queue, ok := t.config.Settings["queue"].(string); ok {
+				metadata["queue"] = queue
+			}
+			if exchange, ok := t.config.Settings["exchange"].(string); ok {
+				metadata["exchange"] = exchange
+			}
+
+		case "redis":
+			if channel, ok := t.config.Settings["channel"].(string); ok {
+				metadata["pubsub_channel"] = channel
+			}
+
+		case "aws_sqs":
+			if queueURL, ok := t.config.Settings["queue_url"].(string); ok {
+				metadata["queue_url"] = queueURL
+			}
+
+		case "aws_sns":
+			if topicArn, ok := t.config.Settings["topic_arn"].(string); ok {
+				metadata["topic_arn"] = topicArn
+			}
+
+		case "gcp_pubsub":
+			if topicID, ok := t.config.Settings["topic_id"].(string); ok {
+				metadata["topic_id"] = topicID
+			}
+			if subID, ok := t.config.Settings["subscription_id"].(string); ok {
+				metadata["subscription_id"] = subID
+			}
+		}
+	}
+
+	return metadata
 }
 
 // Config returns the trigger configuration
@@ -535,39 +595,39 @@ func (t *Trigger) checkJSONCondition(body []byte, condition *JSONConditionConfig
 		)
 		return false
 	}
-	
+
 	// Extract the value at the specified path
 	var testValue interface{}
 	if condition.Path == "" {
 		// No path means check the entire body
 		testValue = data
 	} else {
-		testValue = common.GetFieldValue(data, condition.Path)
+		testValue = utils.GetFieldValue(data, condition.Path)
 	}
-	
+
 	// Check "exists" operator first
 	if condition.Operator == "exists" {
 		return testValue != nil
 	}
-	
+
 	// If value doesn't exist and operator is not "exists", condition fails
 	if testValue == nil {
 		return false
 	}
-	
+
 	// Convert test value to string for comparison
 	testValueStr := fmt.Sprintf("%v", testValue)
-	
+
 	// Handle numeric comparisons if value type is number
 	if condition.ValueType == "number" {
 		return t.checkNumericCondition(testValueStr, condition.Operator, condition.Value)
 	}
-	
+
 	// Handle boolean comparisons
 	if condition.ValueType == "boolean" {
 		return t.checkBooleanCondition(testValueStr, condition.Operator, condition.Value)
 	}
-	
+
 	// String comparisons
 	switch condition.Operator {
 	case "eq":
@@ -607,12 +667,12 @@ func (t *Trigger) checkNumericCondition(testValue, operator, compareValue string
 	if err != nil {
 		return false
 	}
-	
+
 	compareNum, err := strconv.ParseFloat(compareValue, 64)
 	if err != nil {
 		return false
 	}
-	
+
 	switch operator {
 	case "eq":
 		return testNum == compareNum
@@ -634,7 +694,7 @@ func (t *Trigger) checkNumericCondition(testValue, operator, compareValue string
 func (t *Trigger) checkBooleanCondition(testValue, operator, compareValue string) bool {
 	testBool := testValue == "true" || testValue == "1"
 	compareBool := compareValue == "true" || compareValue == "1"
-	
+
 	switch operator {
 	case "eq":
 		return testBool == compareBool
@@ -647,7 +707,7 @@ func (t *Trigger) checkBooleanCondition(testValue, operator, compareValue string
 
 func createGCPConfig(configMap map[string]interface{}) (*gcp.Config, error) {
 	cfg := &gcp.Config{}
-	
+
 	if projectID, ok := configMap["project_id"].(string); ok {
 		cfg.ProjectID = projectID
 	}
@@ -678,6 +738,6 @@ func createGCPConfig(configMap map[string]interface{}) (*gcp.Config, error) {
 	if orderingKey, ok := configMap["ordering_key"].(string); ok {
 		cfg.OrderingKey = orderingKey
 	}
-	
+
 	return cfg, nil
 }

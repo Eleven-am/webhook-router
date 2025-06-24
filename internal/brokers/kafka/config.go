@@ -10,7 +10,7 @@ import (
 
 type Config struct {
 	config.BaseConnConfig
-	
+
 	Brokers          []string
 	ClientID         string
 	GroupID          string

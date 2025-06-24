@@ -25,98 +25,20 @@ func setupTestDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite3", tmpfile.Name())
 	require.NoError(t, err)
 
-	// Run migrations
-	schema := `
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    is_default BOOLEAN DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+	// Use the actual SQLC schema file
+	schemaPath := "../../../sql/schema/001_initial.sql"
+	schema, err := os.ReadFile(schemaPath)
+	if err != nil {
+		// Fallback to looking in other common locations
+		schemaPath = "sql/schema/001_initial.sql"
+		schema, err = os.ReadFile(schemaPath)
+		if err != nil {
+			t.Fatalf("Could not find schema file: %v", err)
+		}
+	}
 
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS routes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    endpoint TEXT NOT NULL,
-    method TEXT NOT NULL DEFAULT 'POST',
-    queue TEXT NOT NULL,
-    exchange TEXT DEFAULT '',
-    routing_key TEXT NOT NULL,
-    filters TEXT DEFAULT '{}',
-    headers TEXT DEFAULT '{}',
-    active BOOLEAN DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    pipeline_id INTEGER DEFAULT NULL,
-    trigger_id INTEGER DEFAULT NULL,
-    destination_broker_id INTEGER DEFAULT NULL,
-    priority INTEGER DEFAULT 100,
-    condition_expression TEXT DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS triggers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL,
-    config TEXT NOT NULL,
-    status TEXT DEFAULT 'stopped',
-    active BOOLEAN DEFAULT 1,
-    error_message TEXT,
-    last_execution DATETIME,
-    next_execution DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS pipelines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    stages TEXT NOT NULL,
-    active BOOLEAN DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS broker_configs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL,
-    config TEXT NOT NULL,
-    active BOOLEAN DEFAULT 1,
-    health_status TEXT DEFAULT 'unknown',
-    last_health_check DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS webhook_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    route_id INTEGER,
-    method TEXT NOT NULL,
-    endpoint TEXT NOT NULL,
-    headers TEXT,
-    body TEXT,
-    status_code INTEGER DEFAULT 200,
-    error TEXT,
-    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    trigger_id INTEGER DEFAULT NULL,
-    pipeline_id INTEGER DEFAULT NULL,
-    transformation_time_ms INTEGER DEFAULT 0,
-    broker_publish_time_ms INTEGER DEFAULT 0,
-    FOREIGN KEY (route_id) REFERENCES routes (id),
-    FOREIGN KEY (trigger_id) REFERENCES triggers (id),
-    FOREIGN KEY (pipeline_id) REFERENCES pipelines (id)
-);`
-	_, err = db.Exec(schema)
+	// Execute the schema
+	_, err = db.Exec(string(schema))
 	require.NoError(t, err)
 
 	return db
@@ -128,16 +50,19 @@ func TestSQLCAdapter_UserOperations(t *testing.T) {
 
 	t.Run("CreateAndGetUser", func(t *testing.T) {
 		// Create user
-		err := adapter.CreateUser("testuser", "hashedpassword123")
-		assert.NoError(t, err)
-
-		// Get user
-		user, err := adapter.GetUser("testuser")
+		user, err := adapter.CreateUser("testuser", "password123")
 		assert.NoError(t, err)
 		assert.NotNil(t, user)
 		assert.Equal(t, "testuser", user.Username)
-		assert.Equal(t, "hashedpassword123", user.PasswordHash)
-		assert.False(t, user.IsDefault)
+		assert.False(t, user.IsDefault) // First user should not be default
+
+		// Get user by ID
+		fetchedUser, err := adapter.GetUser(user.ID)
+		assert.NoError(t, err)
+		assert.NotNil(t, fetchedUser)
+		assert.Equal(t, "testuser", fetchedUser.Username)
+		assert.NotEmpty(t, fetchedUser.PasswordHash) // Should be hashed
+		assert.False(t, fetchedUser.IsDefault)
 	})
 
 	t.Run("GetNonExistentUser", func(t *testing.T) {
@@ -190,19 +115,20 @@ func TestSQLCAdapter_RouteOperations(t *testing.T) {
 			Queue:      "test-queue",
 			Exchange:   "test-exchange",
 			RoutingKey: "test.key",
-			Filters:    map[string]interface{}{"type": "test"},
-			Headers:    map[string]string{"X-Custom": "header"},
+			Filters:    `{"type": "test"}`,
+			Headers:    `{"X-Custom": "header"}`,
 			Active:     true,
 			Priority:   100,
+			UserID:     "test-user",
 		}
 
 		// Create route
 		err := adapter.CreateRoute(route)
 		assert.NoError(t, err)
-		assert.Greater(t, route.ID, 0)
+		assert.NotEmpty(t, route.ID)
 
 		// Get route
-		retrieved, err := adapter.GetRoute(route.ID)
+		retrieved, err := adapter.GetRoute(route.ID, "test-user")
 		assert.NoError(t, err)
 		assert.NotNil(t, retrieved)
 		assert.Equal(t, route.Name, retrieved.Name)

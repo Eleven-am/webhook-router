@@ -62,7 +62,7 @@ func NewBroker(config *Config) (*Broker, error) {
 
 	// Get topic handle
 	topic := client.Topic(config.TopicID)
-	
+
 	// Check if topic exists
 	exists, err := topic.Exists(ctx)
 	if err != nil {
@@ -163,7 +163,7 @@ func (b *Broker) setupSubscription(config *Config) error {
 func (b *Broker) Connect(config brokers.BrokerConfig) error {
 	return b.connectionManager.ValidateAndConnect(config, (*Config)(nil), func(validatedConfig brokers.BrokerConfig) error {
 		gcpConfig := validatedConfig.(*Config)
-		
+
 		// Close existing connection
 		if b.client != nil {
 			b.client.Close()
@@ -191,7 +191,7 @@ func (b *Broker) Connect(config brokers.BrokerConfig) error {
 
 		// Get topic handle
 		topic := client.Topic(gcpConfig.TopicID)
-		
+
 		// Check if topic exists
 		exists, err := topic.Exists(ctx)
 		if err != nil {
@@ -242,7 +242,7 @@ func (b *Broker) Publish(message *brokers.Message) error {
 
 	// Create Pub/Sub message
 	pubsubMsg := &pubsub.Message{
-		Data: message.Body,
+		Data:       message.Body,
 		Attributes: make(map[string]string),
 	}
 
@@ -274,7 +274,7 @@ func (b *Broker) Publish(message *brokers.Message) error {
 
 	// Publish the message
 	result := b.topic.Publish(b.ctx, pubsubMsg)
-	
+
 	// Wait for the publish to complete
 	messageID, err := result.Get(b.ctx)
 	if err != nil {
@@ -335,11 +335,11 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 				Body:      msg.Data,
 				Timestamp: timestamp,
 				Metadata: map[string]interface{}{
-					"publish_time":   msg.PublishTime,
-					"ordering_key":   msg.OrderingKey,
-					"routing_key":    routingKey,
-					"message_id":     messageID,
-					"subscription":   b.subscription.ID(),
+					"publish_time": msg.PublishTime,
+					"ordering_key": msg.OrderingKey,
+					"routing_key":  routingKey,
+					"message_id":   messageID,
+					"subscription": b.subscription.ID(),
 				},
 			}
 

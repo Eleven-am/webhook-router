@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  webhook-router:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      args:
+        TARGETOS: linux
+        TARGETARCH: amd64
+    container_name: webhook-router-server
+    ports:
+      - "8080:8080"
+    environment:
+      # REQUIRED: Set your encryption key (minimum 32 characters)
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-your-secret-key-minimum-32-characters-change-this}
+      
+      # Database configuration
+      DATABASE_TYPE: sqlite
+      DATABASE_PATH: /data/webhook_router.db
+      
+      # Optional: PostgreSQL configuration (if DATABASE_TYPE=postgres)
+      # DATABASE_TYPE: postgres
+      # POSTGRES_HOST: postgres
+      # POSTGRES_PORT: 5432
+      # POSTGRES_DB: webhook_router
+      # POSTGRES_USER: postgres
+      # POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      
+      # Optional: Redis configuration (for distributed features)
+      # REDIS_ADDRESS: redis:6379
+      # REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      
+      # Application settings
+      PORT: 8080
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEFAULT_QUEUE: webhooks
+      
+      # Rate limiting
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_DEFAULT: "100"
+      RATE_LIMIT_WINDOW: "60s"
+      
+    volumes:
+      - webhook_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - webhook-network
+
+  # Optional: PostgreSQL database
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: webhook-postgres
+  #   environment:
+  #     POSTGRES_DB: webhook_router
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   networks:
+  #     - webhook-network
+  #   restart: unless-stopped
+
+  # Optional: Redis for distributed features
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: webhook-redis
+  #   command: redis-server --appendonly yes
+  #   volumes:
+  #     - redis_data:/data
+  #   ports:
+  #     - "6379:6379"
+  #   networks:
+  #     - webhook-network
+  #   restart: unless-stopped
+
+volumes:
+  webhook_data:
+    driver: local
+  # postgres_data:
+  #   driver: local
+  # redis_data:
+  #   driver: local
+
+networks:
+  webhook-network:
+    driver: bridge

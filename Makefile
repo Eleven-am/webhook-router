@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-build docker-run dev setup docker-multiarch docker-push
+.PHONY: build run test clean docker-build docker-run dev setup docker-multiarch docker-push sqlc bump-major bump-minor bump-patch version
 
 # Go parameters
 GOCMD=go
@@ -16,8 +16,24 @@ DOCKER_TAG ?= latest
 DOCKER_PLATFORMS = linux/amd64,linux/arm64
 TIMESTAMP = $(shell date +"%Y-%m-%d-%H-%M")
 
-# Build the application
-build:
+# Frontend commands
+.PHONY: frontend-install frontend-build frontend-clean
+
+frontend-install:
+	cd frontend && npm install
+
+frontend-build:
+	cd frontend && npm run build
+
+frontend-clean:
+	rm -rf frontend/dist
+
+# Build the application (with frontend)
+build: frontend-build
+	CGO_ENABLED=1 $(GOBUILD) -o $(BINARY_NAME) -v
+
+# Build without frontend (backend only)
+build-backend:
 	CGO_ENABLED=1 $(GOBUILD) -o $(BINARY_NAME) -v
 
 # Run the application
@@ -30,7 +46,7 @@ dev:
 		air; \
 	else \
 		echo "Installing air for hot reload..."; \
-		go install github.com/cosmtrek/air@latest; \
+		go install github.com/air-verse/air@latest; \
 		air; \
 	fi
 
@@ -39,7 +55,7 @@ test:
 	$(GOTEST) -v ./...
 
 # Clean build artifacts
-clean:
+clean: frontend-clean
 	$(GOCLEAN)
 	rm -f $(BINARY_NAME)
 	rm -f $(BINARY_UNIX)
@@ -49,11 +65,11 @@ deps:
 	$(GOMOD) download
 	$(GOMOD) tidy
 
-# Setup development environment (simplified - no web/static needed)
-setup: deps
+# Setup development environment
+setup: deps frontend-install
 	@echo "Setting up development environment..."
+	@echo "Frontend dependencies installed"
 	@echo "Development environment ready!"
-	@echo "Note: Web assets are embedded in the binary"
 
 # Build for Linux
 build-linux:
@@ -65,6 +81,38 @@ docker-build:
 
 docker-run: docker-build
 	docker run -p 8080:8080 -v webhook_data:/data webhook-router
+
+# Server-only Docker commands (without frontend)
+docker-server-build:
+	docker build -f Dockerfile.server -t webhook-router-server:latest .
+
+docker-server-run: docker-server-build
+	@if [ -z "$$ENCRYPTION_KEY" ]; then \
+		echo "Error: ENCRYPTION_KEY environment variable is required"; \
+		echo "Set it with: export ENCRYPTION_KEY=\"your-32-character-secret-key-here\""; \
+		exit 1; \
+	fi
+	docker run -d --name webhook-router-server \
+		-p 8080:8080 \
+		-v webhook_data:/data \
+		-e ENCRYPTION_KEY="$$ENCRYPTION_KEY" \
+		webhook-router-server:latest
+
+docker-server-logs:
+	docker logs -f webhook-router-server
+
+docker-server-stop:
+	docker stop webhook-router-server && docker rm webhook-router-server
+
+# Docker Compose for server
+docker-compose-server-up:
+	docker-compose -f docker-compose.server.yml up -d
+
+docker-compose-server-down:
+	docker-compose -f docker-compose.server.yml down
+
+docker-compose-server-logs:
+	docker-compose -f docker-compose.server.yml logs -f
 
 # Multi-architecture Docker build setup
 docker-setup:
@@ -195,11 +243,61 @@ lint:
 		echo "golangci-lint not installed. Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
 	fi
 
+# Generate SQLC code
+sqlc:
+	@echo "Generating SQLC code..."
+	@cd sql && go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest generate
+
+# Version management
+# Get the current version from git tags
+CURRENT_VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+CURRENT_VERSION_PARTS := $(subst ., ,$(subst v,,$(CURRENT_VERSION)))
+MAJOR := $(word 1,$(CURRENT_VERSION_PARTS))
+MINOR := $(word 2,$(CURRENT_VERSION_PARTS))
+PATCH := $(word 3,$(CURRENT_VERSION_PARTS))
+
+# Bump version commands
+bump-major:
+	@echo "Current version: $(CURRENT_VERSION)"
+	@NEW_VERSION="v$$(($(MAJOR)+1)).0.0"; \
+	echo "Bumping to: $$NEW_VERSION"; \
+	git tag -a $$NEW_VERSION -m "Release $$NEW_VERSION"; \
+	git push origin $$NEW_VERSION; \
+	echo "✓ Tagged and pushed $$NEW_VERSION"
+
+bump-minor:
+	@echo "Current version: $(CURRENT_VERSION)"
+	@NEW_VERSION="v$(MAJOR).$$(($(MINOR)+1)).0"; \
+	echo "Bumping to: $$NEW_VERSION"; \
+	git tag -a $$NEW_VERSION -m "Release $$NEW_VERSION"; \
+	git push origin $$NEW_VERSION; \
+	echo "✓ Tagged and pushed $$NEW_VERSION"
+
+bump-patch:
+	@echo "Current version: $(CURRENT_VERSION)"
+	@NEW_VERSION="v$(MAJOR).$(MINOR).$$(($(PATCH)+1))"; \
+	echo "Bumping to: $$NEW_VERSION"; \
+	git tag -a $$NEW_VERSION -m "Release $$NEW_VERSION"; \
+	git push origin $$NEW_VERSION; \
+	echo "✓ Tagged and pushed $$NEW_VERSION"
+
+# Show current version
+version:
+	@echo "Current version: $(CURRENT_VERSION)"
+	@echo "Next versions would be:"
+	@echo "  Major: v$$(($(MAJOR)+1)).0.0"
+	@echo "  Minor: v$(MAJOR).$$(($(MINOR)+1)).0"
+	@echo "  Patch: v$(MAJOR).$(MINOR).$$(($(PATCH)+1))"
+
 # Generate API documentation
-docs:
+docs: docs/swagger.json docs/swagger.yaml docs/docs.go
+
+docs/swagger.json docs/swagger.yaml docs/docs.go: $(shell find . -name "*.go" -not -path "./docs/*")
 	@echo "Generating API documentation..."
 	@if command -v swag > /dev/null; then \
 		swag init; \
+	elif [ -f "$$(go env GOPATH)/bin/swag" ]; then \
+		$$(go env GOPATH)/bin/swag init; \
 	else \
 		echo "swag not installed. Install with: go install github.com/swaggo/swag/cmd/swag@latest"; \
 	fi
@@ -357,6 +455,7 @@ help:
 	@echo "  fmt           - Format Go code"
 	@echo "  vet           - Run go vet"
 	@echo "  lint          - Run golangci-lint"
+	@echo "  sqlc          - Generate SQLC code from SQL queries"
 	@echo "  install-tools - Install development tools"
 	@echo ""
 	@echo "Testing & Info:"

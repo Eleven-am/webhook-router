@@ -26,7 +26,7 @@ func createTestConfig() *carddav.Config {
 		URL:               "http://example.com/carddav",
 		Username:          "testuser",
 		Password:          "testpass",
-		PollInterval:      30 * time.Second,
+		PollInterval:      2 * time.Minute, // Must be at least 1 minute
 		AddressbookFilter: []string{"contacts"},
 		IncludeGroups:     true,
 		SyncTokens:        make(map[string]string),
@@ -46,7 +46,7 @@ type testHandler struct {
 func (h *testHandler) HandleEvent(event *triggers.TriggerEvent) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	h.events = append(h.events, event)
 	if h.callback != nil {
 		err := h.callback(event)
@@ -59,7 +59,7 @@ func (h *testHandler) HandleEvent(event *triggers.TriggerEvent) error {
 func (h *testHandler) GetEvents() []*triggers.TriggerEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	events := make([]*triggers.TriggerEvent, len(h.events))
 	copy(events, h.events)
 	return events
@@ -74,7 +74,7 @@ func (h *testHandler) EventCount() int {
 func TestCardDAVTrigger_NewTrigger(t *testing.T) {
 	config := createTestConfig()
 	trigger, err := carddav.NewTrigger(config)
-	
+
 	require.NoError(t, err)
 	assert.NotNil(t, trigger)
 	assert.Equal(t, "test-carddav", trigger.Name())
@@ -127,16 +127,16 @@ func TestCardDAVTrigger_InvalidConfig(t *testing.T) {
 				URL:          "http://example.com",
 				Username:     "user",
 				Password:     "pass",
-				PollInterval: 0, // Invalid interval
+				PollInterval: 10 * time.Second, // Invalid - less than 1 minute
 			},
 			expectError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			trigger, err := carddav.NewTrigger(tt.config)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Nil(t, trigger)
@@ -178,29 +178,29 @@ END:VCARD</CARD:address-data>
 		}
 	}))
 	defer server.Close()
-	
+
 	config := createTestConfig()
 	config.URL = server.URL
-	config.PollInterval = 100 * time.Millisecond
-	
+	config.PollInterval = 2 * time.Minute
+
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	assert.True(t, trigger.IsRunning())
-	
+
 	// Wait for context to timeout
 	<-ctx.Done()
-	
+
 	// Should have processed at least one poll
 	assert.GreaterOrEqual(t, handler.EventCount(), 1)
-	
+
 	// Check event structure
 	events := handler.GetEvents()
 	if len(events) > 0 {
@@ -220,31 +220,31 @@ func TestCardDAVTrigger_Authentication(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		
+
 		w.Header().Set("Content-Type", "application/xml")
 		w.Write([]byte(`<?xml version="1.0" encoding="utf-8" ?>
 <D:multistatus xmlns:D="DAV:" xmlns:CARD="urn:ietf:params:xml:ns:carddav">
 </D:multistatus>`))
 	}))
 	defer server.Close()
-	
+
 	config := createTestConfig()
 	config.URL = server.URL
-	config.PollInterval = 200 * time.Millisecond
-	
+	config.PollInterval = 2 * time.Minute
+
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Wait for poll
 	time.Sleep(250 * time.Millisecond)
-	
+
 	// Should have successfully authenticated and polled
 	assert.GreaterOrEqual(t, handler.EventCount(), 1)
 }
@@ -300,33 +300,33 @@ END:VCARD</CARD:address-data>
 </D:multistatus>`))
 	}))
 	defer server.Close()
-	
+
 	config := createTestConfig()
 	config.URL = server.URL
-	config.PollInterval = 200 * time.Millisecond
-	// Set filter to only include work and personal contacts  
+	config.PollInterval = 2 * time.Minute
+	// Set filter to only include work and personal contacts
 	config.AddressbookFilter = []string{"work", "personal"}
-	
+
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Wait for poll
 	time.Sleep(250 * time.Millisecond)
-	
+
 	// Check that only filtered contacts are included
 	events := handler.GetEvents()
 	if len(events) > 0 {
 		event := events[0]
 		contacts, ok := event.Data["contacts"].([]interface{})
 		require.True(t, ok)
-		
+
 		// Should only have work and personal contacts, not other
 		for _, contact := range contacts {
 			contactMap := contact.(map[string]interface{})
@@ -340,17 +340,17 @@ func TestCardDAVTrigger_SyncToken(t *testing.T) {
 	pollCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pollCount++
-		
+
 		// Check for sync token in request
 		body := make([]byte, r.ContentLength)
 		r.Body.Read(body)
 		requestBody := string(body)
-		
+
 		if pollCount > 1 {
 			// Subsequent requests should include sync token
 			assert.Contains(t, requestBody, "sync-token")
 		}
-		
+
 		// Return response with sync token
 		w.Header().Set("Content-Type", "application/xml")
 		w.Write([]byte(`<?xml version="1.0" encoding="utf-8" ?>
@@ -359,24 +359,24 @@ func TestCardDAVTrigger_SyncToken(t *testing.T) {
 </D:multistatus>`))
 	}))
 	defer server.Close()
-	
+
 	config := createTestConfig()
 	config.URL = server.URL
-	config.PollInterval = 100 * time.Millisecond
-	
+	config.PollInterval = 2 * time.Minute
+
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Wait for multiple polls
 	<-ctx.Done()
-	
+
 	// Should have made at least 2 polls
 	assert.GreaterOrEqual(t, pollCount, 2)
 }
@@ -385,9 +385,9 @@ func TestCardDAVTrigger_ChangeDetection(t *testing.T) {
 	pollCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pollCount++
-		
+
 		w.Header().Set("Content-Type", "application/xml")
-		
+
 		// Return different contacts on different polls
 		if pollCount == 1 {
 			// First poll - one contact
@@ -430,37 +430,37 @@ END:VCARD</CARD:address-data>
 		}
 	}))
 	defer server.Close()
-	
+
 	config := createTestConfig()
 	config.URL = server.URL
-	config.PollInterval = 100 * time.Millisecond
-	
+	config.PollInterval = 2 * time.Minute
+
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Wait for multiple polls
 	<-ctx.Done()
-	
+
 	// Should have detected changes
 	assert.GreaterOrEqual(t, handler.EventCount(), 2)
-	
+
 	events := handler.GetEvents()
 	if len(events) >= 2 {
 		// Check that the updated contact is different
 		contacts1 := events[0].Data["contacts"].([]interface{})
 		contacts2 := events[len(events)-1].Data["contacts"].([]interface{})
-		
+
 		if len(contacts1) > 0 && len(contacts2) > 0 {
 			contact1 := contacts1[0].(map[string]interface{})
 			contact2 := contacts2[0].(map[string]interface{})
-			
+
 			// Names should be different due to update
 			assert.NotEqual(t, contact1["name"], contact2["name"])
 		}
@@ -471,31 +471,31 @@ func TestCardDAVTrigger_Health(t *testing.T) {
 	config := createTestConfig()
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	// Health should fail when not running
 	err = trigger.Health()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not running")
-	
+
 	// Create a basic server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	
+
 	config.URL = server.URL
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Health should succeed when running
 	err = trigger.Health()
 	assert.NoError(t, err)
-	
+
 	trigger.Stop()
 }
 
@@ -503,7 +503,7 @@ func TestCardDAVTrigger_Config(t *testing.T) {
 	config := createTestConfig()
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	returnedConfig := trigger.Config()
 	assert.Equal(t, config, returnedConfig)
 }
@@ -512,22 +512,22 @@ func TestCardDAVTrigger_Stop(t *testing.T) {
 	config := createTestConfig()
 	trigger, err := carddav.NewTrigger(config)
 	require.NoError(t, err)
-	
+
 	// Create a basic server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	
+
 	config.URL = server.URL
-	
+
 	ctx := context.Background()
 	handler := &testHandler{}
-	
+
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
 	assert.True(t, trigger.IsRunning())
-	
+
 	// Stop the trigger
 	err = trigger.Stop()
 	assert.NoError(t, err)

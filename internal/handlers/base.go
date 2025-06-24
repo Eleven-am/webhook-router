@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -13,9 +14,13 @@ import (
 	"webhook-router/internal/auth"
 	"webhook-router/internal/brokers"
 	"webhook-router/internal/brokers/manager"
+	"webhook-router/internal/common/dlq"
+	"webhook-router/internal/common/email"
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/common/logging"
 	"webhook-router/internal/config"
 	"webhook-router/internal/crypto"
+	"webhook-router/internal/oauth2"
 	"webhook-router/internal/pipeline"
 	"webhook-router/internal/routing"
 	"webhook-router/internal/storage"
@@ -33,7 +38,10 @@ type Handlers struct {
 	pipelineEngine pipeline.Engine
 	triggerManager *triggers.Manager
 	logger         logging.Logger
+	dlqHandler     *dlq.Handler
 	encryptor      *crypto.ConfigEncryptor
+	emailService   *email.Service
+	oauth2Manager  *oauth2.Manager
 }
 
 type WebhookPayload struct {
@@ -42,17 +50,23 @@ type WebhookPayload struct {
 	Headers   map[string][]string `json:"headers"`
 	Body      string              `json:"body"`
 	Timestamp time.Time           `json:"timestamp"`
-	RouteID   int                 `json:"route_id,omitempty"`
+	RouteID   string              `json:"route_id,omitempty"`
 	RouteName string              `json:"route_name,omitempty"`
 }
 
-func New(storage storage.Storage, broker brokers.Broker, cfg *config.Config, webFS embed.FS, authHandler *auth.Auth, router routing.Router, pipelineEngine pipeline.Engine, triggerManager *triggers.Manager, encryptor *crypto.ConfigEncryptor) *Handlers {
+func New(storage storage.Storage, broker brokers.Broker, cfg *config.Config, webFS embed.FS, authHandler *auth.Auth, router routing.Router, pipelineEngine pipeline.Engine, triggerManager *triggers.Manager, encryptor *crypto.ConfigEncryptor, oauth2Manager *oauth2.Manager) *Handlers {
 	logger := logging.GetGlobalLogger().WithFields(
 		logging.Field{"component", "handlers"},
 	)
 
 	// Create broker manager
 	brokerManager := manager.NewManager(storage)
+
+	// Create DLQ handler
+	dlqHandler := dlq.NewHandler(brokerManager, logger)
+
+	// Create email service
+	emailService := email.NewService(cfg, logger)
 
 	// Create DLQ if broker is available
 
@@ -67,7 +81,10 @@ func New(storage storage.Storage, broker brokers.Broker, cfg *config.Config, web
 		pipelineEngine: pipelineEngine,
 		triggerManager: triggerManager,
 		logger:         logger,
+		dlqHandler:     dlqHandler,
 		encryptor:      encryptor,
+		emailService:   emailService,
+		oauth2Manager:  oauth2Manager,
 	}
 }
 
@@ -75,6 +92,24 @@ func New(storage storage.Storage, broker brokers.Broker, cfg *config.Config, web
 // GetBrokerManager returns the broker manager instance
 func (h *Handlers) GetBrokerManager() *manager.Manager {
 	return h.brokerManager
+}
+
+// HealthCheck returns the health status of the application
+// @Summary Health check
+// @Description Returns the health status of the application and its dependencies
+// @Tags system
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Health status"
+// @Router /health [get]
+func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	status := map[string]interface{}{
+		"status":    "healthy",
+		"timestamp": time.Now().UTC(),
+		"version":   "1.0.0",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }
 
 // Helper functions for DRY code
@@ -97,22 +132,30 @@ func (h *Handlers) extractToken(r *http.Request) (string, string) {
 	return "", ""
 }
 
-// validateSession validates a session from request and redirects to login if invalid
+// validateSession validates a session from request and redirects to / if invalid
 // Returns the session and true if valid, or writes redirect and returns nil, false
 func (h *Handlers) validateSession(w http.ResponseWriter, r *http.Request) (*auth.Session, bool) {
 	token, _ := h.extractToken(r)
 	if token == "" {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusFound)
 		return nil, false
 	}
 
 	session, valid := h.auth.ValidateSession(token)
 	if !valid {
-		http.Redirect(w, r, "/login", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusFound)
 		return nil, false
 	}
 
 	return session, true
+}
+
+// isSecureConnection determines if we're in production mode (HTTPS)
+func (h *Handlers) isSecureConnection() bool {
+	if h.config == nil {
+		return false
+	}
+	return strings.HasPrefix(h.config.Port, "443") || os.Getenv("HTTPS") == "true" || os.Getenv("PRODUCTION") == "true"
 }
 
 // setTokenCookie sets a JWT token cookie with appropriate security settings
@@ -122,8 +165,8 @@ func (h *Handlers) setTokenCookie(w http.ResponseWriter, token string, expiresAt
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false, // Set to true in production with HTTPS
-		SameSite: http.SameSiteStrictMode,
+		Secure:   h.isSecureConnection(),
+		SameSite: http.SameSiteLaxMode, // Lax mode for better compatibility with redirects
 		Expires:  expiresAt,
 	})
 }
@@ -135,6 +178,8 @@ func (h *Handlers) clearTokenCookie(w http.ResponseWriter) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   h.isSecureConnection(),
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }
@@ -167,6 +212,18 @@ func (h *Handlers) sendJSONResponse(w http.ResponseWriter, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
+// sendJSONError sends a JSON error response
+func (h *Handlers) sendJSONError(w http.ResponseWriter, err error, logMessage, httpMessage string, statusCode int) {
+	if err != nil {
+		h.logger.Error(logMessage, err)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": httpMessage,
+	})
+}
+
 // serveStaticFile serves a static file from the embedded filesystem
 func (h *Handlers) serveStaticFile(w http.ResponseWriter, filename, contentType, notFoundMessage string) {
 	content, err := h.webFS.ReadFile(filename)
@@ -182,11 +239,11 @@ func (h *Handlers) serveStaticFile(w http.ResponseWriter, filename, contentType,
 // validatePasswordChange validates password change form data
 func (h *Handlers) validatePasswordChange(newPassword, confirmPassword string) error {
 	if newPassword != confirmPassword {
-		return fmt.Errorf("passwords do not match")
+		return errors.ValidationError("passwords do not match")
 	}
 
 	if len(newPassword) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
+		return errors.ValidationError("password must be at least 8 characters")
 	}
 
 	return nil
@@ -203,36 +260,6 @@ func (h *Handlers) createWebhookPayload(r *http.Request, body []byte) WebhookPay
 		Body:      string(body),
 		Timestamp: time.Now(),
 	}
-}
-
-// findMatchingRoutes finds routes that match the given endpoint and method
-func (h *Handlers) findMatchingRoutes(endpoint, method string) ([]*storage.Route, error) {
-	routes, err := h.storage.GetRoutes()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get routes: %w", err)
-	}
-
-	var matchedRoutes []*storage.Route
-
-	// First try to match by endpoint name or path
-	if endpoint != "" {
-		for _, route := range routes {
-			if strings.EqualFold(route.Name, endpoint) || route.Endpoint == endpoint {
-				matchedRoutes = append(matchedRoutes, route)
-			}
-		}
-	}
-
-	// If no specific routes match, match by method
-	if len(matchedRoutes) == 0 {
-		for _, route := range routes {
-			if route.Method == method || route.Method == "*" {
-				matchedRoutes = append(matchedRoutes, route)
-			}
-		}
-	}
-
-	return matchedRoutes, nil
 }
 
 // createBrokerMessage creates a standardized broker message
@@ -252,11 +279,11 @@ func (h *Handlers) createBrokerMessage(prefix, queue, routingKey string, body []
 }
 
 // publishMessageWithDLQ publishes a message with DLQ fallback support
-func (h *Handlers) publishMessageWithDLQ(routeID int, message *brokers.Message, brokerID *int) error {
+func (h *Handlers) publishMessageWithDLQ(routeID string, message *brokers.Message, brokerID *string) error {
 	if brokerID == nil {
 		// Use default broker
 		if h.broker == nil {
-			return fmt.Errorf("no broker configured")
+			return errors.ConfigError("no broker configured")
 		}
 
 		if err := h.broker.Publish(message); err != nil {
@@ -282,7 +309,7 @@ func (h *Handlers) processFilters(payload WebhookPayload, filtersJSON string) (b
 
 	var filters map[string]interface{}
 	if err := json.Unmarshal([]byte(filtersJSON), &filters); err != nil {
-		return false, fmt.Errorf("failed to parse filters: %w", err)
+		return false, errors.InternalError("failed to parse filters", err)
 	}
 
 	return h.matchesFilters(payload, filters), nil
@@ -329,7 +356,7 @@ func (h *Handlers) parseHeaders(headersJSON string) (map[string]string, error) {
 
 	var headers map[string]string
 	if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
-		return nil, fmt.Errorf("failed to parse headers: %w", err)
+		return nil, errors.InternalError("failed to parse headers", err)
 	}
 
 	return headers, nil
@@ -364,9 +391,7 @@ func (h *Handlers) addSystemMetrics(status map[string]interface{}) {
 
 // addStorageMetrics adds storage-specific metrics to the status
 func (h *Handlers) addStorageMetrics(status map[string]interface{}) {
-	if routes, err := h.storage.GetRoutes(); err == nil {
-		status["route_count"] = len(routes)
-	}
+	// Routes have been removed - routing is now handled by triggers
 	if triggers, err := h.storage.GetTriggers(storage.TriggerFilters{}); err == nil {
 		status["trigger_count"] = len(triggers)
 	}

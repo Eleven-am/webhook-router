@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	
+
 	"webhook-router/internal/brokers"
 	"webhook-router/internal/brokers/rabbitmq"
 	"webhook-router/internal/brokers/testutil"
@@ -62,17 +62,17 @@ func TestRabbitMQConfig(t *testing.T) {
 
 func TestRabbitMQFactory(t *testing.T) {
 	factory := rabbitmq.GetFactory()
-	
+
 	t.Run("GetType", func(t *testing.T) {
 		assert.Equal(t, "rabbitmq", factory.GetType())
 	})
-	
+
 	t.Run("CreateWithValidConfig", func(t *testing.T) {
 		config := &rabbitmq.Config{
 			URL:      "amqp://localhost:5672",
 			PoolSize: 5,
 		}
-		
+
 		// Note: This will try to connect to RabbitMQ
 		// In a unit test environment without RabbitMQ, this will fail
 		// For true unit tests, we would need to mock the connection
@@ -85,13 +85,13 @@ func TestRabbitMQFactory(t *testing.T) {
 		assert.NotNil(t, broker)
 		assert.Equal(t, "rabbitmq", broker.Name())
 	})
-	
+
 	t.Run("CreateWithInvalidConfig", func(t *testing.T) {
 		// Test with wrong config type
 		broker, err := factory.Create(nil)
 		assert.Error(t, err)
 		assert.Nil(t, broker)
-		
+
 		// Test with invalid config
 		invalidConfig := &rabbitmq.Config{URL: ""}
 		broker, err = factory.Create(invalidConfig)
@@ -121,7 +121,7 @@ func TestRabbitMQConnectionStrings(t *testing.T) {
 			Expected: "amqp://user:pass@host:5672/vhost",
 		},
 	}
-	
+
 	testutil.TestConnectionStrings(t, testCases)
 }
 
@@ -130,18 +130,27 @@ func TestRabbitMQBrokerIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
-	
+
 	factory := rabbitmq.GetFactory()
 	config := &rabbitmq.Config{
 		URL:      getTestRabbitMQURL(),
 		PoolSize: 2,
 	}
-	
+
 	// Only run if we can validate the config
 	if err := config.Validate(); err != nil {
 		t.Skip("Invalid test configuration:", err)
 	}
-	
+
+	// Try to create a broker to test if RabbitMQ is available
+	broker, err := factory.Create(config)
+	if err != nil {
+		t.Skip("RabbitMQ server not available for integration test:", err)
+	}
+	if broker != nil {
+		broker.Close()
+	}
+
 	// Use the common test suite
 	testutil.RunBrokerTestSuite(t, factory, config)
 }
@@ -152,16 +161,16 @@ func TestRabbitMQSpecificFeatures(t *testing.T) {
 			URL:      "amqp://test:test@localhost:5672/test",
 			PoolSize: 10,
 		}
-		
+
 		assert.Equal(t, "rabbitmq", config.GetType())
 		assert.Equal(t, "amqp://test:test@localhost:5672/test", config.GetConnectionString())
-		
+
 		// Validate sets defaults
 		err := config.Validate()
 		require.NoError(t, err)
 		assert.Equal(t, 10, config.PoolSize)
 	})
-	
+
 	t.Run("MessagePatterns", func(t *testing.T) {
 		// Test different RabbitMQ-specific message patterns
 		patterns := []struct {
@@ -175,7 +184,7 @@ func TestRabbitMQSpecificFeatures(t *testing.T) {
 			{"", "fanout-exchange", "", "fanout"},
 			{"dlq", "dlx", "failed", "dead-letter"},
 		}
-		
+
 		for _, p := range patterns {
 			msg := testutil.CreateTestMessage(p.Queue, p.Exchange, p.RoutingKey)
 			assert.Equal(t, p.Queue, msg.Queue)

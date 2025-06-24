@@ -4,11 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/lucsky/cuid"
+	"os"
+	"strings"
 	"sync"
 	"time"
 	"webhook-router/internal/brokers"
+	"webhook-router/internal/common/dlq"
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/common/logging"
 	"webhook-router/internal/oauth2"
+	"webhook-router/internal/pipeline"
 	"webhook-router/internal/storage"
 )
 
@@ -17,7 +23,7 @@ type Manager struct {
 	registry            *TriggerRegistry
 	storage             storage.Storage
 	brokerRegistry      *brokers.Registry
-	triggers            map[int]Trigger
+	triggers            map[string]Trigger
 	mu                  sync.RWMutex
 	ctx                 context.Context
 	cancel              context.CancelFunc
@@ -25,9 +31,17 @@ type Manager struct {
 	isRunning           bool
 	healthCheck         *time.Ticker
 	syncTicker          *time.Ticker
-	distributedExecutor func(triggerID int, taskID string, handler func() error) error
+	distributedExecutor func(triggerID string, taskID string, handler func() error) error
 	oauthManager        *oauth2.Manager // OAuth2 manager for triggers
-	logger              logging.Logger
+	brokerManager       interface {     // Broker manager for DLQ support
+		PublishWithFallback(brokerID, routeID string, message *brokers.Message) error
+	}
+	dlqHandler     *dlq.Handler // DLQ handler for centralized DLQ logic
+	pipelineEngine interface {  // Pipeline engine for response transformations
+		ExecutePipeline(ctx context.Context, pipelineID string, data interface{}) (interface{}, error)
+		ExecutePipelineWithMetadata(ctx context.Context, pipelineID string, data interface{}, metadata interface{}) (interface{}, error)
+	}
+	logger logging.Logger
 }
 
 // ManagerConfig contains configuration for the trigger manager
@@ -56,7 +70,7 @@ func NewManager(storage storage.Storage, brokerRegistry *brokers.Registry, broke
 		registry:       NewTriggerRegistry(),
 		storage:        storage,
 		brokerRegistry: brokerRegistry,
-		triggers:       make(map[int]Trigger),
+		triggers:       make(map[string]Trigger),
 		ctx:            ctx,
 		cancel:         cancel,
 		broker:         broker,
@@ -77,20 +91,41 @@ func (m *Manager) SetOAuthManager(oauthManager *oauth2.Manager) {
 	m.oauthManager = oauthManager
 }
 
+// SetBrokerManager sets the broker manager for DLQ support
+func (m *Manager) SetBrokerManager(brokerManager interface {
+	PublishWithFallback(brokerID, routeID string, message *brokers.Message) error
+}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.brokerManager = brokerManager
+	// Create DLQ handler when broker manager is set
+	m.dlqHandler = dlq.NewHandler(brokerManager, m.logger)
+}
+
+// SetPipelineEngine sets the pipeline_old engine for triggers that support response transformations
+func (m *Manager) SetPipelineEngine(pipelineEngine interface {
+	ExecutePipeline(ctx context.Context, pipelineID string, data interface{}) (interface{}, error)
+	ExecutePipelineWithMetadata(ctx context.Context, pipelineID string, data interface{}, metadata interface{}) (interface{}, error)
+}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pipelineEngine = pipelineEngine
+}
+
 // GetRegistry returns the trigger registry for external factory registration
 func (m *Manager) GetRegistry() *TriggerRegistry {
 	return m.registry
 }
 
 // SetDistributedExecutor sets the distributed execution function
-func (m *Manager) SetDistributedExecutor(executor func(triggerID int, taskID string, handler func() error) error) {
+func (m *Manager) SetDistributedExecutor(executor func(triggerID string, taskID string, handler func() error) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.distributedExecutor = executor
 }
 
 func (m *Manager) registerBuiltinFactories() {
-	// Trigger factories are registered externally in main.go
+	// Trigger factories are registered externally in main.go.bak
 	// This allows for flexible configuration and testing
 }
 
@@ -100,12 +135,12 @@ func (m *Manager) Start() error {
 	defer m.mu.Unlock()
 
 	if m.isRunning {
-		return fmt.Errorf("trigger manager is already running")
+		return errors.ValidationError("trigger manager is already running")
 	}
 
 	// Load triggers from database
 	if err := m.loadTriggersFromDatabase(); err != nil {
-		return fmt.Errorf("failed to load triggers from database: %w", err)
+		return errors.InternalError("failed to load triggers from database", err)
 	}
 
 	// Start health checking
@@ -130,7 +165,7 @@ func (m *Manager) Stop() error {
 	defer m.mu.Unlock()
 
 	if !m.isRunning {
-		return fmt.Errorf("trigger manager is not running")
+		return errors.ValidationError("trigger manager is not running")
 	}
 
 	// Stop all triggers
@@ -162,23 +197,35 @@ func (m *Manager) Stop() error {
 }
 
 // LoadTrigger loads a trigger from database and starts it if active
-func (m *Manager) LoadTrigger(triggerID int) error {
+func (m *Manager) LoadTrigger(triggerID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.loadTriggerLocked(triggerID)
+}
+
+// loadTriggerLocked loads a trigger with the lock already held
+func (m *Manager) loadTriggerLocked(triggerID string) error {
 	// Get trigger from database
 	dbTrigger, err := m.storage.GetTrigger(triggerID)
 	if err != nil {
-		return fmt.Errorf("failed to get trigger from database: %w", err)
+		return errors.InternalError("failed to get trigger from database", err)
+	}
+
+	if dbTrigger == nil {
+		return errors.NotFoundError("trigger")
 	}
 
 	// Create trigger config from database trigger
 	config, err := m.createTriggerConfig(dbTrigger)
 	if err != nil {
-		return fmt.Errorf("failed to create trigger config: %w", err)
+		return errors.InternalError("failed to create trigger config", err)
 	}
 
 	// Create trigger instance
 	trigger, err := m.registry.Create(dbTrigger.Type, config)
 	if err != nil {
-		return fmt.Errorf("failed to create trigger: %w", err)
+		return errors.InternalError("failed to create trigger", err)
 	}
 
 	// Set OAuth2 manager if trigger supports it
@@ -188,8 +235,12 @@ func (m *Manager) LoadTrigger(triggerID int) error {
 		}
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Set Pipeline engine if trigger supports it
+	if m.pipelineEngine != nil {
+		if pipelineTrigger, ok := trigger.(PipelineTrigger); ok {
+			pipelineTrigger.SetPipelineEngine(m.pipelineEngine)
+		}
+	}
 
 	// Stop existing trigger if it exists
 	if existingTrigger, exists := m.triggers[triggerID]; exists {
@@ -206,7 +257,7 @@ func (m *Manager) LoadTrigger(triggerID int) error {
 		// Use reflection or type assertion to set distributed executor
 		// This avoids import cycles
 		if setter, ok := trigger.(interface {
-			SetDistributedExecutor(func(triggerID int, taskID string, handler func() error) error)
+			SetDistributedExecutor(func(triggerID string, taskID string, handler func() error) error)
 		}); ok {
 			setter.SetDistributedExecutor(m.distributedExecutor)
 		}
@@ -216,7 +267,7 @@ func (m *Manager) LoadTrigger(triggerID int) error {
 	if dbTrigger.Active {
 		handler := m.createTriggerHandler(trigger)
 		if err := trigger.Start(m.ctx, handler); err != nil {
-			return fmt.Errorf("failed to start trigger: %w", err)
+			return errors.InternalError("failed to start trigger", err)
 		}
 	}
 
@@ -234,13 +285,13 @@ func (m *Manager) LoadTrigger(triggerID int) error {
 }
 
 // UnloadTrigger stops and removes a trigger from management
-func (m *Manager) UnloadTrigger(triggerID int) error {
+func (m *Manager) UnloadTrigger(triggerID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	trigger, exists := m.triggers[triggerID]
 	if !exists {
-		return fmt.Errorf("trigger %d not found", triggerID)
+		return errors.NotFoundError(fmt.Sprintf("trigger %s", triggerID))
 	}
 
 	// Stop trigger if running
@@ -262,22 +313,22 @@ func (m *Manager) UnloadTrigger(triggerID int) error {
 }
 
 // StartTrigger starts a specific trigger
-func (m *Manager) StartTrigger(triggerID int) error {
+func (m *Manager) StartTrigger(triggerID string) error {
 	m.mu.RLock()
 	trigger, exists := m.triggers[triggerID]
 	m.mu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("trigger %d not found", triggerID)
+		return errors.NotFoundError(fmt.Sprintf("trigger %s", triggerID))
 	}
 
 	if trigger.IsRunning() {
-		return fmt.Errorf("trigger %d is already running", triggerID)
+		return errors.ValidationError(fmt.Sprintf("trigger %s is already running", triggerID))
 	}
 
 	handler := m.createTriggerHandler(trigger)
 	if err := trigger.Start(m.ctx, handler); err != nil {
-		return fmt.Errorf("failed to start trigger %d: %w", triggerID, err)
+		return errors.InternalError(fmt.Sprintf("failed to start trigger %s", triggerID), err)
 	}
 
 	// Update trigger status in database
@@ -294,21 +345,21 @@ func (m *Manager) StartTrigger(triggerID int) error {
 }
 
 // StopTrigger stops a specific trigger
-func (m *Manager) StopTrigger(triggerID int) error {
+func (m *Manager) StopTrigger(triggerID string) error {
 	m.mu.RLock()
 	trigger, exists := m.triggers[triggerID]
 	m.mu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("trigger %d not found", triggerID)
+		return errors.NotFoundError(fmt.Sprintf("trigger %s", triggerID))
 	}
 
 	if !trigger.IsRunning() {
-		return fmt.Errorf("trigger %d is not running", triggerID)
+		return errors.ValidationError(fmt.Sprintf("trigger %s is not running", triggerID))
 	}
 
 	if err := trigger.Stop(); err != nil {
-		return fmt.Errorf("failed to stop trigger %d: %w", triggerID, err)
+		return errors.InternalError(fmt.Sprintf("failed to stop trigger %s", triggerID), err)
 	}
 
 	// Update trigger status in database
@@ -325,25 +376,25 @@ func (m *Manager) StopTrigger(triggerID int) error {
 }
 
 // GetTrigger returns a trigger by ID
-func (m *Manager) GetTrigger(triggerID int) (Trigger, error) {
+func (m *Manager) GetTrigger(triggerID string) (Trigger, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	trigger, exists := m.triggers[triggerID]
 	if !exists {
-		return nil, fmt.Errorf("trigger %d not found", triggerID)
+		return nil, errors.NotFoundError(fmt.Sprintf("trigger %s", triggerID))
 	}
 
 	return trigger, nil
 }
 
 // GetAllTriggers returns all managed triggers
-func (m *Manager) GetAllTriggers() map[int]Trigger {
+func (m *Manager) GetAllTriggers() map[string]Trigger {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	// Return a copy to avoid race conditions
-	triggers := make(map[int]Trigger)
+	triggers := make(map[string]Trigger)
 	for id, trigger := range m.triggers {
 		triggers[id] = trigger
 	}
@@ -352,13 +403,13 @@ func (m *Manager) GetAllTriggers() map[int]Trigger {
 }
 
 // GetTriggerStatus returns detailed status information for a trigger
-func (m *Manager) GetTriggerStatus(triggerID int) (*TriggerStatus, error) {
+func (m *Manager) GetTriggerStatus(triggerID string) (*TriggerStatus, error) {
 	m.mu.RLock()
 	trigger, exists := m.triggers[triggerID]
 	m.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("trigger %d not found", triggerID)
+		return nil, errors.NotFoundError(fmt.Sprintf("trigger %s", triggerID))
 	}
 
 	status := &TriggerStatus{
@@ -386,7 +437,7 @@ func (m *Manager) Health() error {
 	defer m.mu.RUnlock()
 
 	if !m.isRunning {
-		return fmt.Errorf("trigger manager is not running")
+		return errors.ValidationError("trigger manager is not running")
 	}
 
 	// Check if any triggers are unhealthy
@@ -398,7 +449,7 @@ func (m *Manager) Health() error {
 	}
 
 	if unhealthyCount > 0 {
-		return fmt.Errorf("%d triggers are unhealthy", unhealthyCount)
+		return errors.InternalError(fmt.Sprintf("%d triggers are unhealthy", unhealthyCount), nil)
 	}
 
 	return nil
@@ -412,11 +463,11 @@ func (m *Manager) loadTriggersFromDatabase() error {
 
 	dbTriggers, err := m.storage.GetTriggers(filters)
 	if err != nil {
-		return fmt.Errorf("failed to get triggers from database: %w", err)
+		return errors.InternalError("failed to get triggers from database", err)
 	}
 
 	for _, dbTrigger := range dbTriggers {
-		if err := m.LoadTrigger(dbTrigger.ID); err != nil {
+		if err := m.loadTriggerLocked(dbTrigger.ID); err != nil {
 			m.logger.Error("Failed to load trigger", err,
 				logging.Field{"trigger_id", dbTrigger.ID},
 			)
@@ -482,17 +533,17 @@ func (m *Manager) createTriggerConfig(dbTrigger *storage.Trigger) (TriggerConfig
 		return config, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported trigger type: %s", dbTrigger.Type)
+		return nil, errors.ValidationError(fmt.Sprintf("unsupported trigger type: %s", dbTrigger.Type))
 	}
 }
 
-// createTriggerHandler creates a handler function for trigger events
+// createTriggerHandler creates a handler function for trigger events with execution logging
 func (m *Manager) createTriggerHandler(trigger Trigger) TriggerHandler {
-	return func(event *TriggerEvent) error {
+	return m.wrapHandlerWithExecutionLogging(trigger, func(event *TriggerEvent) error {
 		// Convert trigger event to broker message
 		eventData, err := json.Marshal(event.Data)
 		if err != nil {
-			return fmt.Errorf("failed to marshal event data: %w", err)
+			return errors.InternalError("failed to marshal event data", err)
 		}
 
 		message := &brokers.Message{
@@ -500,7 +551,7 @@ func (m *Manager) createTriggerHandler(trigger Trigger) TriggerHandler {
 			Exchange:   "",
 			RoutingKey: event.Type,
 			Headers: map[string]string{
-				"trigger_id":   fmt.Sprintf("%d", event.TriggerID),
+				"trigger_id":   event.TriggerID,
 				"trigger_name": event.TriggerName,
 				"trigger_type": event.Type,
 				"event_id":     event.ID,
@@ -526,6 +577,12 @@ func (m *Manager) createTriggerHandler(trigger Trigger) TriggerHandler {
 				)
 				return err
 			}
+		} else {
+			m.logger.Warn("No broker available to publish trigger event",
+				logging.Field{"event_id", event.ID},
+				logging.Field{"trigger_id", event.TriggerID},
+			)
+			return errors.ConfigError("no broker available")
 		}
 
 		// Log successful trigger execution
@@ -536,6 +593,481 @@ func (m *Manager) createTriggerHandler(trigger Trigger) TriggerHandler {
 		)
 
 		return nil
+	})
+}
+
+// wrapHandlerWithExecutionLogging wraps a trigger handler with comprehensive execution logging
+func (m *Manager) wrapHandlerWithExecutionLogging(trigger Trigger, handler TriggerHandler) TriggerHandler {
+	return func(event *TriggerEvent) error {
+		// Create execution log entry
+		executionLog := &storage.ExecutionLog{
+			ID:            cuid.New(),
+			TriggerID:     &event.TriggerID,
+			TriggerType:   event.Type,
+			TriggerConfig: "{}",
+			InputMethod:   event.Type,
+			InputEndpoint: event.Source.Name,
+			InputHeaders:  "{}",
+			InputBody: func() string {
+				if eventData, err := json.Marshal(event.Data); err == nil {
+					return string(eventData)
+				}
+				return ""
+			}(),
+			PipelineStages:       "[]",
+			TransformationData:   "{}",
+			TransformationTimeMS: 0,
+			BrokerType:           "unknown",
+			BrokerQueue:          "trigger-events",
+			BrokerExchange:       "",
+			BrokerRoutingKey:     event.Type,
+			BrokerPublishTimeMS:  0,
+			BrokerResponse:       "",
+			Status:               "processing",
+			StatusCode:           0,
+			ErrorMessage:         "",
+			OutputData:           "",
+			TotalLatencyMS:       0,
+			StartedAt:            time.Now(),
+			CompletedAt:          nil,
+			UserID:               getUserFromTrigger(trigger),
+		}
+
+		// Get trigger config for pipeline_old processing and logging
+		var dbTrigger *storage.Trigger
+		if trigger, err := m.storage.GetTrigger(event.TriggerID); err == nil {
+			dbTrigger = trigger
+			configJSON, _ := json.Marshal(dbTrigger.Config)
+			executionLog.TriggerConfig = string(configJSON)
+			// Set pipeline_old ID if configured
+			if dbTrigger.PipelineID != nil {
+				executionLog.PipelineID = dbTrigger.PipelineID
+			}
+		}
+
+		// Set headers if available
+		if len(event.Headers) > 0 {
+			headersJSON, _ := json.Marshal(event.Headers)
+			executionLog.InputHeaders = string(headersJSON)
+		}
+
+		// Create initial execution log
+		if err := m.storage.CreateExecutionLog(executionLog); err != nil {
+			m.logger.Error("Failed to create execution log", err,
+				logging.Field{"event_id", event.ID},
+				logging.Field{"trigger_id", event.TriggerID},
+			)
+		}
+
+		// Track total execution time
+		startTime := time.Now()
+
+		// Execute pipeline_old processing (if pipeline_old engine is available)
+		var pipelineStartTime time.Time
+		if m.pipelineEngine != nil && dbTrigger != nil && dbTrigger.PipelineID != nil && *dbTrigger.PipelineID != "" {
+			pipelineStartTime = time.Now()
+			// Execute the configured pipeline_old with metadata
+			ctx := context.Background()
+
+			// Get user ID from execution log
+			userID := executionLog.UserID
+
+			// Create enhanced metadata for pipeline execution
+			metadata := pipeline.NewMetadata(userID, *dbTrigger.PipelineID, executionLog.ID)
+			metadata.SetTriggerInfo(event.TriggerID, event.Type)
+
+			// Set source information based on trigger type
+			sourceMetadata := make(map[string]interface{})
+			if event.Headers != nil {
+				sourceMetadata["headers"] = event.Headers
+			}
+			// Check if Source has been set (non-empty)
+			if event.Source.Type != "" || event.Source.Name != "" {
+				sourceMetadata["source_name"] = event.Source.Name
+				sourceMetadata["source_type"] = event.Source.Type
+				if event.Source.Metadata != nil {
+					for k, v := range event.Source.Metadata {
+						sourceMetadata[k] = v
+					}
+				}
+			}
+
+			metadata.SetSourceInfo(event.Type, event.ID, sourceMetadata)
+
+			// Set environment and instance info (these could come from config)
+			metadata.SetEnvironment(
+				os.Getenv("ENVIRONMENT"),
+				os.Getenv("REGION"),
+				os.Getenv("HOSTNAME"),
+			)
+
+			// Set trace ID if available
+			if traceID, ok := event.Headers["X-Trace-ID"]; ok {
+				metadata.SetTracing(traceID, "", "", "")
+			}
+
+			result, err := m.pipelineEngine.ExecutePipelineWithMetadata(ctx, *dbTrigger.PipelineID, event.Data, metadata)
+			if err != nil {
+				m.logger.Error("Pipeline execution failed", err,
+					logging.Field{"pipeline_id", *dbTrigger.PipelineID},
+					logging.Field{"trigger_id", event.TriggerID})
+				executionLog.ErrorMessage = fmt.Sprintf("Pipeline execution failed: %v", err)
+			} else {
+				// Update event data with pipeline_old result
+				if result != nil {
+					if resultMap, ok := result.(map[string]interface{}); ok {
+						event.Data = resultMap
+					} else {
+						// Convert to map if possible
+						event.Data = map[string]interface{}{"result": result}
+					}
+				}
+				m.logger.Debug("Pipeline executed successfully",
+					logging.Field{"pipeline_id", *dbTrigger.PipelineID},
+					logging.Field{"trigger_id", event.TriggerID})
+			}
+			executionLog.TransformationTimeMS = int(time.Since(pipelineStartTime).Milliseconds())
+		}
+
+		// Execute the handler (broker publishing)
+		brokerStartTime := time.Now()
+		err := handler(event)
+		brokerEndTime := time.Now()
+
+		executionLog.BrokerPublishTimeMS = int(brokerEndTime.Sub(brokerStartTime).Milliseconds())
+		executionLog.TotalLatencyMS = int(time.Since(startTime).Milliseconds())
+
+		// Update execution log with final results
+		completedAt := time.Now()
+		executionLog.CompletedAt = &completedAt
+
+		if err != nil {
+			executionLog.Status = "error"
+			executionLog.ErrorMessage = err.Error()
+			executionLog.BrokerResponse = fmt.Sprintf("Error: %s", err.Error())
+		} else {
+			executionLog.Status = "success"
+			executionLog.BrokerResponse = "Published successfully"
+			if outputData, err := json.Marshal(event.Data); err == nil {
+				executionLog.OutputData = string(outputData)
+			}
+		}
+
+		// Update execution log
+		if updateErr := m.storage.UpdateExecutionLog(executionLog); updateErr != nil {
+			m.logger.Error("Failed to update execution log", updateErr,
+				logging.Field{"execution_log_id", executionLog.ID},
+			)
+		}
+
+		// Handle DLQ if error occurred
+		if err != nil {
+			m.handleDLQForError(event, err)
+		}
+
+		return err
+	}
+}
+
+// handleDLQForError handles DLQ processing when execution fails
+func (m *Manager) handleDLQForError(event *TriggerEvent, err error) {
+	// Get trigger configuration for DLQ settings
+	var triggerConfig *storage.Trigger
+	if dbTrigger, getErr := m.storage.GetTrigger(event.TriggerID); getErr == nil {
+		triggerConfig = dbTrigger
+	}
+
+	// If error occurred and DLQ is configured, send to DLQ
+	if triggerConfig != nil && triggerConfig.DLQEnabled &&
+		triggerConfig.DLQBrokerID != nil && m.dlqHandler != nil {
+
+		// Marshal the event for DLQ
+		eventData, _ := json.Marshal(event)
+
+		// Use the DRY DLQ handler
+		m.dlqHandler.SendToDLQ(
+			*triggerConfig.DLQBrokerID,
+			event.TriggerID,
+			"trigger",
+			event.TriggerName,
+			eventData,
+			event.Headers,
+			err,
+		)
+	}
+}
+
+// getUserFromTrigger extracts user ID from trigger context
+func getUserFromTrigger(trigger Trigger) string {
+	// For now, return a default user ID
+	// This should be enhanced to extract user context from the trigger
+	return "demo_user"
+}
+
+// ProcessTriggerEvent processes a trigger event with full execution logging
+// This method allows external components (like webhook handlers) to create
+// trigger events and have them logged properly
+func (m *Manager) ProcessTriggerEvent(event *TriggerEvent, trigger Trigger, userID string) error {
+	// Create a handler that processes the event appropriately
+	handler := func(e *TriggerEvent) error {
+		// Convert trigger event to broker message
+		eventData, err := json.Marshal(e.Data)
+		if err != nil {
+			return errors.InternalError("failed to marshal event data", err)
+		}
+
+		message := &brokers.Message{
+			Queue:      "trigger-events",
+			Exchange:   "",
+			RoutingKey: e.Type,
+			Headers: map[string]string{
+				"trigger_id":   e.TriggerID,
+				"trigger_name": e.TriggerName,
+				"trigger_type": e.Type,
+				"event_id":     e.ID,
+				"source_type":  e.Source.Type,
+				"source_name":  e.Source.Name,
+			},
+			Body:      eventData,
+			Timestamp: e.Timestamp,
+			MessageID: e.ID,
+		}
+
+		// Add custom headers from the event
+		for key, value := range e.Headers {
+			message.Headers["event_"+key] = value
+		}
+
+		// Publish to broker if available
+		if m.broker != nil {
+			if err := m.broker.Publish(message); err != nil {
+				m.logger.Error("Failed to publish trigger event", err,
+					logging.Field{"event_id", e.ID},
+					logging.Field{"trigger_id", e.TriggerID},
+				)
+				return err
+			}
+		} else {
+			m.logger.Warn("No broker available to publish trigger event",
+				logging.Field{"event_id", e.ID},
+				logging.Field{"trigger_id", e.TriggerID},
+			)
+			return errors.ConfigError("no broker available")
+		}
+
+		// Log successful trigger execution
+		m.logger.Debug("Trigger event processed",
+			logging.Field{"event_type", e.Type},
+			logging.Field{"trigger_name", e.TriggerName},
+			logging.Field{"trigger_id", e.TriggerID},
+		)
+
+		return nil
+	}
+
+	// Wrap with execution logging but override user ID
+	wrappedHandler := m.wrapHandlerWithExecutionLoggingAndUser(trigger, handler, userID)
+
+	// Execute the event
+	return wrappedHandler(event)
+}
+
+// wrapHandlerWithExecutionLoggingAndUser is like wrapHandlerWithExecutionLogging but allows specifying user ID
+func (m *Manager) wrapHandlerWithExecutionLoggingAndUser(trigger Trigger, handler TriggerHandler, userID string) TriggerHandler {
+	return func(event *TriggerEvent) error {
+		// Create execution log entry
+		executionLog := &storage.ExecutionLog{
+			ID:            cuid.New(),
+			TriggerID:     &event.TriggerID,
+			TriggerType:   event.Type,
+			TriggerConfig: "{}",
+			InputMethod:   event.Type,
+			InputEndpoint: event.Source.Name,
+			InputHeaders:  "{}",
+			InputBody: func() string {
+				if eventData, err := json.Marshal(event.Data); err == nil {
+					return string(eventData)
+				}
+				return ""
+			}(),
+			PipelineStages:       "[]",
+			TransformationData:   "{}",
+			TransformationTimeMS: 0,
+			BrokerType:           "unknown",
+			BrokerQueue:          "trigger-events",
+			BrokerExchange:       "",
+			BrokerRoutingKey:     event.Type,
+			BrokerPublishTimeMS:  0,
+			BrokerResponse:       "",
+			Status:               "processing",
+			StatusCode:           0,
+			ErrorMessage:         "",
+			OutputData:           "",
+			TotalLatencyMS:       0,
+			StartedAt:            time.Now(),
+			CompletedAt:          nil,
+			UserID:               userID, // Use provided user ID
+		}
+
+		// Get trigger config for pipeline_old processing and logging
+		var dbTrigger *storage.Trigger
+		if event.TriggerID != "" {
+			if trigger, err := m.storage.GetTrigger(event.TriggerID); err == nil && trigger != nil {
+				dbTrigger = trigger
+				configJSON, _ := json.Marshal(dbTrigger.Config)
+				executionLog.TriggerConfig = string(configJSON)
+				// Set pipeline_old ID if configured
+				if dbTrigger.PipelineID != nil {
+					executionLog.PipelineID = dbTrigger.PipelineID
+				}
+			}
+		}
+
+		// Set headers if available
+		if len(event.Headers) > 0 {
+			headersJSON, _ := json.Marshal(event.Headers)
+			executionLog.InputHeaders = string(headersJSON)
+		}
+
+		// Extract route_id from event data if available (for HTTP triggers)
+		if event.Type == "http" && event.Data != nil {
+			// Debug logging to see what's in event.Data
+			m.logger.Debug("HTTP trigger event data",
+				logging.Field{"event_data", event.Data},
+				logging.Field{"trigger_id", event.TriggerID},
+			)
+
+			if routeID, ok := event.Data["route_id"].(string); ok && routeID != "" {
+				// RouteID has been removed - routing is now handled by triggers
+				m.logger.Debug("Found route_id in event data",
+					logging.Field{"route_id", routeID},
+				)
+			} else {
+				keys := make([]string, 0, len(event.Data))
+				for k := range event.Data {
+					keys = append(keys, k)
+				}
+				m.logger.Debug("No route_id found in event data",
+					logging.Field{"event_data_keys", strings.Join(keys, ", ")},
+				)
+			}
+		}
+
+		// Create initial execution log
+		if err := m.storage.CreateExecutionLog(executionLog); err != nil {
+			m.logger.Error("Failed to create execution log", err,
+				logging.Field{"event_id", event.ID},
+				logging.Field{"trigger_id", event.TriggerID},
+			)
+		}
+
+		// Track total execution time
+		startTime := time.Now()
+
+		// Execute pipeline_old processing (if pipeline_old engine is available)
+		var pipelineStartTime time.Time
+		if m.pipelineEngine != nil && dbTrigger != nil && dbTrigger.PipelineID != nil && *dbTrigger.PipelineID != "" {
+			pipelineStartTime = time.Now()
+			// Execute the configured pipeline_old with metadata
+			ctx := context.Background()
+
+			// Get user ID from execution log
+			userID := executionLog.UserID
+
+			// Create enhanced metadata for pipeline execution
+			metadata := pipeline.NewMetadata(userID, *dbTrigger.PipelineID, executionLog.ID)
+			metadata.SetTriggerInfo(event.TriggerID, event.Type)
+
+			// Set source information based on trigger type
+			sourceMetadata := make(map[string]interface{})
+			if event.Headers != nil {
+				sourceMetadata["headers"] = event.Headers
+			}
+			// Check if Source has been set (non-empty)
+			if event.Source.Type != "" || event.Source.Name != "" {
+				sourceMetadata["source_name"] = event.Source.Name
+				sourceMetadata["source_type"] = event.Source.Type
+				if event.Source.Metadata != nil {
+					for k, v := range event.Source.Metadata {
+						sourceMetadata[k] = v
+					}
+				}
+			}
+
+			metadata.SetSourceInfo(event.Type, event.ID, sourceMetadata)
+
+			// Set environment and instance info (these could come from config)
+			metadata.SetEnvironment(
+				os.Getenv("ENVIRONMENT"),
+				os.Getenv("REGION"),
+				os.Getenv("HOSTNAME"),
+			)
+
+			// Set trace ID if available
+			if traceID, ok := event.Headers["X-Trace-ID"]; ok {
+				metadata.SetTracing(traceID, "", "", "")
+			}
+
+			result, err := m.pipelineEngine.ExecutePipelineWithMetadata(ctx, *dbTrigger.PipelineID, event.Data, metadata)
+			if err != nil {
+				m.logger.Error("Pipeline execution failed", err,
+					logging.Field{"pipeline_id", *dbTrigger.PipelineID},
+					logging.Field{"trigger_id", event.TriggerID})
+				executionLog.ErrorMessage = fmt.Sprintf("Pipeline execution failed: %v", err)
+			} else {
+				// Update event data with pipeline_old result
+				if result != nil {
+					if resultMap, ok := result.(map[string]interface{}); ok {
+						event.Data = resultMap
+					} else {
+						// Convert to map if possible
+						event.Data = map[string]interface{}{"result": result}
+					}
+				}
+				m.logger.Debug("Pipeline executed successfully",
+					logging.Field{"pipeline_id", *dbTrigger.PipelineID},
+					logging.Field{"trigger_id", event.TriggerID})
+			}
+			executionLog.TransformationTimeMS = int(time.Since(pipelineStartTime).Milliseconds())
+		}
+
+		// Execute the handler (broker publishing)
+		brokerStartTime := time.Now()
+		err := handler(event)
+		brokerEndTime := time.Now()
+
+		executionLog.BrokerPublishTimeMS = int(brokerEndTime.Sub(brokerStartTime).Milliseconds())
+		executionLog.TotalLatencyMS = int(time.Since(startTime).Milliseconds())
+
+		// Update execution log with final results
+		completedAt := time.Now()
+		executionLog.CompletedAt = &completedAt
+
+		if err != nil {
+			executionLog.Status = "error"
+			executionLog.ErrorMessage = err.Error()
+			executionLog.BrokerResponse = fmt.Sprintf("Error: %s", err.Error())
+		} else {
+			executionLog.Status = "success"
+			executionLog.BrokerResponse = "Published successfully"
+			if outputData, err := json.Marshal(event.Data); err == nil {
+				executionLog.OutputData = string(outputData)
+			}
+		}
+
+		// Update execution log
+		if updateErr := m.storage.UpdateExecutionLog(executionLog); updateErr != nil {
+			m.logger.Error("Failed to update execution log", updateErr,
+				logging.Field{"execution_log_id", executionLog.ID},
+			)
+		}
+
+		// Handle DLQ if error occurred
+		if err != nil {
+			m.handleDLQForError(event, err)
+		}
+
+		return err
 	}
 }
 
@@ -566,7 +1098,7 @@ func (m *Manager) syncLoop() {
 // performHealthCheck checks the health of all triggers
 func (m *Manager) performHealthCheck() {
 	m.mu.RLock()
-	triggers := make(map[int]Trigger)
+	triggers := make(map[string]Trigger)
 	for id, trigger := range m.triggers {
 		triggers[id] = trigger
 	}
@@ -617,13 +1149,13 @@ func (m *Manager) performDatabaseSync() {
 
 	// Check for deleted triggers
 	m.mu.RLock()
-	managedIDs := make([]int, 0, len(m.triggers))
+	managedIDs := make([]string, 0, len(m.triggers))
 	for id := range m.triggers {
 		managedIDs = append(managedIDs, id)
 	}
 	m.mu.RUnlock()
 
-	dbTriggerMap := make(map[int]*storage.Trigger)
+	dbTriggerMap := make(map[string]*storage.Trigger)
 	for _, dbTrigger := range dbTriggers {
 		dbTriggerMap[dbTrigger.ID] = dbTrigger
 	}
@@ -650,7 +1182,7 @@ func (m *Manager) getSyncInterval() time.Duration {
 
 // TriggerStatus represents the status of a trigger
 type TriggerStatus struct {
-	ID            int        `json:"id"`
+	ID            string     `json:"id"`
 	Name          string     `json:"name"`
 	Type          string     `json:"type"`
 	IsRunning     bool       `json:"is_running"`
@@ -660,4 +1192,4 @@ type TriggerStatus struct {
 	HealthError   string     `json:"health_error,omitempty"`
 }
 
-// Note: Trigger factories are registered in main.go when actual implementations are ready
+// Note: Trigger factories are registered in main.go.bak when actual implementations are ready

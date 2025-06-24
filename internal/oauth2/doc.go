@@ -10,15 +10,15 @@
 // # Features
 //
 //   - Support for multiple OAuth 2.0 grant types:
-//     * client_credentials
-//     * password
-//     * refresh_token (automatic)
+//   - client_credentials
+//   - password
+//   - refresh_token (automatic)
 //   - Automatic token refresh with 5-minute expiry buffer
 //   - Thread-safe concurrent access
 //   - Multiple storage backends:
-//     * In-memory (for testing and single-instance deployments)
-//     * Database-backed (for persistent storage)
-//     * Redis-backed (for distributed deployments)
+//   - In-memory (for testing and single-instance deployments)
+//   - Database-backed (for persistent storage)
+//   - Redis-backed (for distributed deployments)
 //   - Token persistence across service restarts
 //   - Configurable token expiry and caching
 //   - Comprehensive error handling and validation
@@ -30,8 +30,11 @@
 //	// Create storage backend
 //	storage := oauth2.NewMemoryTokenStorage()
 //
-//	// Create OAuth2 manager
-//	manager := oauth2.NewManager(storage)
+//	// Create OAuth2 manager with mandatory encryption
+//	manager, err := oauth2.NewManager(storage, "your-encryption-key")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	// Register OAuth2 service
 //	config := &oauth2.Config{
@@ -193,10 +196,12 @@
 //
 // ## Redis Storage
 //
-// Distributed storage using Redis:
+// Distributed storage using Redis with full atomic leasing support:
 //   - Supports Redis clusters and distributed deployments
 //   - Automatic TTL based on token expiry + buffer
 //   - JSON serialization with efficient key prefixing
+//   - Atomic token leasing using Redis ZSET and Lua scripts
+//   - Prevents race conditions in distributed environments
 //   - Suitable for multi-instance production deployments
 //
 // # Error Handling
@@ -306,7 +311,7 @@
 //
 // ## With Pipeline Stages
 //
-//	// Use in pipeline stages for API calls
+//	// Use in pipeline_old stages for API calls
 //	stage := &EnrichStage{
 //	    oauth2Manager: manager,
 //	    serviceID:     "external-api",
@@ -335,5 +340,4 @@
 //   - Advanced caching strategies
 //   - Metrics and observability integration
 //   - Circuit breaker patterns for reliability
-//
 package oauth2

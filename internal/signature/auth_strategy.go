@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	
+
 	"webhook-router/internal/common/errors"
 	"webhook-router/internal/common/logging"
 )
@@ -20,7 +20,7 @@ func NewAuthStrategy(logger logging.Logger) *AuthStrategy {
 	if logger == nil {
 		logger = logging.NewDefaultLogger()
 	}
-	
+
 	return &AuthStrategy{
 		logger: logger,
 	}
@@ -38,13 +38,13 @@ func (s *AuthStrategy) Authenticate(r *http.Request, settings map[string]string)
 	if !ok {
 		return errors.ConfigError("signature auth requires 'config' in settings")
 	}
-	
+
 	// Parse configuration
 	config, err := LoadConfig([]byte(configJSON))
 	if err != nil {
 		return errors.ConfigError(fmt.Sprintf("invalid signature configuration: %v", err))
 	}
-	
+
 	// Get body from context (should be preserved by HTTP trigger)
 	body, ok := r.Context().Value("body").([]byte)
 	if !ok {
@@ -54,13 +54,13 @@ func (s *AuthStrategy) Authenticate(r *http.Request, settings map[string]string)
 			return errors.InternalError("failed to read request body", err)
 		}
 	}
-	
+
 	// Create verifier and verify
 	verifier := NewVerifier(config, s.logger)
 	if err := verifier.Verify(r, body); err != nil {
 		return errors.AuthError(err.Error())
 	}
-	
+
 	return nil
 }
 
@@ -71,7 +71,7 @@ func CreateAuthSettings(config *Config) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return map[string]string{
 		"config": string(configJSON),
 	}, nil

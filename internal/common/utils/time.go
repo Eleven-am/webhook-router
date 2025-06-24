@@ -24,27 +24,28 @@ import (
 //   - error: Parsing error if format is invalid
 //
 // Examples:
-//   ParseDuration("1d")    // 24 hours
-//   ParseDuration("2w")    // 336 hours (14 days)
-//   ParseDuration("1h30m") // 1.5 hours (standard Go format)
+//
+//	ParseDuration("1d")    // 24 hours
+//	ParseDuration("2w")    // 336 hours (14 days)
+//	ParseDuration("1h30m") // 1.5 hours (standard Go format)
 func ParseDuration(s string) (time.Duration, error) {
 	// First try standard Go duration parsing
 	if d, err := time.ParseDuration(s); err == nil {
 		return d, nil
 	}
-	
+
 	// Support for days
 	var days int
 	if n, err := fmt.Sscanf(s, "%dd", &days); err == nil && n == 1 {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
-	
+
 	// Support for weeks
 	var weeks int
 	if n, err := fmt.Sscanf(s, "%dw", &weeks); err == nil && n == 1 {
 		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
 	}
-	
+
 	return 0, fmt.Errorf("invalid duration: %s", s)
 }
 
@@ -52,7 +53,7 @@ func ParseDuration(s string) (time.Duration, error) {
 //
 // Automatically selects the most appropriate unit based on the duration magnitude:
 //   - < 1 minute: seconds with no decimal places
-//   - < 1 hour: minutes with no decimal places  
+//   - < 1 hour: minutes with no decimal places
 //   - < 24 hours: hours with 1 decimal place
 //   - >= 24 hours: days with 1 decimal place
 //
@@ -62,10 +63,11 @@ func ParseDuration(s string) (time.Duration, error) {
 // Returns a human-readable string representation.
 //
 // Examples:
-//   FormatDuration(30 * time.Second)   // "30s"
-//   FormatDuration(90 * time.Minute)   // "90m"
-//   FormatDuration(2.5 * time.Hour)    // "2.5h"
-//   FormatDuration(36 * time.Hour)     // "1.5d"
+//
+//	FormatDuration(30 * time.Second)   // "30s"
+//	FormatDuration(90 * time.Minute)   // "90m"
+//	FormatDuration(2.5 * time.Hour)    // "2.5h"
+//	FormatDuration(36 * time.Hour)     // "1.5d"
 func FormatDuration(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%.0fs", d.Seconds())

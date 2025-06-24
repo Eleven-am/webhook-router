@@ -5,9 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"time"
 
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/storage"
 )
 
@@ -121,7 +121,7 @@ func (b *BaseAdapter) ApplyTriggerFilters(triggers []*storage.Trigger, filters s
 // Returns a map with keys: route_id, route_name, total, success, failed,
 // avg_transformation_time, avg_publish_time, and optionally last_processed.
 func (b *BaseAdapter) BuildStatsResult(
-	routeID int,
+	routeID string,
 	routeName string,
 	totalRequests int64,
 	successRequests int64,
@@ -242,7 +242,7 @@ func (b *BaseAdapter) HandlePgxNotFound(err error) error {
 func (b *BaseAdapter) GetStatsSince(ctx context.Context, since time.Time, getStats func(context.Context, time.Time) (interface{}, error)) (*storage.Stats, error) {
 	_, err := getStats(ctx, since)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get webhook log stats: %w", err)
+		return nil, errors.InternalError("failed to get webhook log stats", err)
 	}
 
 	// The actual conversion will be done by the specific adapter

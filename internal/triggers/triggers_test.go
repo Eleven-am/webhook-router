@@ -27,14 +27,14 @@ import (
 // MockTrigger is a mock implementation of the Trigger interface for testing
 type MockTrigger struct {
 	mock.Mock
-	id       int
+	id       string
 	name     string
 	trigType string
 	running  bool
 	config   triggers.TriggerConfig
 }
 
-func NewMockTrigger(id int, name, trigType string) *MockTrigger {
+func NewMockTrigger(id string, name, trigType string) *MockTrigger {
 	return &MockTrigger{
 		id:       id,
 		name:     name,
@@ -51,7 +51,7 @@ func (m *MockTrigger) Type() string {
 	return m.trigType
 }
 
-func (m *MockTrigger) ID() int {
+func (m *MockTrigger) ID() string {
 	return m.id
 }
 
@@ -148,8 +148,8 @@ func (m *MockBroker) Publish(message *brokers.Message) error {
 	return args.Error(0)
 }
 
-func (m *MockBroker) Subscribe(topic string, handler brokers.MessageHandler) error {
-	args := m.Called(topic, handler)
+func (m *MockBroker) Subscribe(ctx context.Context, topic string, handler brokers.MessageHandler) error {
+	args := m.Called(ctx, topic, handler)
 	return args.Error(0)
 }
 
@@ -261,7 +261,7 @@ func TestTriggerRegistry(t *testing.T) {
 
 		// Test creating a trigger
 		config := createTestTriggerConfig()
-		expectedTrigger := NewMockTrigger(1, "test-trigger", "http")
+		expectedTrigger := NewMockTrigger("1", "test-trigger", "http")
 		factory.On("Create", config).Return(expectedTrigger, nil)
 
 		trigger, err := registry.Create("http", config)
@@ -302,7 +302,7 @@ func TestTriggerManager(t *testing.T) {
 	t.Run("AddAndRemoveTrigger", func(t *testing.T) {
 		manager, mockBroker := setupTriggerTest(t)
 		factory := NewMockTriggerFactory("http")
-		mockTrigger := NewMockTrigger(1, "test-trigger", "http")
+		mockTrigger := NewMockTrigger("1", "test-trigger", "http")
 
 		// Register factory
 		manager.RegisterFactory("http", factory)
@@ -345,7 +345,7 @@ func TestTriggerManager(t *testing.T) {
 
 	t.Run("StartAndStopTrigger", func(t *testing.T) {
 		manager, _ := setupTriggerTest(t)
-		mockTrigger := NewMockTrigger(1, "test-trigger", "http")
+		mockTrigger := NewMockTrigger("1", "test-trigger", "http")
 
 		// Manually add trigger to manager for testing
 		manager.GetAllTriggers()[1] = mockTrigger
@@ -383,8 +383,8 @@ func TestTriggerManager(t *testing.T) {
 		manager, _ := setupTriggerTest(t)
 
 		// Add multiple mock triggers
-		trigger1 := NewMockTrigger(1, "trigger-1", "http")
-		trigger2 := NewMockTrigger(2, "trigger-2", "schedule")
+		trigger1 := NewMockTrigger("1", "trigger-1", "http")
+		trigger2 := NewMockTrigger("2", "trigger-2", "schedule")
 
 		manager.GetAllTriggers()[1] = trigger1
 		manager.GetAllTriggers()[2] = trigger2
@@ -408,7 +408,7 @@ func TestTriggerManager(t *testing.T) {
 // TestTriggerInterface tests the Trigger interface implementation
 func TestTriggerInterface(t *testing.T) {
 	t.Run("MockTrigger_BasicMethods", func(t *testing.T) {
-		trigger := NewMockTrigger(1, "test-trigger", "http")
+		trigger := NewMockTrigger("1", "test-trigger", "http")
 
 		assert.Equal(t, 1, trigger.ID())
 		assert.Equal(t, "test-trigger", trigger.Name())
@@ -417,7 +417,7 @@ func TestTriggerInterface(t *testing.T) {
 	})
 
 	t.Run("MockTrigger_StartStop", func(t *testing.T) {
-		trigger := NewMockTrigger(1, "test-trigger", "http")
+		trigger := NewMockTrigger("1", "test-trigger", "http")
 		ctx := context.Background()
 		handler := func(event *triggers.TriggerEvent) error { return nil }
 
@@ -437,7 +437,7 @@ func TestTriggerInterface(t *testing.T) {
 	})
 
 	t.Run("MockTrigger_Health", func(t *testing.T) {
-		trigger := NewMockTrigger(1, "test-trigger", "http")
+		trigger := NewMockTrigger("1", "test-trigger", "http")
 
 		trigger.On("Health").Return(nil)
 		err := trigger.Health()
@@ -446,7 +446,7 @@ func TestTriggerInterface(t *testing.T) {
 	})
 
 	t.Run("MockTrigger_ExecutionTimes", func(t *testing.T) {
-		trigger := NewMockTrigger(1, "test-trigger", "schedule")
+		trigger := NewMockTrigger("1", "test-trigger", "schedule")
 
 		lastExec := time.Now().Add(-1 * time.Hour)
 		nextExec := time.Now().Add(1 * time.Hour)
@@ -487,7 +487,7 @@ func TestTriggerEvent(t *testing.T) {
 func TestTriggerHandling(t *testing.T) {
 	t.Run("TriggerEventPublishing", func(t *testing.T) {
 		manager, mockBroker := setupTriggerTest(t)
-		mockTrigger := NewMockTrigger(1, "test-trigger", "http")
+		mockTrigger := NewMockTrigger("1", "test-trigger", "http")
 
 		// Add trigger to manager
 		manager.GetAllTriggers()[1] = mockTrigger
@@ -524,7 +524,7 @@ func TestTriggerHandling(t *testing.T) {
 	t.Run("TriggerEventHandling_NoBroker", func(t *testing.T) {
 		// Test with nil broker
 		manager := triggers.NewTriggerManager(nil)
-		mockTrigger := NewMockTrigger(1, "test-trigger", "http")
+		mockTrigger := NewMockTrigger("1", "test-trigger", "http")
 
 		manager.GetAllTriggers()[1] = mockTrigger
 
@@ -580,7 +580,7 @@ func TestErrorConditions(t *testing.T) {
 	t.Run("InactiveTrigger_NotStarted", func(t *testing.T) {
 		manager, _ := setupTriggerTest(t)
 		factory := NewMockTriggerFactory("http")
-		mockTrigger := NewMockTrigger(1, "test-trigger", "http")
+		mockTrigger := NewMockTrigger("1", "test-trigger", "http")
 
 		manager.RegisterFactory("http", factory)
 
@@ -613,7 +613,7 @@ func (m *MockOAuth2Trigger) SetOAuthManager(manager *oauth2.Manager) {
 func TestOAuth2Integration(t *testing.T) {
 	t.Run("OAuth2Trigger_SetManager", func(t *testing.T) {
 		trigger := &MockOAuth2Trigger{
-			MockTrigger: NewMockTrigger(1, "oauth-trigger", "imap"),
+			MockTrigger: NewMockTrigger("1", "oauth-trigger", "imap"),
 		}
 
 		// Create a mock OAuth2 manager (simplified)

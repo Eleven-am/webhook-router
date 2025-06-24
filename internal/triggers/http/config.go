@@ -9,45 +9,60 @@ import (
 )
 
 // Config represents the configuration for HTTP webhook triggers.
-// It defines how incoming HTTP requests are validated, authenticated, rate-limited,
-// transformed, and responded to.
+// It defines how incoming HTTP requests are authenticated, rate-limited,
+// guarded, and responded to.
 type Config struct {
 	triggers.BaseTriggerConfig
-	
-	// Methods lists the allowed HTTP methods for this endpoint (e.g., ["POST", "PUT"])
-	Methods         []string          `json:"methods"`
+
+	// Method is the HTTP method for this endpoint (e.g., "POST")
+	Method string `json:"method" validate:"required,oneof=GET POST PUT DELETE PATCH"`
 	// Path is the HTTP endpoint path where webhooks will be received (e.g., "/webhook/github")
-	Path            string            `json:"path"`
+	Path string `json:"path" validate:"required,webhook_endpoint"`
 	// Headers are key-value pairs that must be present in incoming requests
-	Headers         map[string]string `json:"headers"`
+	Headers map[string]string `json:"headers"`
 	// ContentType is the expected Content-Type header value (default: "application/json")
-	ContentType     string            `json:"content_type"`
+	ContentType string `json:"content_type"`
 	// Authentication defines how requests are authenticated
-	Authentication  config.AuthConfig        `json:"authentication"`
+	Authentication config.AuthConfig `json:"authentication" validate:"dive"`
 	// RateLimiting defines rate limiting rules to prevent abuse
-	RateLimiting    config.RateLimitConfig   `json:"rate_limiting"`
-	// Validation defines request validation rules
-	Validation      config.ValidationConfig  `json:"validation"`
-	// Transformation defines optional request transformations before processing
-	Transformation  config.TransformConfig   `json:"transformation"`
+	RateLimiting config.RateLimitConfig `json:"rate_limiting" validate:"dive"`
+	// Guards defines request validation rules to protect the endpoint
+	Guards config.ValidationConfig `json:"guards" validate:"dive"`
 	// Response defines how the webhook endpoint responds to requests
-	Response        HTTPResponseConfig    `json:"response"`
+	Response HTTPResponseConfig `json:"response" validate:"dive"`
 }
 
 // HTTPResponseConfig extends the common ResponseConfig with HTTP-specific features
 // for dynamic response generation using templates.
 type HTTPResponseConfig struct {
 	config.ResponseConfig
-	
+
 	// Body is the static response body (can be string, map, or any JSON-serializable type)
-	Body         interface{} `json:"body"`
+	Body interface{} `json:"body"`
 	// BodyTemplate is a Go template string for dynamic response generation.
 	// Available template variables:
 	// - {{.Event}} - The trigger event object
 	// - {{.Headers}} - Request headers
 	// - {{.Query}} - Query parameters
 	// - {{.Path}} - Request path
-	BodyTemplate string      `json:"body_template"`
+	BodyTemplate string `json:"body_template"`
+	// ResponsePipeline defines an inline pipeline_old configuration for dynamic response generation
+	// This allows complex transformations without creating a separate pipeline_old entity
+	ResponsePipeline *ResponsePipelineConfig `json:"response_pipeline" validate:"omitempty,dive"`
+}
+
+// ResponsePipelineConfig defines an inline pipeline_old configuration for response processing
+type ResponsePipelineConfig struct {
+	// Stages defines the pipeline_old stages to execute
+	Stages []ResponseStageConfig `json:"stages" validate:"required,min=1,dive"`
+}
+
+// ResponseStageConfig defines a single stage in the response pipeline_old
+type ResponseStageConfig struct {
+	// Type is the stage type (e.g., "transform", "template")
+	Type string `json:"type" validate:"required,oneof=transform template validate filter"`
+	// Config contains stage-specific configuration
+	Config map[string]interface{} `json:"config"`
 }
 
 // NewConfig creates a new HTTP trigger configuration with sensible defaults.
@@ -66,10 +81,10 @@ func NewConfig(name string) *Config {
 			Active:   true,
 			Settings: make(map[string]interface{}),
 		},
-		Methods:     []string{"POST"},
-		Path:        "/" + strings.ToLower(strings.ReplaceAll(name, " ", "-")),
-		Headers:     make(map[string]string),
-		ContentType: "application/json",
+		Method:         "POST",
+		Path:           "/" + strings.ToLower(strings.ReplaceAll(name, " ", "-")),
+		Headers:        make(map[string]string),
+		ContentType:    "application/json",
 		Authentication: config.NewAuthConfig(),
 		RateLimiting: config.RateLimitConfig{
 			Enabled:     false,
@@ -77,13 +92,12 @@ func NewConfig(name string) *Config {
 			Window:      time.Minute,
 			ByIP:        true,
 		},
-		Validation: config.ValidationConfig{
+		Guards: config.ValidationConfig{
 			RequiredHeaders: []string{},
 			RequiredParams:  []string{},
 			MinBodySize:     0,
 			MaxBodySize:     10 * 1024 * 1024, // 10MB default
 		},
-		Transformation: config.NewTransformConfig(),
 		Response: HTTPResponseConfig{
 			ResponseConfig: config.ResponseConfig{
 				StatusCode:  200,
@@ -103,72 +117,58 @@ func NewConfig(name string) *Config {
 // - Body size limits are reasonable
 // - Response status code is valid (100-599)
 func (c *Config) Validate() error {
-	// Validate base configuration
-	validator := triggers.NewValidationHelper()
-	if err := validator.ValidateBaseTriggerConfig(&c.BaseTriggerConfig); err != nil {
-		return err
-	}
-	
-	v := validation.NewValidator()
-	
-	// Basic validation
-	v.RequireString(c.Path, "path")
-	
-	// Ensure path starts with /
+	// Apply defaults first
 	if c.Path != "" && !strings.HasPrefix(c.Path, "/") {
 		c.Path = "/" + c.Path
 	}
-	
-	// Default methods if none specified
-	if len(c.Methods) == 0 {
-		c.Methods = []string{"POST"}
+
+	if c.Method == "" {
+		c.Method = "POST"
 	}
-	
-	// Validate HTTP methods using common validation
-	config.ValidateHTTPMethods(c.Methods, v, "methods")
-	
-	// Validate authentication using common validation
-	config.ValidateAuthConfig(&c.Authentication, v)
-	
-	// Validate rate limiting using common validation
-	config.ValidateRateLimit(&c.RateLimiting, v, "rate_limiting")
-	
-	// Validate request validation using common validation
-	config.ValidateValidationConfig(&c.Validation, v, "validation")
-	
-	// Validate transformation using common validation
-	config.ValidateTransformConfig(&c.Transformation, v, "transformation")
-	
-	// Validate headers using common validation
-	config.ValidateHTTPHeaders(c.Headers, v, "headers")
-	
-	// Set response defaults and validate
+
+	// Set response defaults
 	c.Response.SetResponseDefaults()
+
+	// Use centralized validation with struct tags
+	if err := validation.ValidateStruct(c); err != nil {
+		return err
+	}
+
+	// Additional custom validation that can't be done with tags
+	v := validation.NewValidator()
+
+	// Validate base configuration (legacy validation for now)
+	validator := triggers.NewValidationHelper()
+	if err := validator.ValidateBaseTriggerConfig(&c.BaseTriggerConfig); err != nil {
+		v.Validate(func() error { return err })
+	}
+
+	// Validate response status code range
 	v.RequireRange(c.Response.StatusCode, 100, 599, "response.status_code")
-	
+
+	// Method validation is handled by struct tags
+	config.ValidateAuthConfig(&c.Authentication, v)
+	config.ValidateRateLimit(&c.RateLimiting, v, "rate_limiting")
+	config.ValidateValidationConfig(&c.Guards, v, "guards")
+	config.ValidateHTTPHeaders(c.Headers, v, "headers")
+
 	return v.Error()
 }
-
 
 // GetEndpoint returns the HTTP path where this webhook will listen
 func (c *Config) GetEndpoint() string {
 	return c.Path
 }
 
-// GetMethods returns the list of allowed HTTP methods for this webhook
-func (c *Config) GetMethods() []string {
-	return c.Methods
+// GetMethod returns the HTTP method for this webhook
+func (c *Config) GetMethod() string {
+	return c.Method
 }
 
-// IsMethodAllowed checks if the given HTTP method is allowed for this webhook.
+// IsMethodAllowed checks if the given HTTP method matches this webhook's method.
 // The comparison is case-insensitive.
 func (c *Config) IsMethodAllowed(method string) bool {
-	for _, allowedMethod := range c.Methods {
-		if strings.EqualFold(allowedMethod, method) {
-			return true
-		}
-	}
-	return false
+	return strings.EqualFold(c.Method, method)
 }
 
 // GetName returns the trigger name (implements base.TriggerConfig)
@@ -177,6 +177,6 @@ func (c *Config) GetName() string {
 }
 
 // GetID returns the trigger ID (implements base.TriggerConfig)
-func (c *Config) GetID() int {
+func (c *Config) GetID() string {
 	return c.ID
 }

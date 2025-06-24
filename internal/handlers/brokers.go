@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"webhook-router/internal/brokers"
@@ -12,6 +11,7 @@ import (
 	"webhook-router/internal/brokers/kafka"
 	"webhook-router/internal/brokers/rabbitmq"
 	redisbroker "webhook-router/internal/brokers/redis"
+	"webhook-router/internal/common/pagination"
 	"webhook-router/internal/storage"
 
 	"github.com/gorilla/mux"
@@ -19,44 +19,58 @@ import (
 
 // Broker management handlers
 
-// GetBrokers returns all configured brokers
+// GetBrokers returns all configured brokers with pagination (with sensitive fields filtered)
 // @Summary Get all message brokers
-// @Description Returns a list of all configured message broker connections
+// @Description Returns a paginated list of all configured message broker connections (sensitive credentials filtered)
 // @Tags brokers
 // @Produce json
 // @Security SessionAuth
-// @Success 200 {array} storage.BrokerConfig "List of broker configurations"
+// @Param page query int false "Page number (default: 1)"
+// @Param per_page query int false "Items per page (default: 20, max: 100)"
+// @Success 200 {object} pagination.Response[storage.BrokerConfig] "Paginated list of broker configurations (credentials filtered)"
 // @Failure 500 {string} string "Internal server error"
-// @Router /brokers [get]
+// @Router /api/brokers [get]
 func (h *Handlers) GetBrokers(w http.ResponseWriter, r *http.Request) {
-	brokers, err := h.storage.GetBrokers()
+	params := pagination.ParseParams(r)
+
+	brokers, totalCount, err := h.storage.GetBrokersPaginated(params.Limit, params.Offset)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get brokers: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	// SECURITY FIX: Filter sensitive credentials before API response
+	// This prevents exposure of AWS keys, passwords, connection strings, etc.
+	filteredBrokers := FilterBrokerConfigs(brokers)
+
+	// Convert filtered result to proper slice type
+	var filteredSlice []interface{}
+	if fb, ok := filteredBrokers.([]interface{}); ok {
+		filteredSlice = fb
+	} else {
+		// Fallback if type assertion fails
+		filteredSlice = make([]interface{}, 0)
+	}
+
+	response := pagination.NewResponse(filteredSlice, params.Page, params.PerPage, totalCount)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(brokers)
+	json.NewEncoder(w).Encode(response)
 }
 
-// GetBroker returns a specific broker configuration
+// GetBroker returns a specific broker configuration (with sensitive fields filtered)
 // @Summary Get message broker
-// @Description Returns a specific message broker configuration by ID
+// @Description Returns a specific message broker configuration by ID (sensitive credentials filtered)
 // @Tags brokers
 // @Produce json
 // @Security SessionAuth
-// @Param id path int true "Broker ID"
-// @Success 200 {object} storage.BrokerConfig "Broker configuration"
+// @Param id path string true "Broker ID"
+// @Success 200 {object} storage.BrokerConfig "Broker configuration (credentials filtered)"
 // @Failure 400 {string} string "Invalid broker ID"
 // @Failure 404 {string} string "Broker not found"
-// @Router /brokers/{id} [get]
+// @Router /api/brokers/{id} [get]
 func (h *Handlers) GetBroker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid broker ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	broker, err := h.storage.GetBroker(id)
 	if err != nil {
@@ -64,8 +78,11 @@ func (h *Handlers) GetBroker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY FIX: Filter sensitive credentials before API response
+	filteredBroker := FilterBrokerConfig(broker)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(broker)
+	json.NewEncoder(w).Encode(filteredBroker)
 }
 
 // CreateBroker creates a new broker configuration
@@ -79,7 +96,7 @@ func (h *Handlers) GetBroker(w http.ResponseWriter, r *http.Request) {
 // @Success 201 {object} storage.BrokerConfig "Created broker configuration"
 // @Failure 400 {string} string "Invalid JSON"
 // @Failure 500 {string} string "Internal server error"
-// @Router /brokers [post]
+// @Router /api/brokers [post]
 func (h *Handlers) CreateBroker(w http.ResponseWriter, r *http.Request) {
 	var broker storage.BrokerConfig
 	if err := json.NewDecoder(r.Body).Decode(&broker); err != nil {
@@ -108,19 +125,15 @@ func (h *Handlers) CreateBroker(w http.ResponseWriter, r *http.Request) {
 // @Accept json
 // @Produce json
 // @Security SessionAuth
-// @Param id path int true "Broker ID"
+// @Param id path string true "Broker ID"
 // @Param broker body storage.BrokerConfig true "Broker configuration"
 // @Success 200 {object} storage.BrokerConfig "Updated broker configuration"
 // @Failure 400 {string} string "Invalid JSON or broker ID"
 // @Failure 500 {string} string "Failed to update broker"
-// @Router /brokers/{id} [put]
+// @Router /api/brokers/{id} [put]
 func (h *Handlers) UpdateBroker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid broker ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	var broker storage.BrokerConfig
 	if err := json.NewDecoder(r.Body).Decode(&broker); err != nil {
@@ -145,18 +158,14 @@ func (h *Handlers) UpdateBroker(w http.ResponseWriter, r *http.Request) {
 // @Description Removes a message broker configuration
 // @Tags brokers
 // @Security SessionAuth
-// @Param id path int true "Broker ID"
+// @Param id path string true "Broker ID"
 // @Success 204 "No Content"
 // @Failure 400 {string} string "Invalid broker ID"
 // @Failure 500 {string} string "Failed to delete broker"
-// @Router /brokers/{id} [delete]
+// @Router /api/brokers/{id} [delete]
 func (h *Handlers) DeleteBroker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid broker ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	if err := h.storage.DeleteBroker(id); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to delete broker: %v", err), http.StatusInternalServerError)
@@ -171,19 +180,15 @@ func (h *Handlers) DeleteBroker(w http.ResponseWriter, r *http.Request) {
 // @Description Tests connectivity to a message broker
 // @Tags brokers
 // @Security SessionAuth
-// @Param id path int true "Broker ID"
+// @Param id path string true "Broker ID"
 // @Success 200 {object} map[string]interface{} "Test result"
 // @Failure 400 {string} string "Invalid broker ID or configuration"
 // @Failure 404 {string} string "Broker not found"
 // @Failure 503 {string} string "Broker health check failed"
-// @Router /brokers/{id}/test [post]
+// @Router /api/brokers/{id}/test [post]
 func (h *Handlers) TestBroker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid broker ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	brokerConfig, err := h.storage.GetBroker(id)
 	if err != nil {
@@ -341,6 +346,162 @@ func (h *Handlers) TestBroker(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// TestBrokerConfig tests a broker configuration without saving it
+// @Summary Test broker configuration
+// @Description Tests connectivity to a message broker using provided configuration without saving
+// @Tags brokers
+// @Accept json
+// @Produce json
+// @Security SessionAuth
+// @Param config body storage.BrokerConfig true "Broker configuration to test"
+// @Success 200 {object} map[string]interface{} "Test result"
+// @Failure 400 {string} string "Invalid configuration"
+// @Failure 503 {string} string "Connection test failed"
+// @Router /api/brokers/test [post]
+func (h *Handlers) TestBrokerConfig(w http.ResponseWriter, r *http.Request) {
+	var brokerConfig storage.BrokerConfig
+	if err := json.NewDecoder(r.Body).Decode(&brokerConfig); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Create a registry and test the broker
+	registry := brokers.NewRegistry()
+
+	// Register our known broker factories
+	registry.Register("rabbitmq", rabbitmq.GetFactory())
+	registry.Register("kafka", kafka.GetFactory())
+	registry.Register("redis", redisbroker.GetFactory())
+	registry.Register("aws", awsbroker.GetFactory())
+
+	// Convert the config to the appropriate broker config type
+	var brokerConfigInterface brokers.BrokerConfig
+	switch brokerConfig.Type {
+	case "rabbitmq":
+		rmqConfig := &rabbitmq.Config{}
+		configMap := brokerConfig.Config
+		if configMap != nil {
+			if url, exists := configMap["url"]; exists {
+				rmqConfig.URL = fmt.Sprintf("%v", url)
+			}
+			if poolSize, exists := configMap["pool_size"]; exists {
+				if ps, ok := poolSize.(float64); ok {
+					rmqConfig.PoolSize = int(ps)
+				}
+			}
+		}
+		brokerConfigInterface = rmqConfig
+	case "kafka":
+		kafkaConfig := &kafka.Config{}
+		configMap := brokerConfig.Config
+		if configMap != nil {
+			if brokers, exists := configMap["brokers"]; exists {
+				// Handle both string and array formats
+				switch v := brokers.(type) {
+				case string:
+					kafkaConfig.Brokers = []string{v}
+				case []interface{}:
+					for _, b := range v {
+						kafkaConfig.Brokers = append(kafkaConfig.Brokers, fmt.Sprintf("%v", b))
+					}
+				}
+			}
+			if groupID, exists := configMap["group_id"]; exists {
+				kafkaConfig.GroupID = fmt.Sprintf("%v", groupID)
+			}
+			if clientID, exists := configMap["client_id"]; exists {
+				kafkaConfig.ClientID = fmt.Sprintf("%v", clientID)
+			}
+		}
+		brokerConfigInterface = kafkaConfig
+	case "redis":
+		redisConfig := &redisbroker.Config{}
+		configMap := brokerConfig.Config
+		if configMap != nil {
+			if address, exists := configMap["address"]; exists {
+				redisConfig.Address = fmt.Sprintf("%v", address)
+			}
+			if password, exists := configMap["password"]; exists {
+				redisConfig.Password = fmt.Sprintf("%v", password)
+			}
+			if db, exists := configMap["db"]; exists {
+				if dbNum, ok := db.(float64); ok {
+					redisConfig.DB = int(dbNum)
+				}
+			}
+			if poolSize, exists := configMap["pool_size"]; exists {
+				if ps, ok := poolSize.(float64); ok {
+					redisConfig.PoolSize = int(ps)
+				}
+			}
+		}
+		brokerConfigInterface = redisConfig
+	case "aws":
+		awsConfig := &awsbroker.Config{}
+		configMap := brokerConfig.Config
+		if configMap != nil {
+			if region, exists := configMap["region"]; exists {
+				awsConfig.Region = fmt.Sprintf("%v", region)
+			}
+			if accessKeyID, exists := configMap["access_key_id"]; exists {
+				awsConfig.AccessKeyID = fmt.Sprintf("%v", accessKeyID)
+			}
+			if secretAccessKey, exists := configMap["secret_access_key"]; exists {
+				awsConfig.SecretAccessKey = fmt.Sprintf("%v", secretAccessKey)
+			}
+			if queueURL, exists := configMap["queue_url"]; exists {
+				awsConfig.QueueURL = fmt.Sprintf("%v", queueURL)
+			}
+			if topicArn, exists := configMap["topic_arn"]; exists {
+				awsConfig.TopicArn = fmt.Sprintf("%v", topicArn)
+			}
+		}
+		brokerConfigInterface = awsConfig
+	default:
+		result := map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("Unsupported broker type: %s", brokerConfig.Type),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+
+	testBroker, err := registry.Create(brokerConfig.Type, brokerConfigInterface)
+	if err != nil {
+		result := map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("Failed to create broker: %v", err),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+	defer testBroker.Close()
+
+	// Test broker health
+	if err := testBroker.Health(); err != nil {
+		result := map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("Connection test failed: %v", err),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(result)
+		return
+	}
+
+	result := map[string]interface{}{
+		"status":  "success",
+		"message": "Broker connection test successful",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 // GetAvailableBrokerTypes returns the list of supported broker types
 // @Summary Get broker types
 // @Description Returns a list of supported message broker types
@@ -348,7 +509,7 @@ func (h *Handlers) TestBroker(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Security SessionAuth
 // @Success 200 {object} map[string]interface{} "List of broker types"
-// @Router /brokers/types [get]
+// @Router /api/brokers/types [get]
 func (h *Handlers) GetAvailableBrokerTypes(w http.ResponseWriter, r *http.Request) {
 	// Return a static list of supported broker types
 	types := []string{"rabbitmq", "kafka", "redis", "aws"}

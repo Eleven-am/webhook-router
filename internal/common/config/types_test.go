@@ -51,7 +51,7 @@ func TestBaseConnConfig_SetConnectionDefaults(t *testing.T) {
 
 func TestNewAuthConfig(t *testing.T) {
 	config := NewAuthConfig()
-	
+
 	assert.Equal(t, "none", config.Type)
 	assert.False(t, config.Required)
 	assert.NotNil(t, config.Settings)
@@ -95,7 +95,7 @@ func TestAuthConfig_IsEnabled(t *testing.T) {
 
 func TestNewJSONCondition(t *testing.T) {
 	config := NewJSONCondition()
-	
+
 	assert.False(t, config.Enabled)
 	assert.Equal(t, "eq", config.Operator)
 	assert.Equal(t, "string", config.ValueType)
@@ -149,7 +149,7 @@ func TestErrorHandlingConfig_SetErrorHandlingDefaults(t *testing.T) {
 
 func TestNewTransformConfig(t *testing.T) {
 	config := NewTransformConfig()
-	
+
 	assert.False(t, config.Enabled)
 	assert.NotNil(t, config.HeaderMapping)
 	assert.Empty(t, config.HeaderMapping)
@@ -317,15 +317,15 @@ func TestAuthConfig_EdgeCases(t *testing.T) {
 		config.Settings["test"] = "value"
 		assert.Equal(t, "value", config.Settings["test"])
 	})
-	
+
 	t.Run("required can be toggled", func(t *testing.T) {
 		config := NewAuthConfig()
 		assert.False(t, config.IsEnabled())
-		
+
 		config.Required = true
 		config.Type = "basic"
 		assert.True(t, config.IsEnabled())
-		
+
 		config.Type = "none"
 		assert.False(t, config.IsEnabled())
 	})
@@ -336,15 +336,15 @@ func TestTransformConfig_EdgeCases(t *testing.T) {
 		config := NewTransformConfig()
 		config.HeaderMapping["X-Old"] = "X-New"
 		config.AddHeaders["X-Custom"] = "value"
-		
+
 		assert.Equal(t, "X-New", config.HeaderMapping["X-Old"])
 		assert.Equal(t, "value", config.AddHeaders["X-Custom"])
 	})
-	
+
 	t.Run("can enable transformation", func(t *testing.T) {
 		config := NewTransformConfig()
 		assert.False(t, config.Enabled)
-		
+
 		config.Enabled = true
 		assert.True(t, config.Enabled)
 	})

@@ -221,15 +221,15 @@ func TestStorageOperations(t *testing.T) {
 	t.Run("WebhookLogging", func(t *testing.T) {
 		// Create a webhook log entry
 		log := &storage.WebhookLog{
-			RouteID:               1,
-			Method:                "POST",
-			Endpoint:              "/webhook/test",
-			Headers:               `{"Content-Type": "application/json"}`,
-			Body:                  `{"test": "data"}`,
-			StatusCode:            200,
-			ProcessedAt:           time.Now(),
-			TransformationTimeMS:  50,
-			BrokerPublishTimeMS:   25,
+			RouteID:              1,
+			Method:               "POST",
+			Endpoint:             "/webhook/test",
+			Headers:              `{"Content-Type": "application/json"}`,
+			Body:                 `{"test": "data"}`,
+			StatusCode:           200,
+			ProcessedAt:          time.Now(),
+			TransformationTimeMS: 50,
+			BrokerPublishTimeMS:  25,
 		}
 
 		err := env.storage.LogWebhook(log)
@@ -289,7 +289,7 @@ func TestAuthenticationFlow(t *testing.T) {
 	t.Run("UserValidation", func(t *testing.T) {
 		// Test basic user validation functionality
 		user, err := env.storage.ValidateUser("admin", "admin")
-		
+
 		// Accept either successful validation or expected authentication failure
 		// Different storage implementations may handle default users differently
 		if err != nil {
@@ -297,7 +297,7 @@ func TestAuthenticationFlow(t *testing.T) {
 		} else if user != nil {
 			assert.NotEmpty(t, user.Username, "User should have a username")
 		}
-		
+
 		// The important thing is that the ValidateUser method exists and doesn't panic
 		assert.True(t, true, "ValidateUser method works without panicking")
 	})
@@ -498,9 +498,9 @@ func (b *TestBroker) processWebhook(endpoint, method string, body []byte, storag
 		if route.Active {
 			activeCount++
 			routeData := map[string]interface{}{
-				"id":         route.ID,
-				"name":       route.Name,
-				"queue":      route.Queue,
+				"id":          route.ID,
+				"name":        route.Name,
+				"queue":       route.Queue,
 				"routing_key": route.RoutingKey,
 			}
 			activeRoutesData = append(activeRoutesData, routeData)
@@ -609,7 +609,7 @@ func TestEdgeCaseScenarios(t *testing.T) {
 	t.Run("HTTPMethodVariations", func(t *testing.T) {
 		// Test different HTTP methods
 		methods := []string{"POST", "PUT", "PATCH", "DELETE", "GET"}
-		
+
 		for _, method := range methods {
 			// Create route for each method
 			route := &storage.Route{
@@ -638,11 +638,11 @@ func TestEdgeCaseScenarios(t *testing.T) {
 		// Test endpoints with special characters
 		endpoints := []string{
 			"/webhook/test-dash",
-			"/webhook/test_underscore", 
+			"/webhook/test_underscore",
 			"/webhook/test.dot",
 			"/webhook/test123numbers",
 		}
-		
+
 		for i, endpoint := range endpoints {
 			route := &storage.Route{
 				Name:       fmt.Sprintf("special-char-%d", i),
@@ -711,18 +711,18 @@ func TestEdgeCaseScenarios(t *testing.T) {
 
 		// Measure processing time
 		start := time.Now()
-		
+
 		payload := map[string]interface{}{"test": "performance"}
 		payloadJSON, _ := json.Marshal(payload)
 
 		published := env.broker.processWebhook("/webhook/performance", "POST", payloadJSON, env.storage)
-		
+
 		duration := time.Since(start)
-		
+
 		// Verify basic functionality
 		assert.Len(t, published, 1)
 		assert.Equal(t, "performance-queue", published[0].Queue)
-		
+
 		// Basic performance assertion (should be fast)
 		assert.Less(t, duration, time.Second, "Processing should be fast")
 	})
@@ -732,7 +732,7 @@ func TestEdgeCaseScenarios(t *testing.T) {
 		route := &storage.Route{
 			Name:       "uniqueness-test",
 			Endpoint:   "/webhook/unique",
-			Method:     "POST", 
+			Method:     "POST",
 			Queue:      "unique-queue",
 			RoutingKey: "unique.test",
 			Active:     true,
@@ -743,20 +743,20 @@ func TestEdgeCaseScenarios(t *testing.T) {
 
 		// Generate multiple messages and check uniqueness
 		messageIDs := make(map[string]bool)
-		
+
 		for i := 0; i < 10; i++ {
 			payload := map[string]interface{}{"iteration": i}
 			payloadJSON, _ := json.Marshal(payload)
 
 			published := env.broker.processWebhook("/webhook/unique", "POST", payloadJSON, env.storage)
 			require.Len(t, published, 1)
-			
+
 			messageID := published[0].MessageID
 			assert.NotEmpty(t, messageID, "Message ID should not be empty")
 			assert.False(t, messageIDs[messageID], "Message ID should be unique: %s", messageID)
 			messageIDs[messageID] = true
 		}
-		
+
 		// Should have 10 unique message IDs
 		assert.Len(t, messageIDs, 10)
 	})
@@ -767,7 +767,7 @@ func TestEdgeCaseScenarios(t *testing.T) {
 			Name:       "concurrent-test",
 			Endpoint:   "/webhook/concurrent",
 			Method:     "POST",
-			Queue:      "concurrent-queue", 
+			Queue:      "concurrent-queue",
 			RoutingKey: "concurrent.test",
 			Active:     true,
 		}
@@ -778,7 +778,7 @@ func TestEdgeCaseScenarios(t *testing.T) {
 		// Use a simple sequential test since we don't have complex concurrency requirements
 		// in this test mock environment
 		results := make([]bool, 5)
-		
+
 		for i := 0; i < 5; i++ {
 			payload := map[string]interface{}{"worker": i}
 			payloadJSON, _ := json.Marshal(payload)
@@ -786,7 +786,7 @@ func TestEdgeCaseScenarios(t *testing.T) {
 			published := env.broker.processWebhook("/webhook/concurrent", "POST", payloadJSON, env.storage)
 			results[i] = len(published) == 1
 		}
-		
+
 		// All requests should succeed
 		for i, success := range results {
 			assert.True(t, success, "Request %d should succeed", i)

@@ -17,7 +17,7 @@ func TestRabbitMQBrokerConfig(t *testing.T) {
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 5,
 		}
-		
+
 		assert.Equal(t, "amqp://guest:guest@localhost:5672/", config.URL)
 		assert.Equal(t, 5, config.PoolSize)
 	})
@@ -86,7 +86,7 @@ func TestRabbitMQMessageCreation(t *testing.T) {
 					"timestamp": 1234567890
 				}`),
 				Headers: map[string]string{
-					"X-Webhook-ID":    "wh_123",
+					"X-Webhook-ID":     "wh_123",
 					"X-Correlation-ID": "corr_456",
 				},
 				Timestamp: time.Now(),
@@ -103,7 +103,7 @@ func TestRabbitMQMessageCreation(t *testing.T) {
 			assert.NotEmpty(t, tc.message.Body)
 			assert.NotEmpty(t, tc.message.MessageID)
 			assert.NotZero(t, tc.message.Timestamp)
-			
+
 			// Check JSON validity if body is JSON
 			if tc.valid {
 				var jsonData interface{}
@@ -121,13 +121,13 @@ func TestRabbitMQConnectionPoolConfig(t *testing.T) {
 			URL: "amqp://localhost:5672",
 			// PoolSize not set, should use default
 		}
-		
+
 		// When broker is created, it should set a default pool size
 		expectedDefault := 1 // Assuming default is 1 if not specified
 		if config.PoolSize == 0 {
 			config.PoolSize = expectedDefault
 		}
-		
+
 		assert.Equal(t, expectedDefault, config.PoolSize)
 	})
 
@@ -136,7 +136,7 @@ func TestRabbitMQConnectionPoolConfig(t *testing.T) {
 			URL:      "amqp://localhost:5672",
 			PoolSize: 10,
 		}
-		
+
 		assert.Equal(t, 10, config.PoolSize)
 	})
 }
@@ -186,11 +186,11 @@ func TestMessageHeaders(t *testing.T) {
 		}
 
 		msg := &brokers.Message{
-			Queue:      "test",
-			Body:       []byte("test"),
-			Headers:    headers,
-			Timestamp:  time.Now(),
-			MessageID:  "msg-123",
+			Queue:     "test",
+			Body:      []byte("test"),
+			Headers:   headers,
+			Timestamp: time.Now(),
+			MessageID: "msg-123",
 		}
 
 		assert.Equal(t, "msg-123", msg.Headers["X-Message-ID"])

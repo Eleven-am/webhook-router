@@ -198,19 +198,19 @@ func TestBrokerErrors(t *testing.T) {
 	t.Run("publish with nil producer", func(t *testing.T) {
 		// Create a minimal broker without Kafka connection
 		broker := &Broker{}
-		
+
 		err := broker.Publish(&brokers.Message{
 			Queue: "test-topic",
 			Body:  []byte("test"),
 		})
-		
+
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not connected")
 	})
 
 	t.Run("health check with nil producer", func(t *testing.T) {
 		broker := &Broker{}
-		
+
 		err := broker.Health()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not initialized")
@@ -221,18 +221,18 @@ func TestBrokerErrors(t *testing.T) {
 func TestConfigValidationEdgeCases(t *testing.T) {
 	t.Run("all security protocols", func(t *testing.T) {
 		protocols := []string{"PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"}
-		
+
 		for _, protocol := range protocols {
 			config := &Config{
 				Brokers:          []string{"localhost:9092"},
 				SecurityProtocol: protocol,
 			}
-			
+
 			if protocol == "SASL_PLAINTEXT" || protocol == "SASL_SSL" {
 				config.SASLUsername = "user"
 				config.SASLPassword = "pass"
 			}
-			
+
 			err := config.Validate()
 			assert.NoError(t, err, "Protocol %s should be valid", protocol)
 		}
@@ -240,7 +240,7 @@ func TestConfigValidationEdgeCases(t *testing.T) {
 
 	t.Run("all SASL mechanisms", func(t *testing.T) {
 		mechanisms := []string{"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"}
-		
+
 		for _, mechanism := range mechanisms {
 			config := &Config{
 				Brokers:          []string{"localhost:9092"},
@@ -249,7 +249,7 @@ func TestConfigValidationEdgeCases(t *testing.T) {
 				SASLUsername:     "user",
 				SASLPassword:     "pass",
 			}
-			
+
 			err := config.Validate()
 			assert.NoError(t, err, "Mechanism %s should be valid", mechanism)
 		}
@@ -262,10 +262,10 @@ func TestConfigValidationEdgeCases(t *testing.T) {
 				Timeout: 0, // Should be set to default
 			},
 		}
-		
+
 		err := config.Validate()
 		assert.NoError(t, err)
-		
+
 		// Check all defaults
 		assert.Equal(t, "webhook-router", config.ClientID)
 		assert.Equal(t, "webhook-router-group", config.GroupID)
@@ -425,10 +425,10 @@ func TestConfigTimeoutValues(t *testing.T) {
 				Brokers:        []string{"localhost:9092"},
 				FlushFrequency: tt.flushFrequency,
 			}
-			
+
 			err := config.Validate()
 			assert.NoError(t, err)
-			
+
 			assert.Equal(t, tt.expectedTimeout, config.Timeout)
 			assert.Equal(t, tt.expectedRetry, config.RetryMax)
 			assert.Equal(t, tt.expectedFlush, config.FlushFrequency)

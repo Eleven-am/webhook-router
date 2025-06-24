@@ -82,14 +82,14 @@ func TestClient_Name(t *testing.T) {
 		Password: "testpass",
 	}
 	client, _ := NewClient(config)
-	
+
 	assert.Equal(t, "imap", client.Name())
 }
 
 func TestClient_Connect(t *testing.T) {
 	t.Run("invalid config type", func(t *testing.T) {
 		client, _ := NewClient(&Config{})
-		
+
 		invalidConfig := &MockConfig{}
 		err := client.Connect(invalidConfig)
 		assert.Error(t, err)

@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 	"time"
-	
+
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
 	"webhook-router/internal/protocols"
@@ -35,7 +35,7 @@ func NewClient(config *Config) (*Client, error) {
 	if config.Timeout <= 0 {
 		config.Timeout = 30 * time.Second
 	}
-	
+
 	return &Client{
 		config: config,
 		name:   "imap",
@@ -53,40 +53,40 @@ func (c *Client) Connect(config protocols.ProtocolConfig) error {
 	if !ok {
 		return fmt.Errorf("invalid config type for IMAP protocol")
 	}
-	
+
 	// Close existing connection
 	if c.client != nil {
 		_ = c.client.Logout() // Ignore logout error when closing existing connection
 		c.client = nil
 	}
-	
+
 	// Connect to server
 	var imapClient *client.Client
 	var err error
-	
+
 	addr := fmt.Sprintf("%s:%d", imapConfig.Host, imapConfig.Port)
 	if imapConfig.UseTLS {
 		imapClient, err = client.DialTLS(addr, nil)
 	} else {
 		imapClient, err = client.Dial(addr)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
-	
+
 	// Set timeout
 	imapClient.Timeout = imapConfig.Timeout
-	
+
 	// Login
 	if err := imapClient.Login(imapConfig.Username, imapConfig.Password); err != nil {
 		_ = imapClient.Logout() // Ignore logout error, return login error
 		return fmt.Errorf("login failed: %w", err)
 	}
-	
+
 	c.client = imapClient
 	c.config = imapConfig
-	
+
 	return nil
 }
 
@@ -117,7 +117,7 @@ func (c *Client) SelectFolder(folder string) (*imap.MailboxStatus, error) {
 	if c.client == nil {
 		return nil, fmt.Errorf("not connected")
 	}
-	
+
 	return c.client.Select(folder, false)
 }
 
@@ -126,7 +126,7 @@ func (c *Client) Search(criteria *imap.SearchCriteria) ([]uint32, error) {
 	if c.client == nil {
 		return nil, fmt.Errorf("not connected")
 	}
-	
+
 	return c.client.Search(criteria)
 }
 
@@ -135,7 +135,7 @@ func (c *Client) Fetch(seqset *imap.SeqSet, items []imap.FetchItem, ch chan *ima
 	if c.client == nil {
 		return fmt.Errorf("not connected")
 	}
-	
+
 	return c.client.Fetch(seqset, items, ch)
 }
 
@@ -144,7 +144,7 @@ func (c *Config) Validate() error {
 	if c.Host == "" {
 		return fmt.Errorf("host is required")
 	}
-	
+
 	if c.Port <= 0 {
 		if c.UseTLS {
 			c.Port = 993
@@ -152,15 +152,15 @@ func (c *Config) Validate() error {
 			c.Port = 143
 		}
 	}
-	
+
 	if c.Username == "" {
 		return fmt.Errorf("username is required")
 	}
-	
+
 	if c.Password == "" {
 		return fmt.Errorf("password is required")
 	}
-	
+
 	return nil
 }
 
@@ -178,7 +178,7 @@ func (f *Factory) Create(config protocols.ProtocolConfig) (protocols.Protocol, e
 	if !ok {
 		return nil, fmt.Errorf("invalid config type for IMAP protocol")
 	}
-	
+
 	return NewClient(imapConfig)
 }
 

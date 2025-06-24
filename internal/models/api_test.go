@@ -11,11 +11,11 @@ import (
 func TestRouteAPI_Conversions(t *testing.T) {
 	t.Run("RouteFromInternal converts storage.Route correctly", func(t *testing.T) {
 		now := time.Now()
-		
+
 		storageRoute := &storage.Route{
-			ID:       123,
-			Endpoint: "/webhook/test",
-			Method:   "POST",
+			ID:        123,
+			Endpoint:  "/webhook/test",
+			Method:    "POST",
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
@@ -177,7 +177,7 @@ func TestStructFieldValidation(t *testing.T) {
 			Type:        "http",
 			URL:         "https://example.com/webhook",
 			BrokerQueue: "events",
-			PipelineID:  "pipeline-1",
+			PipelineID:  "pipeline_old-1",
 			Priority:    1,
 			Weight:      100,
 			Timeout:     "30s",
@@ -191,7 +191,7 @@ func TestStructFieldValidation(t *testing.T) {
 		assert.Equal(t, "http", destination.Type)
 		assert.Equal(t, "https://example.com/webhook", destination.URL)
 		assert.Equal(t, "events", destination.BrokerQueue)
-		assert.Equal(t, "pipeline-1", destination.PipelineID)
+		assert.Equal(t, "pipeline_old-1", destination.PipelineID)
 		assert.Equal(t, 1, destination.Priority)
 		assert.Equal(t, 100, destination.Weight)
 		assert.Equal(t, "30s", destination.Timeout)
@@ -290,7 +290,7 @@ func TestEdgeCases(t *testing.T) {
 				route: nil,
 			},
 			{
-				name: "empty route",
+				name:  "empty route",
 				route: &storage.Route{},
 			},
 			{

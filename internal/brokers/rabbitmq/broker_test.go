@@ -53,7 +53,7 @@ func TestBrokerConnect(t *testing.T) {
 	config := &Config{URL: "amqp://test", PoolSize: 1}
 	baseBroker, err := base.NewBaseBroker("rabbitmq", config)
 	require.NoError(t, err)
-	
+
 	broker := &Broker{
 		BaseBroker:        baseBroker,
 		connectionManager: base.NewConnectionManager(baseBroker),
@@ -196,11 +196,11 @@ func TestConvertAMQPHeaders(t *testing.T) {
 // TestConfigValidation tests Config validation in detail
 func TestConfigValidation(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         *Config
-		wantErr        bool
-		errMsg         string
-		expectedPool   int
+		name         string
+		config       *Config
+		wantErr      bool
+		errMsg       string
+		expectedPool int
 	}{
 		{
 			name: "valid config",
@@ -262,7 +262,7 @@ func TestConfigValidation(t *testing.T) {
 			// Make a copy to avoid modifying test data
 			cfg := *tt.config
 			err := cfg.Validate()
-			
+
 			if tt.wantErr {
 				assert.Error(t, err)
 				if tt.errMsg != "" {
@@ -300,21 +300,21 @@ func TestBaseBrokerIntegration(t *testing.T) {
 		URL:      "amqp://localhost:5672",
 		PoolSize: 5,
 	}
-	
+
 	baseBroker, err := base.NewBaseBroker("rabbitmq", config)
 	require.NoError(t, err)
-	
+
 	// Test base broker properties
 	assert.Equal(t, "rabbitmq", baseBroker.Name())
 	assert.NotNil(t, baseBroker.GetLogger())
 	assert.Equal(t, config, baseBroker.GetConfig())
-	
+
 	// Test broker info
 	info := baseBroker.GetBrokerInfo()
 	assert.Equal(t, "rabbitmq", info.Name)
 	assert.Equal(t, "rabbitmq", info.Type)
 	assert.Equal(t, "amqp://localhost:5672", info.URL)
-	
+
 	// Test updating config
 	newConfig := &Config{
 		URL:      "amqp://newhost:5672",
@@ -329,9 +329,9 @@ func TestBaseBrokerIntegration(t *testing.T) {
 func TestIncomingMessageConversion(t *testing.T) {
 	baseBroker, err := base.NewBaseBroker("rabbitmq", &Config{URL: "amqp://test", PoolSize: 1})
 	require.NoError(t, err)
-	
+
 	brokerInfo := baseBroker.GetBrokerInfo()
-	
+
 	// Test message data
 	messageData := base.MessageData{
 		ID: "msg-123",
@@ -347,10 +347,10 @@ func TestIncomingMessageConversion(t *testing.T) {
 			"exchange":     "test.exchange",
 		},
 	}
-	
+
 	// Convert to incoming message
 	incomingMsg := base.ConvertToIncomingMessage(brokerInfo, messageData)
-	
+
 	// Verify conversion
 	assert.Equal(t, "msg-123", incomingMsg.ID)
 	assert.Equal(t, messageData.Headers, incomingMsg.Headers)
@@ -376,13 +376,13 @@ func TestConnectionPoolConfig(t *testing.T) {
 			{100, true},  // Maximum valid
 			{101, false}, // Too large
 		}
-		
+
 		for _, tc := range configs {
 			config := &Config{
 				URL:      "amqp://localhost:5672",
 				PoolSize: tc.poolSize,
 			}
-			
+
 			err := config.Validate()
 			if tc.valid {
 				assert.NoError(t, err, "Pool size %d should be valid", tc.poolSize)
@@ -400,7 +400,7 @@ func TestStandardHealthCheck(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not initialized")
 	})
-	
+
 	t.Run("non-nil client", func(t *testing.T) {
 		// Any non-nil value should pass
 		err := base.StandardHealthCheck("not-nil", "RabbitMQ")

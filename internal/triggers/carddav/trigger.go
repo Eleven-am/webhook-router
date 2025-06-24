@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	
+
 	"webhook-router/internal/common/base"
 	"webhook-router/internal/common/errors"
 	"webhook-router/internal/common/logging"
 	"webhook-router/internal/common/utils"
 	"webhook-router/internal/models"
+	"webhook-router/internal/oauth2"
 	"webhook-router/internal/triggers"
 )
 
@@ -25,17 +26,16 @@ type Trigger struct {
 	builder      *triggers.TriggerBuilder
 }
 
-
 func NewTrigger(config *Config) (*Trigger, error) {
 	if err := config.Validate(); err != nil {
 		return nil, errors.ConfigError(fmt.Sprintf("invalid CardDAV config: %v", err))
 	}
-	
+
 	builder := triggers.NewTriggerBuilder("carddav", config)
-	
-	// Create CardDAV client
+
+	// Create CardDAV client (will configure auth later if OAuth2 is used)
 	client := NewSimpleClient(config.URL, config.Username, config.Password)
-	
+
 	trigger := &Trigger{
 		config:       config,
 		client:       client,
@@ -43,10 +43,10 @@ func NewTrigger(config *Config) (*Trigger, error) {
 		errorCount:   0,
 		builder:      builder,
 	}
-	
+
 	// Initialize BaseTrigger
 	trigger.BaseTrigger = base.NewBaseTrigger("carddav", config, nil)
-	
+
 	return trigger, nil
 }
 
@@ -54,7 +54,7 @@ func NewTrigger(config *Config) (*Trigger, error) {
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
 	// Update BaseTrigger with the adapted handler
 	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
-	
+
 	// Use the BaseTrigger's Start method with our run function
 	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
 		return t.run(ctx, handler)
@@ -67,7 +67,7 @@ func (t *Trigger) Stop() error {
 	if err := t.BaseTrigger.Stop(); err != nil {
 		return err
 	}
-	
+
 	t.builder.Logger().Info("CardDAV trigger stopped",
 		logging.Field{"url", t.config.URL},
 	)
@@ -79,7 +79,7 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 		logging.Field{"url", t.config.URL},
 		logging.Field{"poll_interval", t.config.PollInterval},
 	)
-	
+
 	// Start polling loop
 	return t.pollLoop(ctx, handler)
 }
@@ -88,10 +88,10 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 func (t *Trigger) pollLoop(ctx context.Context, handler triggers.TriggerHandler) error {
 	ticker := time.NewTicker(t.config.PollInterval)
 	defer ticker.Stop()
-	
+
 	// Initial poll
 	t.poll(ctx, handler)
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -117,7 +117,7 @@ func (t *Trigger) checkContacts(ctx context.Context, handler triggers.TriggerHan
 	// Try sync-collection first for efficient change detection
 	syncToken := t.config.SyncTokens[t.config.URL]
 	t.client.SetSyncToken(syncToken)
-	
+
 	contacts, newToken, err := t.client.SyncCollection(ctx)
 	if err == nil && newToken != "" {
 		// Sync successful, update token
@@ -132,7 +132,7 @@ func (t *Trigger) checkContacts(ctx context.Context, handler triggers.TriggerHan
 			return fmt.Errorf("failed to query contacts: %w", err)
 		}
 	}
-	
+
 	// Process contacts
 	for _, contact := range contacts {
 		// Check if we've already processed this contact
@@ -142,7 +142,7 @@ func (t *Trigger) checkContacts(ctx context.Context, handler triggers.TriggerHan
 			}
 			t.config.ETags[contact.UID] = contact.Metadata.ETag
 		}
-		
+
 		if err := t.processContact(contact, handler); err != nil {
 			t.builder.Logger().Error("Failed to process contact", err,
 				logging.Field{"uid", contact.UID},
@@ -152,13 +152,12 @@ func (t *Trigger) checkContacts(ctx context.Context, handler triggers.TriggerHan
 			t.config.ProcessedUIDs[contact.UID] = time.Now()
 		}
 	}
-	
+
 	// Update last sync time
 	t.config.LastSync = time.Now()
-	
+
 	return nil
 }
-
 
 // processContact processes a single contact
 func (t *Trigger) processContact(contact *models.Contact, handler triggers.TriggerHandler) error {
@@ -175,7 +174,7 @@ func (t *Trigger) processContact(contact *models.Contact, handler triggers.Trigg
 		"updated":      contact.Updated,
 		"metadata":     contact.Metadata,
 	}
-	
+
 	// Add optional fields
 	if contact.Name != nil {
 		contactData["name"] = contact.Name
@@ -204,7 +203,7 @@ func (t *Trigger) processContact(contact *models.Contact, handler triggers.Trigg
 	if len(contact.Categories) > 0 {
 		contactData["categories"] = contact.Categories
 	}
-	
+
 	// Create trigger event
 	event := &triggers.TriggerEvent{
 		ID:          utils.GenerateEventID("carddav", t.config.ID),
@@ -223,14 +222,14 @@ func (t *Trigger) processContact(contact *models.Contact, handler triggers.Trigg
 			URL:  t.config.URL,
 		},
 	}
-	
+
 	// Call handler
 	if err := handler(event); err != nil {
 		return errors.InternalError("handler error", err)
 	}
-	
+
 	t.contactCount++
-	
+
 	return nil
 }
 
@@ -239,7 +238,7 @@ func (t *Trigger) NextExecution() *time.Time {
 	if !t.IsRunning() || t.LastExecution() == nil {
 		return nil
 	}
-	
+
 	next := t.LastExecution().Add(t.config.PollInterval)
 	return &next
 }
@@ -249,7 +248,7 @@ func (t *Trigger) Health() error {
 	if !t.IsRunning() {
 		return errors.InternalError("trigger is not running", nil)
 	}
-	
+
 	return nil
 }
 
@@ -258,3 +257,30 @@ func (t *Trigger) Config() triggers.TriggerConfig {
 	return t.config
 }
 
+// SetOAuthManager sets the OAuth2 manager for authentication
+func (t *Trigger) SetOAuthManager(manager *oauth2.Manager) {
+	// Set in BaseTrigger
+	t.BaseTrigger.SetOAuth2Manager(manager)
+
+	// Update the client if we're using OAuth2
+	if t.config.UseOAuth2 && t.config.OAuth2ServiceID != "" {
+		// Replace with OAuth2-enabled client
+		t.client = NewOAuth2Client(t.config.URL, t.config.OAuth2ServiceID, manager)
+	}
+}
+
+// GetOAuth2ID returns the OAuth2 service ID if configured
+func (t *Trigger) GetOAuth2ID() string {
+	if t.config.UseOAuth2 {
+		return t.config.OAuth2ServiceID
+	}
+	return ""
+}
+
+// SetOAuth2ID sets the OAuth2 service ID
+func (t *Trigger) SetOAuth2ID(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.config.OAuth2ServiceID = id
+	t.config.UseOAuth2 = id != ""
+}

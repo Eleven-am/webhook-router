@@ -60,7 +60,7 @@
 //
 //	verifier := signature.NewVerifier(config, logger)
 //	body, _ := signature.PreserveRequestBody(r)
-//	
+//
 //	if err := verifier.Verify(r, body); err != nil {
 //	    http.Error(w, "Invalid signature", http.StatusUnauthorized)
 //	    return
@@ -69,7 +69,7 @@
 // As part of the auth system:
 //
 //	authRegistry.Register(signature.NewAuthStrategy(logger))
-//	
+//
 //	// In route configuration:
 //	route.Authentication = config.AuthConfig{
 //	    Type: "signature",

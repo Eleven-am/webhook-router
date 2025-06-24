@@ -67,15 +67,15 @@ func TestNewClient(t *testing.T) {
 		client, err := NewClient(config)
 		require.NoError(t, err)
 
-		// Verify client configuration
-		assert.Equal(t, 10*time.Second, client.httpClient.Timeout)
-		
+		// Verify client configuration through underlying HTTP client
+		assert.Equal(t, 10*time.Second, client.httpClient.GetHTTPClient().Timeout)
+
 		// Check that redirect policy is set for no redirects
-		assert.NotNil(t, client.httpClient.CheckRedirect)
-		
+		assert.NotNil(t, client.httpClient.GetHTTPClient().CheckRedirect)
+
 		// Test redirect policy
 		req := &http.Request{}
-		err = client.httpClient.CheckRedirect(req, []*http.Request{})
+		err = client.httpClient.GetHTTPClient().CheckRedirect(req, []*http.Request{})
 		assert.Equal(t, http.ErrUseLastResponse, err)
 	})
 
@@ -89,7 +89,7 @@ func TestNewClient(t *testing.T) {
 		require.NoError(t, err)
 
 		// CheckRedirect should be nil for following redirects
-		assert.Nil(t, client.httpClient.CheckRedirect)
+		assert.Nil(t, client.httpClient.GetHTTPClient().CheckRedirect)
 	})
 }
 
@@ -129,7 +129,7 @@ func TestClient_Send_Integration(t *testing.T) {
 		// Echo request information
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		
+
 		body := `{"method":"` + r.Method + `","path":"` + r.URL.Path + `"}`
 		_, _ = w.Write([]byte(body))
 	}))
@@ -193,7 +193,7 @@ func TestClient_Send_Authentication(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		
+
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"auth":"` + auth + `"}`))
 	}))
@@ -203,13 +203,13 @@ func TestClient_Send_Authentication(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("basic auth", func(t *testing.T) {
+		basicAuth, err := protocols.NewBasicAuth("testuser", "testpass")
+		require.NoError(t, err)
+
 		request := &protocols.Request{
 			Method: "GET",
 			URL:    server.URL,
-			Auth: &protocols.BasicAuth{
-				Username: "testuser",
-				Password: "testpass",
-			},
+			Auth:   basicAuth,
 		}
 
 		response, err := client.Send(request)
@@ -267,7 +267,7 @@ func TestClient_Send_Authentication(t *testing.T) {
 type UnsupportedAuth struct{}
 
 func (u *UnsupportedAuth) Apply(request *protocols.Request) error { return nil }
-func (u *UnsupportedAuth) GetType() string                         { return "unsupported" }
+func (u *UnsupportedAuth) GetType() string                        { return "unsupported" }
 
 func TestClient_Send_Retries(t *testing.T) {
 	attempts := 0
@@ -326,7 +326,7 @@ func TestClient_Send_MaxRetriesExceeded(t *testing.T) {
 	response, err := client.Send(request)
 	assert.Error(t, err)
 	assert.Nil(t, response)
-	assert.Contains(t, err.Error(), "failed after 3 attempts")
+	assert.Contains(t, err.Error(), "max retries exceeded")
 }
 
 func TestClient_Send_Timeout(t *testing.T) {
@@ -349,10 +349,10 @@ func TestClient_Send_Timeout(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, response)
 	// Error should be related to timeout or context cancellation
-	assert.True(t, 
-		strings.Contains(err.Error(), "timeout") || 
-		strings.Contains(err.Error(), "context deadline exceeded") ||
-		strings.Contains(err.Error(), "context canceled"))
+	assert.True(t,
+		strings.Contains(err.Error(), "timeout") ||
+			strings.Contains(err.Error(), "context deadline exceeded") ||
+			strings.Contains(err.Error(), "context canceled"))
 }
 
 func TestClient_Send_InvalidURL(t *testing.T) {
@@ -367,7 +367,7 @@ func TestClient_Send_InvalidURL(t *testing.T) {
 	response, err := client.Send(request)
 	assert.Error(t, err)
 	assert.Nil(t, response)
-	assert.Contains(t, err.Error(), "invalid URL")
+	assert.Contains(t, err.Error(), "missing protocol scheme")
 }
 
 func TestClient_Listen(t *testing.T) {
@@ -418,68 +418,8 @@ func TestClient_Close(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestClient_ApplyAuth(t *testing.T) {
-	client, err := NewClient(DefaultConfig())
-	require.NoError(t, err)
-
-	t.Run("basic auth", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", "http://example.com", nil)
-		auth := &protocols.BasicAuth{
-			Username: "user",
-			Password: "pass",
-		}
-
-		err := client.applyAuth(req, auth)
-		require.NoError(t, err)
-
-		authHeader := req.Header.Get("Authorization")
-		assert.Contains(t, authHeader, "Basic ")
-		
-		// Check that it's properly base64 encoded
-		encoded := strings.TrimPrefix(authHeader, "Basic ")
-		assert.NotEmpty(t, encoded)
-	})
-
-	t.Run("bearer token", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", "http://example.com", nil)
-		auth := &protocols.BearerToken{
-			Token: "my-token",
-		}
-
-		err := client.applyAuth(req, auth)
-		require.NoError(t, err)
-
-		authHeader := req.Header.Get("Authorization")
-		assert.Equal(t, "Bearer my-token", authHeader)
-	})
-
-	t.Run("API key with custom header", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", "http://example.com", nil)
-		auth := &protocols.APIKey{
-			Key:    "api-key-123",
-			Header: "X-Custom-Key",
-		}
-
-		err := client.applyAuth(req, auth)
-		require.NoError(t, err)
-
-		keyHeader := req.Header.Get("X-Custom-Key")
-		assert.Equal(t, "api-key-123", keyHeader)
-	})
-
-	t.Run("API key with default header", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", "http://example.com", nil)
-		auth := &protocols.APIKey{
-			Key: "api-key-456",
-		}
-
-		err := client.applyAuth(req, auth)
-		require.NoError(t, err)
-
-		keyHeader := req.Header.Get("X-API-Key")
-		assert.Equal(t, "api-key-456", keyHeader)
-	})
-}
+// Note: Authentication is now handled through the common HTTP client's addAuthentication method
+// which is tested in the common HTTP client tests. No need to duplicate those tests here.
 
 func BenchmarkClient_Send(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -497,32 +437,5 @@ func BenchmarkClient_Send(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = client.Send(request)
-	}
-}
-
-func BenchmarkClient_ApplyAuth_Basic(b *testing.B) {
-	client, _ := NewClient(DefaultConfig())
-	req, _ := http.NewRequest("GET", "http://example.com", nil)
-	auth := &protocols.BasicAuth{
-		Username: "user",
-		Password: "password",
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = client.applyAuth(req, auth)
-	}
-}
-
-func BenchmarkClient_ApplyAuth_Bearer(b *testing.B) {
-	client, _ := NewClient(DefaultConfig())
-	req, _ := http.NewRequest("GET", "http://example.com", nil)
-	auth := &protocols.BearerToken{
-		Token: "very-long-bearer-token-that-might-be-jwt",
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = client.applyAuth(req, auth)
 	}
 }

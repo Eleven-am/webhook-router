@@ -14,7 +14,7 @@ import (
 // DistributedManager wraps the regular Manager with distributed coordination
 type DistributedManager struct {
 	*Manager
-	lockManager         *locks.Manager
+	lockManager         locks.LockManagerInterface
 	redisClient         *redis.Client
 	nodeID              string
 	isLeader            bool
@@ -35,7 +35,7 @@ type DistributedConfig struct {
 }
 
 // NewDistributedManager creates a distributed trigger manager
-func NewDistributedManager(manager *Manager, redisClient *redis.Client, lockManager *locks.Manager, config *DistributedConfig) *DistributedManager {
+func NewDistributedManager(manager *Manager, redisClient *redis.Client, lockManager locks.LockManagerInterface, config *DistributedConfig) *DistributedManager {
 	if config == nil {
 		config = &DistributedConfig{
 			NodeID:              fmt.Sprintf("node-%d", time.Now().UnixNano()),
@@ -120,7 +120,7 @@ func (dm *DistributedManager) Stop() error {
 }
 
 // ExecuteScheduledTask executes a scheduled task with distributed coordination
-func (dm *DistributedManager) ExecuteScheduledTask(triggerID int, taskID string, handler func() error) error {
+func (dm *DistributedManager) ExecuteScheduledTask(triggerID string, taskID string, handler func() error) error {
 	if !dm.coordinationEnabled {
 		// Fall back to direct execution
 		return handler()

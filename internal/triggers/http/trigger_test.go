@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"webhook-router/internal/common/config"
 	"webhook-router/internal/triggers"
 	triggerhttp "webhook-router/internal/triggers/http"
 )
@@ -30,24 +31,26 @@ func createTestConfig() *triggerhttp.Config {
 			"X-Custom-Header": "test",
 		},
 		ContentType: "application/json",
-		Authentication: triggerhttp.AuthConfig{
+		Authentication: config.AuthConfig{
 			Type:     "none",
 			Required: false,
 		},
-		RateLimiting: triggerhttp.RateLimitConfig{
+		RateLimiting: config.RateLimitConfig{
 			Enabled:     true,
 			MaxRequests: 10,
 			Window:      time.Minute,
 			ByIP:        true,
 		},
-		Validation: triggerhttp.ValidationConfig{
+		Validation: config.ValidationConfig{
 			RequiredHeaders: []string{"Content-Type"},
 			MaxBodySize:     1024 * 1024, // 1MB
 		},
-		Response: triggerhttp.ResponseConfig{
-			StatusCode:  200,
-			ContentType: "application/json",
-			Body:        map[string]interface{}{"status": "ok"},
+		Response: triggerhttp.HTTPResponseConfig{
+			ResponseConfig: config.ResponseConfig{
+				StatusCode:  200,
+				ContentType: "application/json",
+			},
+			Body: map[string]interface{}{"status": "ok"},
 		},
 	}
 }
@@ -72,7 +75,7 @@ func (h *testHandler) HandleEvent(event *triggers.TriggerEvent) error {
 func TestHTTPTrigger_NewTrigger(t *testing.T) {
 	config := createTestConfig()
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	assert.NotNil(t, trigger)
 	assert.Equal(t, "test-webhook", trigger.Name())
 	assert.Equal(t, "http", trigger.Type())
@@ -82,16 +85,16 @@ func TestHTTPTrigger_NewTrigger(t *testing.T) {
 func TestHTTPTrigger_Start(t *testing.T) {
 	config := createTestConfig()
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err := trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	assert.True(t, trigger.IsRunning())
-	
+
 	// Stop the trigger
 	err = trigger.Stop()
 	assert.NoError(t, err)
@@ -142,35 +145,35 @@ func TestHTTPTrigger_HandleHTTPRequest(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := createTestConfig()
 			trigger := triggerhttp.NewTrigger(config)
-			
+
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			
+
 			handler := &testHandler{}
 			err := trigger.Start(ctx, handler.HandleEvent)
 			require.NoError(t, err)
-			
+
 			// Create request
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			for k, v := range tt.headers {
 				req.Header.Set(k, v)
 			}
-			
+
 			// Create response recorder
 			w := httptest.NewRecorder()
-			
+
 			// Handle request
 			trigger.HandleHTTPRequest(w, req)
-			
+
 			// Check response
 			resp := w.Result()
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
-			
+
 			if tt.expectedStatus == http.StatusOK {
 				// Check that event was captured
 				assert.Len(t, handler.events, 1)
@@ -179,7 +182,7 @@ func TestHTTPTrigger_HandleHTTPRequest(t *testing.T) {
 				assert.Equal(t, "test-webhook", event.TriggerName)
 				assert.Equal(t, 1, event.TriggerID)
 			}
-			
+
 			trigger.Stop()
 		})
 	}
@@ -189,32 +192,32 @@ func TestHTTPTrigger_RateLimiting(t *testing.T) {
 	config := createTestConfig()
 	config.RateLimiting.MaxRequests = 2
 	config.RateLimiting.Window = time.Second
-	
+
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err := trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Make requests
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest("POST", "/webhook/test", strings.NewReader(`{"test": "data"}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.RemoteAddr = "127.0.0.1:1234"
-		
+
 		w := httptest.NewRecorder()
 		trigger.HandleHTTPRequest(w, req)
-		
+
 		if i < 2 {
 			assert.Equal(t, http.StatusOK, w.Result().StatusCode)
 		} else {
 			assert.Equal(t, http.StatusTooManyRequests, w.Result().StatusCode)
 		}
 	}
-	
+
 	trigger.Stop()
 }
 
@@ -275,34 +278,34 @@ func TestHTTPTrigger_Authentication(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := createTestConfig()
 			config.Authentication.Type = tt.authType
 			config.Authentication.Required = true
 			config.Authentication.Settings = tt.authSettings
-			
+
 			trigger := triggerhttp.NewTrigger(config)
-			
+
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			
+
 			handler := &testHandler{}
 			err := trigger.Start(ctx, handler.HandleEvent)
 			require.NoError(t, err)
-			
+
 			req := httptest.NewRequest("POST", "/webhook/test", strings.NewReader(`{"test": "data"}`))
 			req.Header.Set("Content-Type", "application/json")
 			for k, v := range tt.requestHeaders {
 				req.Header.Set(k, v)
 			}
-			
+
 			w := httptest.NewRecorder()
 			trigger.HandleHTTPRequest(w, req)
-			
+
 			assert.Equal(t, tt.expectedStatus, w.Result().StatusCode)
-			
+
 			trigger.Stop()
 		})
 	}
@@ -317,96 +320,100 @@ func TestHTTPTrigger_Transformation(t *testing.T) {
 	config.Transformation.AddHeaders = map[string]string{
 		"X-Added": "value",
 	}
-	
+
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err := trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	req := httptest.NewRequest("POST", "/webhook/test", strings.NewReader(`{"test": "data"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Old-Header", "old-value")
-	
+
 	w := httptest.NewRecorder()
 	trigger.HandleHTTPRequest(w, req)
-	
+
 	assert.Equal(t, http.StatusOK, w.Result().StatusCode)
 	assert.Len(t, handler.events, 1)
-	
+
 	event := handler.events[0]
 	assert.Equal(t, "value", event.Headers["X-Added"])
 	assert.Equal(t, "old-value", event.Headers["X-New-Header"])
-	
+
 	trigger.Stop()
 }
 
 func TestHTTPTrigger_ResponseConfig(t *testing.T) {
 	tests := []struct {
 		name         string
-		response     triggerhttp.ResponseConfig
+		response     triggerhttp.HTTPResponseConfig
 		expectedBody string
 		expectedType string
 	}{
 		{
 			name: "JSON response",
-			response: triggerhttp.ResponseConfig{
-				StatusCode:  201,
-				ContentType: "application/json",
-				Body:        map[string]interface{}{"message": "created"},
-				Headers: map[string]string{
-					"X-Custom": "header",
+			response: triggerhttp.HTTPResponseConfig{
+				ResponseConfig: config.ResponseConfig{
+					StatusCode:  201,
+					ContentType: "application/json",
+					Headers: map[string]string{
+						"X-Custom": "header",
+					},
 				},
+				Body: map[string]interface{}{"message": "created"},
 			},
 			expectedBody: `{"message":"created","timestamp":`,
 			expectedType: "application/json",
 		},
 		{
 			name: "Text response",
-			response: triggerhttp.ResponseConfig{
-				StatusCode:  202,
-				ContentType: "text/plain",
-				Body:        "Accepted",
+			response: triggerhttp.HTTPResponseConfig{
+				ResponseConfig: config.ResponseConfig{
+					StatusCode:  202,
+					ContentType: "text/plain",
+				},
+				Body: "Accepted",
 			},
 			expectedBody: "Accepted",
 			expectedType: "text/plain",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := createTestConfig()
 			config.Response = tt.response
-			
+
 			trigger := triggerhttp.NewTrigger(config)
-			
+
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			
+
 			handler := &testHandler{}
 			err := trigger.Start(ctx, handler.HandleEvent)
 			require.NoError(t, err)
-			
+
 			req := httptest.NewRequest("POST", "/webhook/test", strings.NewReader(`{"test": "data"}`))
 			req.Header.Set("Content-Type", "application/json")
-			
+
 			w := httptest.NewRecorder()
 			trigger.HandleHTTPRequest(w, req)
-			
+
 			resp := w.Result()
 			assert.Equal(t, tt.response.StatusCode, resp.StatusCode)
 			assert.Equal(t, tt.expectedType, resp.Header.Get("Content-Type"))
-			
+
 			if customHeader := tt.response.Headers["X-Custom"]; customHeader != "" {
 				assert.Equal(t, customHeader, resp.Header.Get("X-Custom"))
 			}
-			
+
 			body, _ := io.ReadAll(resp.Body)
 			assert.Contains(t, string(body), tt.expectedBody)
-			
+
 			trigger.Stop()
 		})
 	}
@@ -415,7 +422,7 @@ func TestHTTPTrigger_ResponseConfig(t *testing.T) {
 func TestHTTPTrigger_Validation(t *testing.T) {
 	tests := []struct {
 		name           string
-		validation     triggerhttp.ValidationConfig
+		validation     config.ValidationConfig
 		body           string
 		headers        map[string]string
 		query          string
@@ -423,7 +430,7 @@ func TestHTTPTrigger_Validation(t *testing.T) {
 	}{
 		{
 			name: "Body too large",
-			validation: triggerhttp.ValidationConfig{
+			validation: config.ValidationConfig{
 				MaxBodySize: 10,
 			},
 			body:           "This body is too large",
@@ -431,7 +438,7 @@ func TestHTTPTrigger_Validation(t *testing.T) {
 		},
 		{
 			name: "Body too small",
-			validation: triggerhttp.ValidationConfig{
+			validation: config.ValidationConfig{
 				MinBodySize: 100,
 			},
 			body:           "Small",
@@ -439,7 +446,7 @@ func TestHTTPTrigger_Validation(t *testing.T) {
 		},
 		{
 			name: "Missing required header",
-			validation: triggerhttp.ValidationConfig{
+			validation: config.ValidationConfig{
 				RequiredHeaders: []string{"X-Required"},
 			},
 			headers:        map[string]string{},
@@ -447,44 +454,44 @@ func TestHTTPTrigger_Validation(t *testing.T) {
 		},
 		{
 			name: "Missing required param",
-			validation: triggerhttp.ValidationConfig{
+			validation: config.ValidationConfig{
 				RequiredParams: []string{"required"},
 			},
 			query:          "other=value",
 			expectedStatus: http.StatusBadRequest,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := createTestConfig()
 			config.Validation = tt.validation
-			
+
 			trigger := triggerhttp.NewTrigger(config)
-			
+
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			
+
 			handler := &testHandler{}
 			err := trigger.Start(ctx, handler.HandleEvent)
 			require.NoError(t, err)
-			
+
 			url := "/webhook/test"
 			if tt.query != "" {
 				url += "?" + tt.query
 			}
-			
+
 			req := httptest.NewRequest("POST", url, strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			for k, v := range tt.headers {
 				req.Header.Set(k, v)
 			}
-			
+
 			w := httptest.NewRecorder()
 			trigger.HandleHTTPRequest(w, req)
-			
+
 			assert.Equal(t, tt.expectedStatus, w.Result().StatusCode)
-			
+
 			trigger.Stop()
 		})
 	}
@@ -493,31 +500,31 @@ func TestHTTPTrigger_Validation(t *testing.T) {
 func TestHTTPTrigger_Health(t *testing.T) {
 	config := createTestConfig()
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	// Health should fail when not running
 	err := trigger.Health()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not running")
-	
+
 	// Start trigger
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err = trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Health should succeed when running
 	err = trigger.Health()
 	assert.NoError(t, err)
-	
+
 	trigger.Stop()
 }
 
 func TestHTTPTrigger_NextExecution(t *testing.T) {
 	config := createTestConfig()
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	// HTTP triggers don't have scheduled executions
 	assert.Nil(t, trigger.NextExecution())
 }
@@ -525,7 +532,7 @@ func TestHTTPTrigger_NextExecution(t *testing.T) {
 func TestHTTPTrigger_Config(t *testing.T) {
 	config := createTestConfig()
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	returnedConfig := trigger.Config()
 	assert.Equal(t, config, returnedConfig)
 }
@@ -533,32 +540,32 @@ func TestHTTPTrigger_Config(t *testing.T) {
 func TestHTTPTrigger_MultipleHandlers(t *testing.T) {
 	config := createTestConfig()
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	var events []*triggers.TriggerEvent
 	handler := func(event *triggers.TriggerEvent) error {
 		events = append(events, event)
 		return nil
 	}
-	
+
 	err := trigger.Start(ctx, handler)
 	require.NoError(t, err)
-	
+
 	// Send multiple requests
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest("POST", "/webhook/test", strings.NewReader(`{"index": `+string(rune(i))+`}`))
 		req.Header.Set("Content-Type", "application/json")
-		
+
 		w := httptest.NewRecorder()
 		trigger.HandleHTTPRequest(w, req)
-		
+
 		assert.Equal(t, http.StatusOK, w.Result().StatusCode)
 	}
-	
+
 	assert.Len(t, events, 3)
-	
+
 	trigger.Stop()
 }
 
@@ -566,36 +573,36 @@ func TestHTTPTrigger_ConcurrentRequests(t *testing.T) {
 	config := createTestConfig()
 	config.RateLimiting.Enabled = false // Disable rate limiting for this test
 	trigger := triggerhttp.NewTrigger(config)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	
+
 	handler := &testHandler{}
 	err := trigger.Start(ctx, handler.HandleEvent)
 	require.NoError(t, err)
-	
+
 	// Send concurrent requests
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func(index int) {
-			req := httptest.NewRequest("POST", "/webhook/test", 
+			req := httptest.NewRequest("POST", "/webhook/test",
 				strings.NewReader(`{"index": `+string(rune(index))+`}`))
 			req.Header.Set("Content-Type", "application/json")
-			
+
 			w := httptest.NewRecorder()
 			trigger.HandleHTTPRequest(w, req)
-			
+
 			assert.Equal(t, http.StatusOK, w.Result().StatusCode)
 			done <- true
 		}(i)
 	}
-	
+
 	// Wait for all requests to complete
 	for i := 0; i < 10; i++ {
 		<-done
 	}
-	
+
 	assert.Len(t, handler.events, 10)
-	
+
 	trigger.Stop()
 }

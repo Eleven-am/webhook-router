@@ -1,9 +1,8 @@
 package models
 
 import (
-	"fmt"
 	"time"
-	"webhook-router/internal/pipeline"
+	"webhook-router/internal/pipeline/core"
 	"webhook-router/internal/routing"
 	"webhook-router/internal/storage"
 )
@@ -67,7 +66,7 @@ type LoadBalancingConfigAPI struct {
 	SessionKey    string `json:"session_key,omitempty"`
 }
 
-// PipelineConfigAPI represents pipeline configuration for API responses
+// PipelineConfigAPI represents pipeline_old configuration for API responses
 type PipelineConfigAPI struct {
 	ID          string           `json:"id"`
 	Name        string           `json:"name"`
@@ -81,8 +80,10 @@ type PipelineConfigAPI struct {
 
 // StageConfigAPI represents stage configuration for API responses
 type StageConfigAPI struct {
+	ID          string                 `json:"id"`
 	Name        string                 `json:"name"`
 	Type        string                 `json:"type"`
+	DependsOn   []string               `json:"depends_on,omitempty"`
 	Config      map[string]interface{} `json:"config"`
 	Enabled     bool                   `json:"enabled"`
 	OnError     string                 `json:"on_error"`
@@ -160,43 +161,79 @@ func ToRouteRuleAPI(rule *routing.RouteRule) *RouteRuleAPI {
 	return api
 }
 
-// ToPipelineConfigAPI converts pipeline.PipelineConfig to PipelineConfigAPI
-func ToPipelineConfigAPI(config *pipeline.Config) *PipelineConfigAPI {
+// ToPipelineConfigAPI converts a pipeline definition to API format
+func ToPipelineConfigAPI(config interface{}) *PipelineConfigAPI {
 	if config == nil {
 		return nil
 	}
 
-	api := &PipelineConfigAPI{
-		ID:          config.ID,
-		Name:        config.Name,
-		Description: config.Description,
-		Enabled:     config.Enabled,
-		Tags:        config.Tags,
-		CreatedAt:   config.CreatedAt,
-		UpdatedAt:   config.UpdatedAt,
-	}
-
-	// Convert stages
-	api.Stages = make([]StageConfigAPI, len(config.Stages))
-	for i, stage := range config.Stages {
-		api.Stages[i] = StageConfigAPI{
-			Name:    stage.Name,
-			Type:    stage.Type,
-			Config:  stage.Config,
-			Enabled: stage.Enabled,
-			OnError: stage.OnError,
-			Timeout: stage.Timeout.String(),
-			RetryConfig: RetryConfigAPI{
-				Enabled:     stage.RetryConfig.Enabled,
-				MaxAttempts: stage.RetryConfig.MaxAttempts,
-				Delay:       stage.RetryConfig.Delay.String(),
-				BackoffType: stage.RetryConfig.BackoffType,
-				MaxDelay:    stage.RetryConfig.MaxDelay.String(),
-			},
+	switch p := config.(type) {
+	case *core.PipelineDefinition:
+		stages := make([]StageConfigAPI, len(p.Stages))
+		for i, stage := range p.Stages {
+			stages[i] = StageConfigAPI{
+				ID:        stage.ID,
+				Type:      stage.Type,
+				DependsOn: stage.DependsOn,
+				Config: map[string]interface{}{
+					"target":  stage.Target,
+					"action":  stage.Action,
+					"timeout": stage.Timeout,
+				},
+			}
 		}
-	}
 
-	return api
+		return &PipelineConfigAPI{
+			ID:          p.ID,
+			Name:        p.Name,
+			Description: "", // Not in core.PipelineDefinition
+			Stages:      stages,
+			Enabled:     true,       // Default to enabled
+			Tags:        []string{}, // Not in core.PipelineDefinition
+			CreatedAt:   time.Now(), // Default timestamps
+			UpdatedAt:   time.Now(),
+		}
+	case map[string]interface{}:
+		// Handle map format
+		result := &PipelineConfigAPI{
+			Enabled:   true,
+			Tags:      []string{},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		if id, ok := p["id"].(string); ok {
+			result.ID = id
+		}
+		if name, ok := p["name"].(string); ok {
+			result.Name = name
+		}
+		if desc, ok := p["description"].(string); ok {
+			result.Description = desc
+		}
+
+		// Handle stages if present
+		if stages, ok := p["stages"].([]interface{}); ok {
+			result.Stages = make([]StageConfigAPI, len(stages))
+			for i, stage := range stages {
+				if stageMap, ok := stage.(map[string]interface{}); ok {
+					result.Stages[i] = StageConfigAPI{
+						Config: stageMap,
+					}
+					if id, ok := stageMap["id"].(string); ok {
+						result.Stages[i].ID = id
+					}
+					if stageType, ok := stageMap["type"].(string); ok {
+						result.Stages[i].Type = stageType
+					}
+				}
+			}
+		}
+
+		return result
+	default:
+		return nil
+	}
 }
 
 // BrokerConfigAPI represents broker configuration for API responses
@@ -217,26 +254,4 @@ func ToBrokerConfigAPI(config *storage.BrokerConfig) *BrokerConfigAPI {
 	}
 }
 
-// RouteAPI represents a webhook route for API responses
-type RouteAPI struct {
-	ID        string    `json:"id"`
-	Path      string    `json:"path"`
-	Method    string    `json:"method"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// ToRouteAPI converts storage.Route to RouteAPI
-func ToRouteAPI(route *storage.Route) *RouteAPI {
-	if route == nil {
-		return nil
-	}
-
-	return &RouteAPI{
-		ID:        fmt.Sprintf("%d", route.ID),
-		Path:      route.Endpoint,
-		Method:    route.Method,
-		CreatedAt: route.CreatedAt,
-		UpdatedAt: route.UpdatedAt,
-	}
-}
+// RouteAPI removed - routing is now handled by triggers

@@ -42,12 +42,12 @@ func (re *BasicRuleEngine) EvaluateRule(rule *RouteRule, request *RouteRequest) 
 	if !rule.Enabled {
 		return false, nil
 	}
-	
+
 	// Get or compile the rule
 	re.mu.RLock()
 	compiled, exists := re.compiledRules[rule.ID]
 	re.mu.RUnlock()
-	
+
 	if !exists {
 		if err := re.CompileRule(rule); err != nil {
 			return false, errors.InternalError("failed to compile rule", err)
@@ -56,25 +56,25 @@ func (re *BasicRuleEngine) EvaluateRule(rule *RouteRule, request *RouteRequest) 
 		compiled = re.compiledRules[rule.ID]
 		re.mu.RUnlock()
 	}
-	
+
 	// Evaluate all conditions
 	for _, compiledCondition := range compiled.CompiledConditions {
 		result, err := re.evaluateCompiledCondition(compiledCondition, request)
 		if err != nil {
 			return false, err
 		}
-		
+
 		// Apply negation if specified
 		if compiledCondition.Condition.Negate {
 			result = !result
 		}
-		
+
 		// If any condition fails, the rule doesn't match (AND logic)
 		if !result {
 			return false, nil
 		}
 	}
-	
+
 	return true, nil
 }
 
@@ -84,16 +84,16 @@ func (re *BasicRuleEngine) EvaluateCondition(condition *RuleCondition, request *
 	if err != nil {
 		return false, err
 	}
-	
+
 	result, err := re.evaluateCompiledCondition(compiled, request)
 	if err != nil {
 		return false, err
 	}
-	
+
 	if condition.Negate {
 		result = !result
 	}
-	
+
 	return result, nil
 }
 
@@ -102,19 +102,19 @@ func (re *BasicRuleEngine) CompileRule(rule *RouteRule) error {
 		Rule:               rule,
 		CompiledConditions: make([]*CompiledCondition, 0, len(rule.Conditions)),
 	}
-	
+
 	for _, condition := range rule.Conditions {
 		compiledCondition, err := re.compileCondition(&condition)
 		if err != nil {
-			return fmt.Errorf("failed to compile condition: %w", err)
+			return errors.InternalError("failed to compile condition", err)
 		}
 		compiled.CompiledConditions = append(compiled.CompiledConditions, compiledCondition)
 	}
-	
+
 	re.mu.Lock()
 	re.compiledRules[rule.ID] = compiled
 	re.mu.Unlock()
-	
+
 	return nil
 }
 
@@ -122,40 +122,40 @@ func (re *BasicRuleEngine) compileCondition(condition *RuleCondition) (*Compiled
 	compiled := &CompiledCondition{
 		Condition: condition,
 	}
-	
+
 	// Validate condition type
 	if !re.isValidConditionType(condition.Type) {
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedConditionType, condition.Type)
+		return nil, errors.ValidationError("unsupported condition type: " + condition.Type)
 	}
-	
+
 	// Validate operator
 	if !re.isValidOperator(condition.Operator) {
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedOperator, condition.Operator)
+		return nil, errors.ValidationError("unsupported operator: " + condition.Operator)
 	}
-	
+
 	// Pre-compile regex patterns
 	if condition.Operator == "regex" {
 		if valueStr, ok := condition.Value.(string); ok {
 			regex, err := regexp.Compile(valueStr)
 			if err != nil {
-				return nil, fmt.Errorf("invalid regex pattern: %w", err)
+				return nil, errors.ValidationError("invalid regex pattern")
 			}
 			compiled.Regex = regex
 		} else {
-			return nil, fmt.Errorf("regex operator requires string value")
+			return nil, errors.ValidationError("regex operator requires string value")
 		}
 	}
-	
+
 	// Pre-process numeric values
 	if condition.Operator == "gt" || condition.Operator == "lt" || condition.Operator == "gte" || condition.Operator == "lte" {
 		if numValue, err := re.toFloat64(condition.Value); err == nil {
 			compiled.NumValue = numValue
 			compiled.IsNumeric = true
 		} else {
-			return nil, fmt.Errorf("numeric operator requires numeric value")
+			return nil, errors.ValidationError("numeric operator requires numeric value")
 		}
 	}
-	
+
 	// Pre-process list values for 'in' operator
 	if condition.Operator == "in" {
 		switch v := condition.Value.(type) {
@@ -173,58 +173,58 @@ func (re *BasicRuleEngine) compileCondition(condition *RuleCondition) (*Compiled
 				compiled.ListValue[i] = strings.TrimSpace(item)
 			}
 		default:
-			return nil, fmt.Errorf("'in' operator requires array or comma-separated string")
+			return nil, errors.ValidationError("'in' operator requires array or comma-separated string")
 		}
 	}
-	
+
 	return compiled, nil
 }
 
 func (re *BasicRuleEngine) evaluateCompiledCondition(compiled *CompiledCondition, request *RouteRequest) (bool, error) {
 	condition := compiled.Condition
-	
+
 	// Extract the value to test based on condition type
 	testValue, err := re.extractValue(condition.Type, condition.Field, request)
 	if err != nil {
 		return false, err
 	}
-	
+
 	// Handle the 'exists' operator specially
 	if condition.Operator == "exists" {
 		return testValue != "", nil
 	}
-	
+
 	// If test value is empty and operator is not 'exists', consider it a non-match
 	if testValue == "" {
 		return false, nil
 	}
-	
+
 	// Evaluate based on operator
 	switch condition.Operator {
 	case "eq":
 		return testValue == fmt.Sprintf("%v", condition.Value), nil
-		
+
 	case "ne":
 		return testValue != fmt.Sprintf("%v", condition.Value), nil
-		
+
 	case "contains":
 		return strings.Contains(testValue, fmt.Sprintf("%v", condition.Value)), nil
-		
+
 	case "starts_with":
 		return strings.HasPrefix(testValue, fmt.Sprintf("%v", condition.Value)), nil
-		
+
 	case "ends_with":
 		return strings.HasSuffix(testValue, fmt.Sprintf("%v", condition.Value)), nil
-		
+
 	case "regex":
 		if compiled.Regex != nil {
 			return compiled.Regex.MatchString(testValue), nil
 		}
-		return false, fmt.Errorf("regex not compiled")
-		
+		return false, errors.InternalError("regex not compiled", nil)
+
 	case "gt", "lt", "gte", "lte":
 		return re.evaluateNumericComparison(testValue, condition.Operator, compiled.NumValue)
-		
+
 	case "in":
 		for _, listItem := range compiled.ListValue {
 			if testValue == listItem {
@@ -232,12 +232,12 @@ func (re *BasicRuleEngine) evaluateCompiledCondition(compiled *CompiledCondition
 			}
 		}
 		return false, nil
-		
+
 	case "cidr":
 		return re.evaluateCIDR(testValue, fmt.Sprintf("%v", condition.Value))
-		
+
 	default:
-		return false, fmt.Errorf("%w: %s", ErrUnsupportedOperator, condition.Operator)
+		return false, errors.ValidationError("unsupported operator: " + condition.Operator)
 	}
 }
 
@@ -250,7 +250,7 @@ func (re *BasicRuleEngine) extractValue(conditionType, field string, request *Ro
 		"remote_addr": func() (string, error) { return request.RemoteAddr, nil },
 		"user_agent":  func() (string, error) { return request.UserAgent, nil },
 		"size":        func() (string, error) { return strconv.Itoa(len(request.Body)), nil },
-		
+
 		// Field-based extractors
 		"header": func() (string, error) {
 			if field == "" {
@@ -280,34 +280,34 @@ func (re *BasicRuleEngine) extractValue(conditionType, field string, request *Ro
 			return re.extractJSONField(request.Body, field)
 		},
 	}
-	
+
 	if extractor, exists := extractors[conditionType]; exists {
 		return extractor()
 	}
-	
-	return "", fmt.Errorf("%w: %s", ErrUnsupportedConditionType, conditionType)
+
+	return "", errors.ValidationError("unsupported condition type: " + conditionType)
 }
 
 func (re *BasicRuleEngine) extractJSONField(body []byte, field string) (string, error) {
 	var data map[string]interface{}
 	if err := json.Unmarshal(body, &data); err != nil {
-		return "", fmt.Errorf("failed to parse JSON: %w", err)
+		return "", errors.InternalError("failed to parse JSON", err)
 	}
-	
+
 	// Simple field extraction - in production, would use JSONPath
 	if value, exists := data[field]; exists {
 		return fmt.Sprintf("%v", value), nil
 	}
-	
+
 	return "", nil
 }
 
 func (re *BasicRuleEngine) evaluateNumericComparison(testValue, operator string, compareValue float64) (bool, error) {
 	testNum, err := re.toFloat64(testValue)
 	if err != nil {
-		return false, fmt.Errorf("cannot compare non-numeric value: %s", testValue)
+		return false, errors.ValidationError("cannot compare non-numeric value: " + testValue)
 	}
-	
+
 	switch operator {
 	case "gt":
 		return testNum > compareValue, nil
@@ -318,7 +318,7 @@ func (re *BasicRuleEngine) evaluateNumericComparison(testValue, operator string,
 	case "lte":
 		return testNum <= compareValue, nil
 	default:
-		return false, fmt.Errorf("invalid numeric operator: %s", operator)
+		return false, errors.ValidationError("invalid numeric operator: " + operator)
 	}
 }
 
@@ -326,15 +326,15 @@ func (re *BasicRuleEngine) evaluateCIDR(testValue, cidr string) (bool, error) {
 	// Parse IP address
 	ip := net.ParseIP(testValue)
 	if ip == nil {
-		return false, fmt.Errorf("invalid IP address: %s", testValue)
+		return false, errors.ValidationError("invalid IP address: " + testValue)
 	}
-	
+
 	// Parse CIDR
 	_, network, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return false, fmt.Errorf("invalid CIDR: %s", cidr)
+		return false, errors.ValidationError("invalid CIDR: " + cidr)
 	}
-	
+
 	return network.Contains(ip), nil
 }
 
@@ -353,7 +353,7 @@ func (re *BasicRuleEngine) toFloat64(value interface{}) (float64, error) {
 	case string:
 		return strconv.ParseFloat(v, 64)
 	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", value)
+		return 0, errors.ValidationError("cannot convert value to float64")
 	}
 }
 
@@ -375,19 +375,19 @@ func (re *BasicRuleEngine) isValidConditionType(conditionType string) bool {
 
 func (re *BasicRuleEngine) isValidOperator(operator string) bool {
 	validOperators := map[string]bool{
-		"eq":         true,
-		"ne":         true,
-		"contains":   true,
+		"eq":          true,
+		"ne":          true,
+		"contains":    true,
 		"starts_with": true,
-		"ends_with":  true,
-		"regex":      true,
-		"gt":         true,
-		"lt":         true,
-		"gte":        true,
-		"lte":        true,
-		"in":         true,
-		"exists":     true,
-		"cidr":       true,
+		"ends_with":   true,
+		"regex":       true,
+		"gt":          true,
+		"lt":          true,
+		"gte":         true,
+		"lte":         true,
+		"in":          true,
+		"exists":      true,
+		"cidr":        true,
 	}
 	return validOperators[operator]
 }

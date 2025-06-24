@@ -66,7 +66,7 @@ func TestFactory_Create(t *testing.T) {
 		service, err := factory.Create(invalidConfig)
 		require.Error(t, err)
 		assert.Equal(t, TestService{}, service)
-		assert.True(t, commonErrors.IsConfigError(err))
+		assert.True(t, commonErrors.IsType(err, commonErrors.ErrTypeConfig))
 		assert.Contains(t, err.Error(), "invalid config type")
 		assert.Contains(t, err.Error(), "test-service")
 	})
@@ -75,7 +75,7 @@ func TestFactory_Create(t *testing.T) {
 		service, err := factory.Create(nil)
 		require.Error(t, err)
 		assert.Equal(t, TestService{}, service)
-		assert.True(t, commonErrors.IsConfigError(err))
+		assert.True(t, commonErrors.IsType(err, commonErrors.ErrTypeConfig))
 	})
 
 	t.Run("interface config that doesn't match", func(t *testing.T) {
@@ -84,7 +84,7 @@ func TestFactory_Create(t *testing.T) {
 		service, err := factory.Create(interfaceConfig)
 		require.Error(t, err)
 		assert.Equal(t, TestService{}, service)
-		assert.True(t, commonErrors.IsConfigError(err))
+		assert.True(t, commonErrors.IsType(err, commonErrors.ErrTypeConfig))
 	})
 }
 
@@ -98,10 +98,10 @@ func TestRegistry_Register(t *testing.T) {
 
 	t.Run("successful registration", func(t *testing.T) {
 		factory := NewFactory[TestConfig, TestService]("type1", createTestService)
-		
+
 		err := registry.Register(factory)
 		assert.NoError(t, err)
-		
+
 		types := registry.GetTypes()
 		assert.Len(t, types, 1)
 		assert.Contains(t, types, "type1")
@@ -110,28 +110,31 @@ func TestRegistry_Register(t *testing.T) {
 	t.Run("duplicate registration", func(t *testing.T) {
 		factory1 := NewFactory[TestConfig, TestService]("duplicate", createTestService)
 		factory2 := NewFactory[TestConfig, TestService]("duplicate", createTestService)
-		
+
 		err := registry.Register(factory1)
 		require.NoError(t, err)
-		
+
 		err = registry.Register(factory2)
 		require.Error(t, err)
-		assert.True(t, commonErrors.IsConfigError(err))
+		assert.True(t, commonErrors.IsType(err, commonErrors.ErrTypeConfig))
 		assert.Contains(t, err.Error(), "already registered")
 		assert.Contains(t, err.Error(), "duplicate")
 	})
 
 	t.Run("multiple different types", func(t *testing.T) {
+		// Create a fresh registry for this test
+		freshRegistry := NewRegistry[TestService]()
+
 		factory1 := NewFactory[TestConfig, TestService]("service1", createTestService)
 		factory2 := NewFactory[TestConfig, TestService]("service2", createTestService)
-		
-		err := registry.Register(factory1)
+
+		err := freshRegistry.Register(factory1)
 		require.NoError(t, err)
-		
-		err = registry.Register(factory2)
+
+		err = freshRegistry.Register(factory2)
 		require.NoError(t, err)
-		
-		types := registry.GetTypes()
+
+		types := freshRegistry.GetTypes()
 		assert.Len(t, types, 2)
 		assert.Contains(t, types, "service1")
 		assert.Contains(t, types, "service2")
@@ -164,7 +167,7 @@ func TestRegistry_Create(t *testing.T) {
 		service, err := registry.Create("nonexistent", config)
 		require.Error(t, err)
 		assert.Equal(t, TestService{}, service)
-		assert.True(t, commonErrors.IsNotFoundError(err))
+		assert.True(t, commonErrors.IsType(err, commonErrors.ErrTypeNotFound))
 		assert.Contains(t, err.Error(), "no factory registered")
 		assert.Contains(t, err.Error(), "nonexistent")
 	})
@@ -187,7 +190,7 @@ func TestRegistry_Create(t *testing.T) {
 		service, err := registry.Create("test-type", invalidConfig)
 		require.Error(t, err)
 		assert.Equal(t, TestService{}, service)
-		assert.True(t, commonErrors.IsConfigError(err))
+		assert.True(t, commonErrors.IsType(err, commonErrors.ErrTypeConfig))
 	})
 }
 
@@ -200,24 +203,30 @@ func TestRegistry_GetTypes(t *testing.T) {
 	})
 
 	t.Run("single type", func(t *testing.T) {
-		factory := NewFactory[TestConfig, TestService]("single", createTestService)
-		registry.Register(factory)
+		// Create a fresh registry for this test
+		freshRegistry := NewRegistry[TestService]()
 
-		types := registry.GetTypes()
+		factory := NewFactory[TestConfig, TestService]("single", createTestService)
+		freshRegistry.Register(factory)
+
+		types := freshRegistry.GetTypes()
 		assert.Len(t, types, 1)
 		assert.Equal(t, []string{"single"}, types)
 	})
 
 	t.Run("multiple types", func(t *testing.T) {
+		// Create a fresh registry for this test
+		freshRegistry := NewRegistry[TestService]()
+
 		factory1 := NewFactory[TestConfig, TestService]("alpha", createTestService)
 		factory2 := NewFactory[TestConfig, TestService]("beta", createTestService)
 		factory3 := NewFactory[TestConfig, TestService]("gamma", createTestService)
 
-		registry.Register(factory1)
-		registry.Register(factory2)
-		registry.Register(factory3)
+		freshRegistry.Register(factory1)
+		freshRegistry.Register(factory2)
+		freshRegistry.Register(factory3)
 
-		types := registry.GetTypes()
+		types := freshRegistry.GetTypes()
 		assert.Len(t, types, 3)
 		assert.Contains(t, types, "alpha")
 		assert.Contains(t, types, "beta")
@@ -227,7 +236,7 @@ func TestRegistry_GetTypes(t *testing.T) {
 
 func TestRegistry_Clear(t *testing.T) {
 	registry := NewRegistry[TestService]()
-	
+
 	// Add some factories
 	factory1 := NewFactory[TestConfig, TestService]("type1", createTestService)
 	factory2 := NewFactory[TestConfig, TestService]("type2", createTestService)
@@ -248,7 +257,7 @@ func TestRegistry_Clear(t *testing.T) {
 	// Verify we can't create instances
 	_, err := registry.Create("type1", TestConfig{Name: "test", Port: 8080})
 	require.Error(t, err)
-	assert.True(t, commonErrors.IsNotFoundError(err))
+	assert.True(t, commonErrors.IsType(err, commonErrors.ErrTypeNotFound))
 }
 
 func TestFactoryInterface(t *testing.T) {

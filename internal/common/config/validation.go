@@ -56,7 +56,7 @@ func validateBasicAuth(auth *AuthConfig, v *validation.Validator) {
 	if auth.Required {
 		v.RequireString(auth.Settings["username"], "authentication.settings.username")
 		v.RequireString(auth.Settings["password"], "authentication.settings.password")
-		
+
 		// Validate password strength if provided
 		if password, ok := auth.Settings["password"]; ok && len(password) < 8 {
 			v.Validate(func() error {
@@ -70,7 +70,7 @@ func validateBasicAuth(auth *AuthConfig, v *validation.Validator) {
 func validateBearerAuth(auth *AuthConfig, v *validation.Validator) {
 	if auth.Required {
 		v.RequireString(auth.Settings["token"], "authentication.settings.token")
-		
+
 		// Validate token format (should not be empty or too short)
 		if token, ok := auth.Settings["token"]; ok && len(token) < 16 {
 			v.Validate(func() error {
@@ -84,12 +84,12 @@ func validateBearerAuth(auth *AuthConfig, v *validation.Validator) {
 func validateAPIKeyAuth(auth *AuthConfig, v *validation.Validator) {
 	if auth.Required {
 		v.RequireString(auth.Settings["api_key"], "authentication.settings.api_key")
-		
+
 		// Set default location if not provided
 		if _, ok := auth.Settings["location"]; !ok {
 			auth.Settings["location"] = "header"
 		}
-		
+
 		// Validate location
 		if location, ok := auth.Settings["location"]; ok {
 			validLocations := []string{"header", "query"}
@@ -99,7 +99,7 @@ func validateAPIKeyAuth(auth *AuthConfig, v *validation.Validator) {
 				})
 			}
 		}
-		
+
 		// Key name is required for header location
 		if location, ok := auth.Settings["location"]; ok && location == "header" {
 			if _, hasKeyName := auth.Settings["key_name"]; !hasKeyName {
@@ -107,7 +107,7 @@ func validateAPIKeyAuth(auth *AuthConfig, v *validation.Validator) {
 			}
 			v.RequireString(auth.Settings["key_name"], "authentication.settings.key_name")
 		}
-		
+
 		// Validate API key length
 		if apiKey, ok := auth.Settings["api_key"]; ok && len(apiKey) < 16 {
 			v.Validate(func() error {
@@ -123,7 +123,7 @@ func validateOAuth2Auth(auth *AuthConfig, v *validation.Validator) {
 		v.RequireString(auth.Settings["client_id"], "authentication.settings.client_id")
 		v.RequireString(auth.Settings["client_secret"], "authentication.settings.client_secret")
 		v.RequireString(auth.Settings["token_url"], "authentication.settings.token_url")
-		
+
 		// Validate token URL format
 		if tokenURL, ok := auth.Settings["token_url"]; ok && tokenURL != "" {
 			if _, err := url.Parse(tokenURL); err != nil {
@@ -132,7 +132,7 @@ func validateOAuth2Auth(auth *AuthConfig, v *validation.Validator) {
 				})
 			}
 		}
-		
+
 		// Default scope if not provided
 		if _, ok := auth.Settings["scope"]; !ok {
 			auth.Settings["scope"] = ""
@@ -144,12 +144,12 @@ func validateOAuth2Auth(auth *AuthConfig, v *validation.Validator) {
 func validateHMACAuth(auth *AuthConfig, v *validation.Validator) {
 	if auth.Required {
 		v.RequireString(auth.Settings["secret"], "authentication.settings.secret")
-		
+
 		// Default algorithm
 		if _, ok := auth.Settings["algorithm"]; !ok {
 			auth.Settings["algorithm"] = "sha256"
 		}
-		
+
 		// Validate algorithm
 		if algorithm, ok := auth.Settings["algorithm"]; ok {
 			validAlgorithms := []string{"sha256", "sha512"}
@@ -159,12 +159,12 @@ func validateHMACAuth(auth *AuthConfig, v *validation.Validator) {
 				})
 			}
 		}
-		
+
 		// Default signature header
 		if _, ok := auth.Settings["signature_header"]; !ok {
 			auth.Settings["signature_header"] = "X-Signature"
 		}
-		
+
 		// Validate secret strength
 		if secret, ok := auth.Settings["secret"]; ok && len(secret) < 32 {
 			v.Validate(func() error {
@@ -236,14 +236,14 @@ func ValidateErrorHandling(config *ErrorHandlingConfig, v *validation.Validator,
 	// Validate retry configuration
 	if config.RetryEnabled {
 		v.RequirePositive(config.MaxRetries, fieldPrefix+".max_retries")
-		
+
 		// Validate retry delay (should be reasonable)
 		if config.RetryDelay < time.Second {
 			v.Validate(func() error {
 				return errors.ConfigError(fmt.Sprintf("%s.retry_delay should be at least 1 second", fieldPrefix))
 			})
 		}
-		
+
 		if config.RetryDelay > 5*time.Minute {
 			v.Validate(func() error {
 				return errors.ConfigError(fmt.Sprintf("%s.retry_delay should not exceed 5 minutes", fieldPrefix))
@@ -294,14 +294,14 @@ func ValidateRateLimit(config *RateLimitConfig, v *validation.Validator, fieldPr
 
 	// Validate rate limiting parameters
 	v.RequirePositive(config.MaxRequests, fieldPrefix+".max_requests")
-	
+
 	// Validate time window
 	if config.Window < time.Second {
 		v.Validate(func() error {
 			return errors.ConfigError(fmt.Sprintf("%s.window must be at least 1 second", fieldPrefix))
 		})
 	}
-	
+
 	if config.Window > 24*time.Hour {
 		v.Validate(func() error {
 			return errors.ConfigError(fmt.Sprintf("%s.window should not exceed 24 hours", fieldPrefix))
@@ -389,17 +389,17 @@ func isValidJSON(jsonStr string) bool {
 	if jsonStr == "" {
 		return false
 	}
-	
+
 	// Must start with { or [
 	if !strings.HasPrefix(jsonStr, "{") && !strings.HasPrefix(jsonStr, "[") {
 		return false
 	}
-	
+
 	// Must end with } or ]
 	if !strings.HasSuffix(jsonStr, "}") && !strings.HasSuffix(jsonStr, "]") {
 		return false
 	}
-	
+
 	return true
 }
 
@@ -422,7 +422,7 @@ func ValidateHTTPMethods(methods []string, v *validation.Validator, fieldName st
 func ValidateHTTPHeaders(headers map[string]string, v *validation.Validator, fieldPrefix string) {
 	// RFC 7230 compliant header name validation
 	headerNameRegex := regexp.MustCompile(`^[a-zA-Z0-9!#$&'*+.^_` + "`" + `|~-]+$`)
-	
+
 	for name, value := range headers {
 		if name == "" {
 			v.Validate(func() error {
@@ -430,13 +430,13 @@ func ValidateHTTPHeaders(headers map[string]string, v *validation.Validator, fie
 			})
 			continue
 		}
-		
+
 		if !headerNameRegex.MatchString(name) {
 			v.Validate(func() error {
 				return errors.ConfigError(fmt.Sprintf("%s.%s is not a valid HTTP header name", fieldPrefix, name))
 			})
 		}
-		
+
 		// Header values cannot contain control characters
 		for _, char := range value {
 			if char < 32 && char != 9 { // Allow tab (9) but not other control chars

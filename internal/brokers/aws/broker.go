@@ -5,6 +5,7 @@ package aws
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"strconv"
 	"time"
@@ -33,6 +34,52 @@ type Broker struct {
 	connectionManager *base.ConnectionManager
 }
 
+// secureCredentialProvider wraps credentials with automatic zeroing
+type secureCredentialProvider struct {
+	accessKeyID     string
+	secretAccessKey string
+	sessionToken    string
+}
+
+// Retrieve implements the AWS credential provider interface
+func (p *secureCredentialProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	creds := aws.Credentials{
+		AccessKeyID:     p.accessKeyID,
+		SecretAccessKey: p.secretAccessKey,
+		SessionToken:    p.sessionToken,
+		Source:          "SecureStaticCredentials",
+	}
+
+	// Immediately clear the provider's stored credentials after retrieval
+	defer p.secureWipe()
+
+	return creds, nil
+}
+
+// secureWipe overwrites credential fields with random data
+func (p *secureCredentialProvider) secureWipe() {
+	p.overwriteString(&p.accessKeyID)
+	p.overwriteString(&p.secretAccessKey)
+	p.overwriteString(&p.sessionToken)
+}
+
+// overwriteString securely overwrites a string with random data
+func (p *secureCredentialProvider) overwriteString(s *string) {
+	if s == nil || len(*s) == 0 {
+		return
+	}
+
+	randomData := make([]byte, len(*s))
+	if _, err := rand.Read(randomData); err != nil {
+		// Fallback to zeros if random generation fails
+		for i := range randomData {
+			randomData[i] = 0
+		}
+	}
+	*s = string(randomData)
+	*s = "" // Clear after overwrite
+}
+
 // NewBroker creates a new AWS SQS/SNS broker instance with the specified configuration.
 // It validates the configuration and creates AWS service clients based on the mode (sqs/sns).
 // Returns an error if configuration is invalid or AWS client creation fails.
@@ -44,14 +91,17 @@ func NewBroker(config *Config) (*Broker, error) {
 
 	ctx := context.Background()
 
-	// Create AWS config
+	// Create secure credential provider that auto-wipes credentials
+	credProvider := &secureCredentialProvider{
+		accessKeyID:     config.AccessKeyID,
+		secretAccessKey: config.SecretAccessKey,
+		sessionToken:    config.SessionToken,
+	}
+
+	// Create AWS config with secure credential provider
 	awsConfig, err := awsConfig.LoadDefaultConfig(ctx,
 		awsConfig.WithRegion(config.Region),
-		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			config.AccessKeyID,
-			config.SecretAccessKey,
-			config.SessionToken,
-		)),
+		awsConfig.WithCredentialsProvider(aws.CredentialsProviderFunc(credProvider.Retrieve)),
 	)
 	if err != nil {
 		return nil, errors.ConnectionError("failed to load AWS config", err)
@@ -89,14 +139,17 @@ func NewSecureBroker(secureConfig *SecureConfig) (*Broker, error) {
 
 	ctx := context.Background()
 
-	// Create AWS config with decrypted credentials
+	// Create secure credential provider for decrypted credentials
+	credProvider := &secureCredentialProvider{
+		accessKeyID:     config.AccessKeyID,
+		secretAccessKey: config.SecretAccessKey,
+		sessionToken:    config.SessionToken,
+	}
+
+	// Create AWS config with secure credential provider
 	awsConfig, err := awsConfig.LoadDefaultConfig(ctx,
 		awsConfig.WithRegion(config.Region),
-		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			config.AccessKeyID,
-			config.SecretAccessKey,
-			config.SessionToken,
-		)),
+		awsConfig.WithCredentialsProvider(aws.CredentialsProviderFunc(credProvider.Retrieve)),
 	)
 	if err != nil {
 		return nil, errors.ConnectionError("failed to load AWS config", err)

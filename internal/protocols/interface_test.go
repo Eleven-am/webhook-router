@@ -1,6 +1,7 @@
 package protocols
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -27,10 +28,8 @@ func (m *MockConfig) GetType() string {
 }
 
 func TestBasicAuth_Apply(t *testing.T) {
-	auth := &BasicAuth{
-		Username: "testuser",
-		Password: "testpass",
-	}
+	auth, err := NewBasicAuth("testuser", "testpass")
+	require.NoError(t, err)
 
 	t.Run("applies to request with existing headers", func(t *testing.T) {
 		request := &Request{
@@ -45,7 +44,7 @@ func TestBasicAuth_Apply(t *testing.T) {
 		authHeader, exists := request.Headers["Authorization"]
 		assert.True(t, exists)
 		assert.Contains(t, authHeader, "Basic ")
-		
+
 		// The basic auth should be properly base64 encoded
 		// "testuser:testpass" base64 encoded is "dGVzdHVzZXI6dGVzdHBhc3M="
 		assert.Contains(t, authHeader, "dGVzdHVzZXI6dGVzdHBhc3M=")
@@ -80,7 +79,8 @@ func TestBasicAuth_Apply(t *testing.T) {
 }
 
 func TestBasicAuth_GetType(t *testing.T) {
-	auth := &BasicAuth{}
+	auth, err := NewBasicAuth("user", "pass")
+	require.NoError(t, err)
 	assert.Equal(t, "basic", auth.GetType())
 }
 
@@ -228,8 +228,8 @@ func TestEncodeBasicAuth(t *testing.T) {
 func TestRequest_Structure(t *testing.T) {
 	// Test that Request struct has expected fields and can be created properly
 	request := &Request{
-		Method:  "POST",
-		URL:     "https://api.example.com/webhook",
+		Method: "POST",
+		URL:    "https://api.example.com/webhook",
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
@@ -271,9 +271,9 @@ func TestIncomingRequest_Structure(t *testing.T) {
 	// Test that IncomingRequest struct has expected fields
 	timestamp := time.Now()
 	incoming := &IncomingRequest{
-		Method:  "POST",
-		URL:     "https://webhook.example.com/endpoint",
-		Path:    "/endpoint",
+		Method: "POST",
+		URL:    "https://webhook.example.com/endpoint",
+		Path:   "/endpoint",
 		Headers: map[string]string{
 			"User-Agent": "TestClient/1.0",
 		},
@@ -299,7 +299,9 @@ func TestAuthConfig_Interface(t *testing.T) {
 	// Test that all auth types implement AuthConfig interface
 	var auth AuthConfig
 
-	auth = &BasicAuth{Username: "user", Password: "pass"}
+	basicAuth, err := NewBasicAuth("user", "pass")
+	require.NoError(t, err)
+	auth = basicAuth
 	assert.Equal(t, "basic", auth.GetType())
 
 	auth = &BearerToken{Token: "token"}
@@ -313,10 +315,10 @@ func TestProtocolConfig_Interface(t *testing.T) {
 	// Test that protocol configs would implement ProtocolConfig interface
 	// This is tested more thoroughly in individual protocol tests
 	// but we can verify the interface structure here
-	
+
 	// The interface should have these methods
 	var config ProtocolConfig
-	
+
 	// This is mainly a compile-time check
 	_ = config // Avoid unused variable warning
 }
@@ -324,7 +326,7 @@ func TestProtocolConfig_Interface(t *testing.T) {
 func TestProtocol_Interface(t *testing.T) {
 	// Test that Protocol interface has expected methods
 	// This is mainly a compile-time check that the interface is well-defined
-	
+
 	// This test ensures the interface is properly defined
 	// We're just checking that the interface type exists
 	var iface interface{} = (*Protocol)(nil)
@@ -354,13 +356,11 @@ func TestRequestHandler_Type(t *testing.T) {
 // Test edge cases and error scenarios
 
 func TestBasicAuth_EmptyCredentials(t *testing.T) {
-	auth := &BasicAuth{
-		Username: "",
-		Password: "",
-	}
+	auth, err := NewBasicAuth("", "")
+	require.NoError(t, err)
 
 	request := &Request{}
-	err := auth.Apply(request)
+	err = auth.Apply(request)
 	require.NoError(t, err)
 
 	authHeader := request.Headers["Authorization"]
@@ -397,9 +397,9 @@ func TestAPIKey_EmptyKey(t *testing.T) {
 // Benchmark tests
 
 func BenchmarkBasicAuth_Apply(b *testing.B) {
-	auth := &BasicAuth{
-		Username: "user",
-		Password: "password",
+	auth, err := NewBasicAuth("user", "password")
+	if err != nil {
+		b.Fatal(err)
 	}
 
 	request := &Request{}
@@ -435,4 +435,133 @@ func BenchmarkAPIKey_Apply(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = auth.Apply(request)
 	}
+}
+
+// OAuth2 Tests
+
+// MockOAuth2TokenProvider for testing
+type MockOAuth2TokenProvider struct {
+	token *OAuth2Token
+	err   error
+}
+
+func (m *MockOAuth2TokenProvider) GetToken(ctx context.Context, serviceID string) (*OAuth2Token, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.token, nil
+}
+
+func TestOAuth2_Apply(t *testing.T) {
+	token := &OAuth2Token{
+		AccessToken: "test-access-token",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+
+	provider := &MockOAuth2TokenProvider{token: token}
+	auth := NewOAuth2("test-service", provider)
+
+	t.Run("applies OAuth2 token to request", func(t *testing.T) {
+		request := &Request{
+			Method: "GET",
+			URL:    "https://api.example.com",
+		}
+
+		err := auth.Apply(request)
+		require.NoError(t, err)
+
+		assert.NotNil(t, request.Headers)
+		authHeader := request.Headers["Authorization"]
+		assert.Equal(t, "Bearer test-access-token", authHeader)
+	})
+
+	t.Run("applies to request with existing headers", func(t *testing.T) {
+		request := &Request{
+			Method: "GET",
+			URL:    "https://api.example.com",
+			Headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+		}
+
+		err := auth.Apply(request)
+		require.NoError(t, err)
+
+		authHeader := request.Headers["Authorization"]
+		assert.Equal(t, "Bearer test-access-token", authHeader)
+		assert.Equal(t, "application/json", request.Headers["Content-Type"])
+	})
+
+	t.Run("handles token without type", func(t *testing.T) {
+		tokenWithoutType := &OAuth2Token{
+			AccessToken: "test-token",
+			TokenType:   "", // Empty token type
+			Expiry:      time.Now().Add(time.Hour),
+		}
+
+		providerWithoutType := &MockOAuth2TokenProvider{token: tokenWithoutType}
+		authWithoutType := NewOAuth2("test-service", providerWithoutType)
+
+		request := &Request{}
+		err := authWithoutType.Apply(request)
+		require.NoError(t, err)
+
+		authHeader := request.Headers["Authorization"]
+		assert.Equal(t, "Bearer test-token", authHeader) // Should default to Bearer
+	})
+}
+
+func TestOAuth2_Apply_Errors(t *testing.T) {
+	t.Run("returns error when token provider is nil", func(t *testing.T) {
+		auth := &OAuth2{
+			ServiceID:     "test-service",
+			TokenProvider: nil,
+		}
+
+		request := &Request{}
+		err := auth.Apply(request)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "OAuth2 token provider not configured")
+	})
+
+	t.Run("returns error when token provider fails", func(t *testing.T) {
+		provider := &MockOAuth2TokenProvider{
+			err: assert.AnError,
+		}
+		auth := NewOAuth2("test-service", provider)
+
+		request := &Request{}
+		err := auth.Apply(request)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to get OAuth2 token")
+	})
+}
+
+func TestOAuth2_GetType(t *testing.T) {
+	auth := NewOAuth2("test-service", &MockOAuth2TokenProvider{})
+	assert.Equal(t, "oauth2", auth.GetType())
+}
+
+func TestNewBasicAuth_SecureStorage(t *testing.T) {
+	auth, err := NewBasicAuth("testuser", "secretpassword")
+	require.NoError(t, err)
+
+	// Verify password is encrypted (not stored in plaintext)
+	assert.NotEmpty(t, auth.encryptedPassword)
+	assert.NotEmpty(t, auth.passwordNonce)
+	assert.NotEmpty(t, auth.encryptionKey)
+
+	// Verify we can retrieve the password
+	password, err := auth.GetPassword()
+	require.NoError(t, err)
+	assert.Equal(t, "secretpassword", password)
+
+	// Verify Apply still works
+	request := &Request{}
+	err = auth.Apply(request)
+	require.NoError(t, err)
+
+	authHeader := request.Headers["Authorization"]
+	assert.Contains(t, authHeader, "Basic ")
 }

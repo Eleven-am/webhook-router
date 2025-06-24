@@ -8,11 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 	"webhook-router/internal/brokers"
-	"webhook-router/internal/brokers/aws"
-	"webhook-router/internal/brokers/gcp"
-	"webhook-router/internal/brokers/kafka"
-	"webhook-router/internal/brokers/rabbitmq"
-	"webhook-router/internal/brokers/redis"
+	"webhook-router/internal/common/errors"
+	"webhook-router/internal/common/logging"
 	"webhook-router/internal/storage"
 )
 
@@ -62,7 +59,7 @@ func (r *refCountedBroker) Close() error {
 
 // Manager manages broker instances and their DLQs with lazy loading
 type Manager struct {
-	brokers         map[int]*brokerEntry
+	brokers         map[string]*brokerEntry
 	factories       map[string]brokers.BrokerFactory
 	storage         storage.Storage
 	mu              sync.RWMutex
@@ -74,7 +71,7 @@ type Manager struct {
 // NewManager creates a new broker manager with lazy loading
 func NewManager(storage storage.Storage) *Manager {
 	m := &Manager{
-		brokers:         make(map[int]*brokerEntry),
+		brokers:         make(map[string]*brokerEntry),
 		factories:       make(map[string]brokers.BrokerFactory),
 		storage:         storage,
 		maxIdle:         5 * time.Minute, // Brokers idle for 5 minutes are cleaned up
@@ -114,12 +111,14 @@ func (m *Manager) cleanupIdleBrokers() {
 		if now.Sub(entry.lastUsed) > m.maxIdle && atomic.LoadInt32(&entry.refCount) == 0 {
 			// Close the broker
 			if err := entry.broker.Close(); err != nil {
-				fmt.Printf("Error closing idle broker %d: %v\n", id, err)
+				logging.Warn("Error closing idle broker",
+					logging.Field{"broker_id", id},
+					logging.Field{"error", err})
 			}
 
 			// Remove from map
 			delete(m.brokers, id)
-			fmt.Printf("Cleaned up idle broker %d\n", id)
+			logging.Info("Cleaned up idle broker", logging.Field{"broker_id", id})
 		}
 	}
 }
@@ -130,7 +129,7 @@ func (m *Manager) RegisterFactory(brokerType string, factory brokers.BrokerFacto
 	defer m.mu.Unlock()
 
 	if _, exists := m.factories[brokerType]; exists {
-		return fmt.Errorf("factory for broker type %s already registered", brokerType)
+		return errors.ValidationError(fmt.Sprintf("factory for broker type %s already registered", brokerType))
 	}
 
 	m.factories[brokerType] = factory
@@ -138,7 +137,7 @@ func (m *Manager) RegisterFactory(brokerType string, factory brokers.BrokerFacto
 }
 
 // GetBroker returns a broker instance by ID, loading it if necessary
-func (m *Manager) GetBroker(brokerID int) (brokers.Broker, error) {
+func (m *Manager) GetBroker(brokerID string) (brokers.Broker, error) {
 	// First check if already loaded
 	m.mu.RLock()
 	entry, exists := m.brokers[brokerID]
@@ -156,15 +155,15 @@ func (m *Manager) GetBroker(brokerID int) (brokers.Broker, error) {
 }
 
 // loadBroker loads a broker from a database and creates instance
-func (m *Manager) loadBroker(brokerID int) (brokers.Broker, error) {
+func (m *Manager) loadBroker(brokerID string) (brokers.Broker, error) {
 	// Get config from a database
 	config, err := m.storage.GetBroker(brokerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get broker config: %w", err)
+		return nil, errors.InternalError("failed to get broker config", err)
 	}
 
 	if !config.Active {
-		return nil, fmt.Errorf("broker %d is not active", brokerID)
+		return nil, errors.ConfigError(fmt.Sprintf("broker %s is not active", brokerID))
 	}
 
 	// Create the broker using AddBroker logic
@@ -180,31 +179,31 @@ func (m *Manager) loadBroker(brokerID int) (brokers.Broker, error) {
 	// Get factory for a broker type
 	factory, ok := m.factories[config.Type]
 	if !ok {
-		return nil, fmt.Errorf("unknown broker type: %s", config.Type)
+		return nil, errors.ConfigError(fmt.Sprintf("unknown broker type: %s", config.Type))
 	}
 
 	// Parse the config
 	configJSON, err := json.Marshal(config.Config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal broker config: %w", err)
+		return nil, errors.InternalError("failed to marshal broker config", err)
 	}
 
 	brokerConfig, err := m.parseBrokerConfig(config.Type, string(configJSON))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse broker config: %w", err)
+		return nil, errors.ConfigError(fmt.Sprintf("failed to parse broker config: %v", err))
 	}
 
 	// Create the broker instance
 	broker, err := factory.Create(brokerConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create broker: %w", err)
+		return nil, errors.InternalError("failed to create broker", err)
 	}
 
 	// Connect the broker
 	if err := broker.Connect(brokerConfig); err != nil {
 		// Clean up the broker if connection fails
 		broker.Close()
-		return nil, fmt.Errorf("failed to connect broker: %w", err)
+		return nil, errors.ConnectionError("failed to connect broker", err)
 	}
 
 	// Create entry
@@ -218,8 +217,8 @@ func (m *Manager) loadBroker(brokerID int) (brokers.Broker, error) {
 	if config.DlqEnabled != nil && *config.DlqEnabled && config.DlqBrokerID != nil {
 		// Note: DLQ broker will be loaded lazily when needed
 		entry.dlq = brokers.NewBrokerDLQ(
-			int(config.ID),
-			int(*config.DlqBrokerID),
+			config.ID,
+			*config.DlqBrokerID,
 			nil, // DLQ broker will be loaded on demand
 			m.storage,
 		)
@@ -232,7 +231,7 @@ func (m *Manager) loadBroker(brokerID int) (brokers.Broker, error) {
 }
 
 // GetDLQ returns a broker's DLQ if configured
-func (m *Manager) GetDLQ(brokerID int) (*brokers.BrokerDLQ, error) {
+func (m *Manager) GetDLQ(brokerID string) (*brokers.BrokerDLQ, error) {
 	m.mu.RLock()
 	entry, exists := m.brokers[brokerID]
 	m.mu.RUnlock()
@@ -253,14 +252,14 @@ func (m *Manager) GetDLQ(brokerID int) (*brokers.BrokerDLQ, error) {
 	}
 
 	if entry.dlq == nil {
-		return nil, fmt.Errorf("broker %d does not have DLQ configured", brokerID)
+		return nil, errors.NotFoundError(fmt.Sprintf("broker %s does not have DLQ configured", brokerID))
 	}
 
 	return entry.dlq, nil
 }
 
 // PublishWithFallback publishes a message and falls back to DLQ on failure
-func (m *Manager) PublishWithFallback(brokerID, routeID int, message *brokers.Message) error {
+func (m *Manager) PublishWithFallback(brokerID, routeID string, message *brokers.Message) error {
 	broker, err := m.GetBroker(brokerID)
 	if err != nil {
 		return err
@@ -274,7 +273,7 @@ func (m *Manager) PublishWithFallback(brokerID, routeID int, message *brokers.Me
 			// Send to DLQ
 			if dlqErr := dlq.SendToFail(routeID, message, err); dlqErr != nil {
 				// Log DLQ error but return original error
-				fmt.Printf("Failed to send to DLQ: %v\n", dlqErr)
+				logging.Warn("Failed to send to DLQ", logging.Field{"error", dlqErr})
 			}
 		}
 		return err
@@ -284,7 +283,7 @@ func (m *Manager) PublishWithFallback(brokerID, routeID int, message *brokers.Me
 }
 
 // SubscribeToTopic sets up a subscription on a broker
-func (m *Manager) SubscribeToTopic(ctx context.Context, brokerID int, topic string, handler brokers.MessageHandler) error {
+func (m *Manager) SubscribeToTopic(ctx context.Context, brokerID string, topic string, handler brokers.MessageHandler) error {
 	broker, err := m.GetBroker(brokerID)
 	if err != nil {
 		return err
@@ -294,7 +293,7 @@ func (m *Manager) SubscribeToTopic(ctx context.Context, brokerID int, topic stri
 }
 
 // HealthCheck checks the health of a specific broker
-func (m *Manager) HealthCheck(brokerID int) error {
+func (m *Manager) HealthCheck(brokerID string) error {
 	broker, err := m.GetBroker(brokerID)
 	if err != nil {
 		return err
@@ -304,11 +303,11 @@ func (m *Manager) HealthCheck(brokerID int) error {
 }
 
 // HealthCheckAll checks the health of all brokers
-func (m *Manager) HealthCheckAll() map[int]error {
+func (m *Manager) HealthCheckAll() map[string]error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	results := make(map[int]error)
+	results := make(map[string]error)
 	for id, entry := range m.brokers {
 		results[id] = entry.broker.Health()
 	}
@@ -329,18 +328,20 @@ func (m *Manager) GetDLQStatistics() ([]map[string]interface{}, error) {
 			stat, err := entry.dlq.GetStatistics()
 			if err != nil {
 				// Log error but continue
-				fmt.Printf("Failed to get DLQ stats for broker %d: %v\n", brokerID, err)
+				logging.Warn("Failed to get DLQ stats",
+					logging.Field{"broker_id", brokerID},
+					logging.Field{"error", err})
 				continue
 			}
 			// Convert DLQStats to map[string]interface{}
 			statMap := map[string]interface{}{
-				"broker_id":          brokerID,
-				"total_messages":     stat.TotalMessages,
-				"pending_retries":    stat.PendingRetries,
-				"abandoned_messages": stat.AbandonedMessages,
-				"oldest_message":     stat.OldestMessage,
-				"messages_by_route":  stat.MessagesByRoute,
-				"messages_by_error":  stat.MessagesByError,
+				"broker_id":           brokerID,
+				"total_messages":      stat.TotalMessages,
+				"pending_retries":     stat.PendingRetries,
+				"abandoned_messages":  stat.AbandonedMessages,
+				"oldest_message":      stat.OldestMessage,
+				"messages_by_trigger": stat.MessagesByTrigger,
+				"messages_by_error":   stat.MessagesByError,
 			}
 			stats = append(stats, statMap)
 		}
@@ -368,14 +369,14 @@ func (m *Manager) RetryDLQMessages() error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("errors retrying DLQ messages: %v", errs)
+		return errors.InternalError(fmt.Sprintf("errors retrying DLQ messages: %v", errs), nil)
 	}
 
 	return nil
 }
 
 // RemoveBroker removes a broker instance
-func (m *Manager) RemoveBroker(brokerID int) error {
+func (m *Manager) RemoveBroker(brokerID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -383,11 +384,11 @@ func (m *Manager) RemoveBroker(brokerID int) error {
 	if entry, ok := m.brokers[brokerID]; ok {
 		// Only remove if not in use
 		if atomic.LoadInt32(&entry.refCount) > 0 {
-			return fmt.Errorf("cannot remove broker %d: still in use", brokerID)
+			return errors.ValidationError(fmt.Sprintf("cannot remove broker %s: still in use", brokerID))
 		}
 
 		if err := entry.broker.Close(); err != nil {
-			return fmt.Errorf("failed to close broker: %w", err)
+			return errors.InternalError("failed to close broker", err)
 		}
 		delete(m.brokers, brokerID)
 	}
@@ -408,59 +409,32 @@ func (m *Manager) Close() error {
 	// Close all brokers
 	for id, entry := range m.brokers {
 		if err := entry.broker.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to close broker %d: %w", id, err))
+			errs = append(errs, errors.InternalError(fmt.Sprintf("failed to close broker %s", id), err))
 		}
 	}
 
 	// Clear map
-	m.brokers = make(map[int]*brokerEntry)
+	m.brokers = make(map[string]*brokerEntry)
 
 	if len(errs) > 0 {
-		return fmt.Errorf("errors closing brokers: %v", errs)
+		return errors.InternalError(fmt.Sprintf("errors closing brokers: %v", errs), nil)
 	}
 
 	return nil
 }
 
-// parseBrokerConfig parses a broker configuration based on type
+// parseBrokerConfig parses a broker configuration using the factory pattern
 func (m *Manager) parseBrokerConfig(brokerType string, configJSON string) (brokers.BrokerConfig, error) {
-	switch brokerType {
-	case "rabbitmq":
-		var config rabbitmq.Config
-		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
-			return nil, fmt.Errorf("failed to parse RabbitMQ config: %w", err)
-		}
-		return &config, nil
-
-	case "kafka":
-		var config kafka.Config
-		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
-			return nil, fmt.Errorf("failed to parse Kafka config: %w", err)
-		}
-		return &config, nil
-
-	case "redis":
-		var config redis.Config
-		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
-			return nil, fmt.Errorf("failed to parse Redis config: %w", err)
-		}
-		return &config, nil
-
-	case "aws":
-		var config aws.Config
-		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
-			return nil, fmt.Errorf("failed to parse AWS config: %w", err)
-		}
-		return &config, nil
-
-	case "gcp":
-		var config gcp.Config
-		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
-			return nil, fmt.Errorf("failed to parse GCP config: %w", err)
-		}
-		return &config, nil
-
-	default:
-		return nil, fmt.Errorf("unknown broker type: %s", brokerType)
+	factory, ok := m.factories[brokerType]
+	if !ok {
+		return nil, errors.ConfigError(fmt.Sprintf("unknown broker type: %s", brokerType))
 	}
+
+	// Use the factory to parse the config
+	config, err := factory.ParseConfig(configJSON)
+	if err != nil {
+		return nil, errors.ConfigError(fmt.Sprintf("failed to parse %s config: %v", brokerType, err))
+	}
+
+	return config, nil
 }

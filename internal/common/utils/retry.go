@@ -14,20 +14,20 @@ import (
 // backoff strategy, jitter, and error filtering.
 type RetryConfig struct {
 	// MaxAttempts is the maximum number of attempts (including the initial attempt)
-	MaxAttempts     int
-	
+	MaxAttempts int
+
 	// InitialDelay is the delay before the first retry
-	InitialDelay    time.Duration
-	
+	InitialDelay time.Duration
+
 	// MaxDelay is the maximum delay between retries (caps exponential growth)
-	MaxDelay        time.Duration
-	
+	MaxDelay time.Duration
+
 	// BackoffFactor is the multiplier for exponential backoff (e.g., 2.0 doubles delay)
-	BackoffFactor   float64
-	
+	BackoffFactor float64
+
 	// JitterFactor adds randomness to delays (0.0-1.0, where 0.1 = 10% jitter)
-	JitterFactor    float64
-	
+	JitterFactor float64
+
 	// RetryableErrors determines which errors should trigger a retry.
 	// If nil, all errors are considered retryable.
 	RetryableErrors func(error) bool
@@ -79,25 +79,25 @@ func DefaultRetryConfig() RetryConfig {
 func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) error {
 	var lastErr error
 	delay := config.InitialDelay
-	
+
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
 		// Execute the function
 		if err := fn(); err == nil {
 			return nil
 		} else {
 			lastErr = err
-			
+
 			// Check if error is retryable
 			if config.RetryableErrors != nil && !config.RetryableErrors(err) {
 				return err
 			}
-			
+
 			// Check if this was the last attempt
 			if attempt == config.MaxAttempts {
 				break
 			}
 		}
-		
+
 		// Wait before next attempt
 		select {
 		case <-ctx.Done():
@@ -108,7 +108,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 			if delay > config.MaxDelay {
 				delay = config.MaxDelay
 			}
-			
+
 			// Add jitter if configured
 			if config.JitterFactor > 0 {
 				jitter := time.Duration(float64(delay) * config.JitterFactor)
@@ -116,7 +116,7 @@ func RetryWithBackoff(ctx context.Context, config RetryConfig, fn func() error) 
 			}
 		}
 	}
-	
+
 	return errors.InternalError("max retries exceeded", lastErr)
 }
 
@@ -144,8 +144,8 @@ func Retry(attempts int, delay time.Duration, fn func() error) error {
 
 // randomInt64n returns a cryptographically secure random int64 in the range [0, n).
 //
-// Uses crypto/rand for secure random number generation with fallback to
-// time-based randomness if crypto/rand fails. Handles edge cases gracefully.
+// Uses crypto/rand for secure random number generation. If crypto/rand fails,
+// the function panics rather than falling back to predictable randomness.
 //
 // Parameters:
 //   - n: Upper bound (exclusive). Must be positive for meaningful results.
@@ -155,26 +155,26 @@ func Retry(attempts int, delay time.Duration, fn func() error) error {
 //   - Random int64 in [0, n) range
 //
 // Security note: This function is used for jitter in retry operations,
-// so cryptographically secure randomness helps prevent timing-based attacks.
+// so cryptographically secure randomness is essential to prevent timing-based attacks.
 func randomInt64n(n int64) int64 {
 	if n <= 0 {
 		return 0
 	}
-	
-	// Use crypto/rand for secure randomness
+
+	// Use crypto/rand for secure randomness - no fallback to predictable values
 	bytes := make([]byte, 8)
 	if _, err := rand.Read(bytes); err != nil {
-		// Fallback to time-based randomness if crypto/rand fails
-		return time.Now().UnixNano() % n
+		// Crypto/rand failure indicates serious system issues - fail fast
+		panic("crypto/rand failed: system random number generator unavailable")
 	}
-	
+
 	// Convert bytes to int64 and ensure positive
 	val := int64(bytes[0])<<56 | int64(bytes[1])<<48 | int64(bytes[2])<<40 | int64(bytes[3])<<32 |
 		int64(bytes[4])<<24 | int64(bytes[5])<<16 | int64(bytes[6])<<8 | int64(bytes[7])
-	
+
 	if val < 0 {
 		val = -val
 	}
-	
+
 	return val % n
 }

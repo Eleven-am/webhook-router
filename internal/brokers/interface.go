@@ -127,6 +127,10 @@ type BrokerFactory interface {
 	// Returns an error if the broker cannot be created.
 	Create(config BrokerConfig) (Broker, error)
 
+	// ParseConfig parses a JSON configuration string into a BrokerConfig.
+	// Returns an error if the configuration cannot be parsed.
+	ParseConfig(configJSON string) (BrokerConfig, error)
+
 	// GetType returns the broker type that this factory creates.
 	GetType() string
 }
@@ -169,16 +173,16 @@ type FailedMessage struct {
 	FirstFailure    time.Time
 	LastFailure     time.Time
 	NextRetry       time.Time
-	RouteID         int
-	TriggerID       *int
-	PipelineID      *int
+	RouteID         string
+	TriggerID       *string
+	PipelineID      *string
 	Metadata        map[string]interface{}
 }
 
 // MessageFilter for querying DLQ messages
 type MessageFilter struct {
-	RouteID    *int
-	TriggerID  *int
+	RouteID    *string
+	TriggerID  *string
 	MaxAge     time.Duration
 	MaxRetries int
 	Status     string // "pending", "retrying", "abandoned"
@@ -190,7 +194,7 @@ type DLQStats struct {
 	PendingRetries    int
 	AbandonedMessages int
 	OldestMessage     time.Time
-	MessagesByRoute   map[int]int
+	MessagesByTrigger map[string]int
 	MessagesByError   map[string]int
 }
 

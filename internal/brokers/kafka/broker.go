@@ -20,8 +20,8 @@ import (
 // consumer group support and configurable security protocols.
 type Broker struct {
 	*base.BaseBroker
-	producer         *kafka.Producer
-	consumer         *kafka.Consumer
+	producer          *kafka.Producer
+	consumer          *kafka.Consumer
 	connectionManager *base.ConnectionManager
 }
 
@@ -34,13 +34,23 @@ func NewBroker(config *Config) (*Broker, error) {
 		return nil, err
 	}
 
+	// Validate that we have brokers before attempting connection
+	if len(config.Brokers) == 0 {
+		return nil, errors.ConfigError("Kafka brokers are required")
+	}
+
 	// Build Kafka configuration map
 	kafkaConfig := kafka.ConfigMap{
-		"bootstrap.servers":  strings.Join(config.Brokers, ","),
-		"client.id":          config.ClientID,
-		"group.id":           config.GroupID,
-		"session.timeout.ms": 6000,
-		"auto.offset.reset":  "earliest",
+		"bootstrap.servers":              strings.Join(config.Brokers, ","),
+		"client.id":                      config.ClientID,
+		"group.id":                       config.GroupID,
+		"session.timeout.ms":             6000,
+		"auto.offset.reset":              "earliest",
+		"socket.timeout.ms":              1000, // 1 second timeout
+		"api.version.request.timeout.ms": 1000,
+		"metadata.max.age.ms":            1000, // Fast metadata timeout
+		"reconnect.backoff.ms":           100,  // Fast reconnect
+		"reconnect.backoff.max.ms":       1000, // Max backoff
 	}
 
 	// Add security configuration
@@ -76,7 +86,7 @@ func NewBroker(config *Config) (*Broker, error) {
 func (b *Broker) Connect(config brokers.BrokerConfig) error {
 	return b.connectionManager.ValidateAndConnect(config, (*Config)(nil), func(validatedConfig brokers.BrokerConfig) error {
 		kafkaConfig := validatedConfig.(*Config)
-		
+
 		// Close existing connections
 		if b.producer != nil {
 			b.producer.Close()
@@ -85,13 +95,23 @@ func (b *Broker) Connect(config brokers.BrokerConfig) error {
 			b.consumer.Close()
 		}
 
+		// Validate brokers
+		if len(kafkaConfig.Brokers) == 0 {
+			return errors.ConfigError("Kafka brokers are required")
+		}
+
 		// Build Kafka configuration map
 		kafkaConfigMap := kafka.ConfigMap{
-			"bootstrap.servers":  strings.Join(kafkaConfig.Brokers, ","),
-			"client.id":          kafkaConfig.ClientID,
-			"group.id":           kafkaConfig.GroupID,
-			"session.timeout.ms": 6000,
-			"auto.offset.reset":  "earliest",
+			"bootstrap.servers":              strings.Join(kafkaConfig.Brokers, ","),
+			"client.id":                      kafkaConfig.ClientID,
+			"group.id":                       kafkaConfig.GroupID,
+			"session.timeout.ms":             6000,
+			"auto.offset.reset":              "earliest",
+			"socket.timeout.ms":              1000, // 1 second timeout
+			"api.version.request.timeout.ms": 1000,
+			"metadata.max.age.ms":            1000, // Fast metadata timeout
+			"reconnect.backoff.ms":           100,  // Fast reconnect
+			"reconnect.backoff.max.ms":       1000, // Max backoff
 		}
 
 		// Add security configuration
@@ -164,7 +184,7 @@ func (b *Broker) Publish(message *brokers.Message) error {
 	deliveryChan := make(chan kafka.Event)
 	err := b.producer.Produce(kafkaMsg, deliveryChan)
 	if err != nil {
-		return fmt.Errorf("failed to produce message: %w", err)
+		return errors.InternalError("failed to produce message", err)
 	}
 
 	// Wait for delivery confirmation
@@ -172,7 +192,7 @@ func (b *Broker) Publish(message *brokers.Message) error {
 	m := e.(*kafka.Message)
 
 	if m.TopicPartition.Error != nil {
-		return fmt.Errorf("delivery failed: %w", m.TopicPartition.Error)
+		return errors.InternalError("delivery failed", m.TopicPartition.Error)
 	}
 
 	b.GetLogger().Info("Message delivered to Kafka",
@@ -219,7 +239,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 	// Create consumer
 	consumer, err := kafka.NewConsumer(&kafkaConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create Kafka consumer: %w", err)
+		return errors.InternalError("failed to create Kafka consumer", err)
 	}
 
 	b.consumer = consumer
@@ -227,7 +247,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 	// Subscribe to topic
 	err = b.consumer.SubscribeTopics([]string{topic}, nil)
 	if err != nil {
-		return fmt.Errorf("failed to subscribe to topic %s: %w", topic, err)
+		return errors.InternalError("failed to subscribe to topic "+topic, err)
 	}
 
 	// Create wrapped handler with standardized error logging
@@ -281,7 +301,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 				incomingMsg := base.ConvertToIncomingMessage(b.GetBrokerInfo(), messageData)
 
 				// Handle message with standardized error logging
-				messageHandler.Handle(incomingMsg, 
+				messageHandler.Handle(incomingMsg,
 					logging.Field{"partition", msg.TopicPartition.Partition},
 					logging.Field{"offset", msg.TopicPartition.Offset},
 				)
@@ -298,18 +318,18 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 // Returns an error if the broker is not connected or the cluster is unreachable.
 func (b *Broker) Health() error {
 	if b.producer == nil {
-		return fmt.Errorf("Kafka producer not initialized")
+		return errors.ConfigError("Kafka producer not initialized")
 	}
 
 	// Get metadata to check broker connectivity
 	config := b.GetConfig().(*Config)
 	metadata, err := b.producer.GetMetadata(nil, false, int(config.Timeout.Milliseconds()))
 	if err != nil {
-		return fmt.Errorf("failed to get Kafka metadata: %w", err)
+		return errors.ConnectionError("failed to get Kafka metadata", err)
 	}
 
 	if len(metadata.Brokers) == 0 {
-		return fmt.Errorf("no Kafka brokers available")
+		return errors.ConnectionError("no Kafka brokers available", nil)
 	}
 
 	return nil
@@ -334,7 +354,7 @@ func (b *Broker) Close() error {
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("errors closing Kafka broker: %v", errs)
+		return errors.InternalError("errors closing Kafka broker", nil).WithContext("errors", errs)
 	}
 
 	return nil

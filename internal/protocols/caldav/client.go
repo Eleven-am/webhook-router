@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-	
+
 	commonhttp "webhook-router/internal/common/http"
 	"webhook-router/internal/protocols"
 )
@@ -19,10 +19,10 @@ import (
 type Client struct {
 	// config holds the CalDAV server configuration
 	config *Config
-	
+
 	// httpClient is the underlying HTTP client for CalDAV requests
 	httpClient *http.Client
-	
+
 	// name is the protocol identifier
 	name string
 }
@@ -32,13 +32,13 @@ type Client struct {
 type Config struct {
 	// URL is the CalDAV server endpoint (e.g., https://caldav.example.com/dav/)
 	URL string `json:"url"`
-	
+
 	// Username for CalDAV authentication
 	Username string `json:"username"`
-	
+
 	// Password for CalDAV authentication
 	Password string `json:"password"`
-	
+
 	// Timeout specifies the maximum duration for CalDAV requests
 	Timeout time.Duration `json:"timeout"`
 }
@@ -48,11 +48,11 @@ func NewClient(config *Config) (*Client, error) {
 	if config.Timeout <= 0 {
 		config.Timeout = 30 * time.Second
 	}
-	
+
 	return &Client{
-		config: config,
+		config:     config,
 		httpClient: commonhttp.NewHTTPClientWithTimeout(config.Timeout),
-		name: "caldav",
+		name:       "caldav",
 	}, nil
 }
 
@@ -67,17 +67,17 @@ func (c *Client) Connect(config protocols.ProtocolConfig) error {
 	if !ok {
 		return fmt.Errorf("invalid config type for CalDAV protocol")
 	}
-	
+
 	c.config = caldavConfig
-	
+
 	// Test connection with OPTIONS request
 	req, err := http.NewRequest("OPTIONS", caldavConfig.URL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	req.SetBasicAuth(caldavConfig.Username, caldavConfig.Password)
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("connection test failed: %w", err)
@@ -85,15 +85,15 @@ func (c *Client) Connect(config protocols.ProtocolConfig) error {
 	defer func() {
 		_ = resp.Body.Close() // Ignore close error in defer
 	}()
-	
+
 	if resp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("authentication failed")
 	}
-	
+
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned error: %d", resp.StatusCode)
 	}
-	
+
 	return nil
 }
 
@@ -118,15 +118,15 @@ func (c *Config) Validate() error {
 	if c.URL == "" {
 		return fmt.Errorf("URL is required")
 	}
-	
+
 	if c.Username == "" {
 		return fmt.Errorf("username is required")
 	}
-	
+
 	if c.Password == "" {
 		return fmt.Errorf("password is required")
 	}
-	
+
 	return nil
 }
 
@@ -144,7 +144,7 @@ func (f *Factory) Create(config protocols.ProtocolConfig) (protocols.Protocol, e
 	if !ok {
 		return nil, fmt.Errorf("invalid config type for CalDAV protocol")
 	}
-	
+
 	return NewClient(caldavConfig)
 }
 

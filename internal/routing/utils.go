@@ -48,13 +48,13 @@ func ValidateInSet(value string, validValues []string, fieldName string) error {
 	if value == "" {
 		return nil // Allow empty values unless required
 	}
-	
+
 	for _, valid := range validValues {
 		if value == valid {
 			return nil
 		}
 	}
-	
+
 	return ValidationError{
 		Field:   fieldName,
 		Message: fmt.Sprintf("must be one of: %v", validValues),
@@ -85,7 +85,7 @@ func CopyStringMap(original map[string]string) map[string]string {
 	if original == nil {
 		return nil
 	}
-	
+
 	copy := make(map[string]string, len(original))
 	for k, v := range original {
 		copy[k] = v
@@ -98,7 +98,7 @@ func CopyInterfaceMap(original map[string]interface{}) map[string]interface{} {
 	if original == nil {
 		return nil
 	}
-	
+
 	copy := make(map[string]interface{}, len(original))
 	for k, v := range original {
 		copy[k] = v
@@ -111,7 +111,7 @@ func CopyInt64Map(original map[string]int64) map[string]int64 {
 	if original == nil {
 		return nil
 	}
-	
+
 	copy := make(map[string]int64, len(original))
 	for k, v := range original {
 		copy[k] = v
@@ -124,7 +124,7 @@ func CopyDestinationMetricsMap(original map[string]DestinationMetrics) map[strin
 	if original == nil {
 		return nil
 	}
-	
+
 	copy := make(map[string]DestinationMetrics, len(original))
 	for k, v := range original {
 		copy[k] = v

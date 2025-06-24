@@ -22,12 +22,12 @@ func NewFactory[C any, T any](typeName string, creator func(C) (T, error)) *Fact
 // Create creates an instance of T from the provided config
 func (f *Factory[C, T]) Create(config interface{}) (T, error) {
 	var zero T
-	
+
 	typed, ok := config.(C)
 	if !ok {
 		return zero, errors.ConfigError(fmt.Sprintf("invalid config type for %s, expected %T but got %T", f.typeName, typed, config))
 	}
-	
+
 	return f.creator(typed)
 }
 
@@ -60,7 +60,7 @@ func (r *Registry[T]) Register(factory FactoryInterface[T]) error {
 	if _, exists := r.factories[typeName]; exists {
 		return errors.ConfigError(fmt.Sprintf("factory for type %s already registered", typeName))
 	}
-	
+
 	r.factories[typeName] = factory
 	return nil
 }
@@ -68,12 +68,12 @@ func (r *Registry[T]) Register(factory FactoryInterface[T]) error {
 // Create creates an instance using the appropriate factory
 func (r *Registry[T]) Create(typeName string, config interface{}) (T, error) {
 	var zero T
-	
+
 	factory, exists := r.factories[typeName]
 	if !exists {
 		return zero, errors.NotFoundError(fmt.Sprintf("no factory registered for type %s", typeName))
 	}
-	
+
 	return factory.Create(config)
 }
 

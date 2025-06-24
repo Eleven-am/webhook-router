@@ -5,8 +5,9 @@ sql:
     schema: 
       - "./schema/001_initial.sql"
       - "./schema/002_dlq.sql"
-      - "./schema/003_broker_dlq.sql"
-      - "./schema/004_signature_config.sql"
+      - "./schema/003_execution_logs.sql"
+      - "./schema/004_oauth2_services.sql"
+      - "./schema/005_oauth2_grant_type.sql"
     gen:
       go:
         package: "sqlite"
@@ -20,8 +21,9 @@ sql:
     schema: 
       - "./schema/001_initial_postgres.sql"
       - "./schema/002_dlq_postgres.sql"
-      - "./schema/003_broker_dlq_postgres.sql"
-      - "./schema/004_signature_config_postgres.sql"
+      - "./schema/003_execution_logs_postgres.sql"
+      - "./schema/004_oauth2_services_postgres.sql"
+      - "./schema/005_oauth2_grant_type_postgres.sql"
     gen:
       go:
         package: "postgres"

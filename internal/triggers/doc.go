@@ -93,7 +93,7 @@
 //	    )
 //	}
 //
-// 7. Register the factory in main.go:
+// 7. Register the factory in main.go.bak:
 //
 //	manager.RegisterFactory("mytrigger", mytrigger.GetFactory())
 //

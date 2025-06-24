@@ -11,16 +11,16 @@ import (
 // Config represents the configuration for broker event triggers
 type Config struct {
 	triggers.BaseTriggerConfig
-	
+
 	// Broker-specific settings
-	BrokerType     string                 `json:"broker_type"`     // rabbitmq, kafka, redis, aws
-	BrokerConfig   map[string]interface{} `json:"broker_config"`   // Broker connection configuration
-	Topic          string                 `json:"topic"`           // Topic/queue/stream to subscribe to
-	ConsumerGroup  string                 `json:"consumer_group"`  // Consumer group (for Kafka/Redis)
-	RoutingKey     string                 `json:"routing_key"`     // Routing key filter (for RabbitMQ)
-	MessageFilter  MessageFilterConfig    `json:"message_filter"`  // Message filtering
-	Transformation TransformConfig        `json:"transformation"`  // Message transformation
-	ErrorHandling  ErrorHandlingConfig    `json:"error_handling"`  // Error handling
+	BrokerType     string                 `json:"broker_type"`    // rabbitmq, kafka, redis, aws
+	BrokerConfig   map[string]interface{} `json:"broker_config"`  // Broker connection configuration
+	Topic          string                 `json:"topic"`          // Topic/queue/stream to subscribe to
+	ConsumerGroup  string                 `json:"consumer_group"` // Consumer group (for Kafka/Redis)
+	RoutingKey     string                 `json:"routing_key"`    // Routing key filter (for RabbitMQ)
+	MessageFilter  MessageFilterConfig    `json:"message_filter"` // Message filtering
+	Transformation TransformConfig        `json:"transformation"` // Message transformation
+	ErrorHandling  ErrorHandlingConfig    `json:"error_handling"` // Error handling
 }
 
 // MessageFilterConfig defines message filtering rules
@@ -106,36 +106,36 @@ func NewConfig(name string) *Config {
 
 func (c *Config) Validate() error {
 	v := validation.NewValidator()
-	
+
 	// Basic validation
 	v.RequireString(c.Name, "name")
 	v.RequireOneOf(c.BrokerType, []string{"rabbitmq", "kafka", "redis", "aws", "gcp"}, "broker_type")
 	v.RequireString(c.Topic, "topic")
-	
+
 	// Validate broker-specific configuration
 	v.Validate(func() error {
 		return c.validateBrokerConfig()
 	})
-	
+
 	// Validate consumer group for brokers that require it
 	if c.BrokerType == "kafka" || c.BrokerType == "redis" {
 		v.RequireString(c.ConsumerGroup, "consumer_group")
 	}
-	
+
 	// Validate message filter
 	if c.MessageFilter.Enabled {
 		if c.MessageFilter.MaxSize <= 0 {
 			c.MessageFilter.MaxSize = 10 * 1024 * 1024 // 10MB default
 		}
-		
+
 		v.RequireNonNegative(int(c.MessageFilter.MinSize), "message_filter.min_size")
-		
+
 		if c.MessageFilter.MinSize > c.MessageFilter.MaxSize {
 			v.Validate(func() error {
 				return errors.ValidationError("min_size cannot be greater than max_size")
 			})
 		}
-		
+
 		// Validate JSON condition if enabled
 		if c.MessageFilter.JSONCondition.Enabled {
 			v.RequireString(c.MessageFilter.JSONCondition.Path, "json_condition.path")
@@ -149,7 +149,7 @@ func (c *Config) Validate() error {
 			)
 		}
 	}
-	
+
 	// Validate transformation
 	if c.Transformation.Enabled {
 		// Validate extract fields
@@ -163,13 +163,13 @@ func (c *Config) Validate() error {
 			v.Merge(fieldValidator)
 		}
 	}
-	
+
 	// Validate error handling
 	v.RequireNonNegative(c.ErrorHandling.MaxRetries, "error_handling.max_retries")
 	if c.ErrorHandling.RetryDelay <= 0 {
 		c.ErrorHandling.RetryDelay = 30 * time.Second
 	}
-	
+
 	return v.Error()
 }
 
@@ -177,7 +177,7 @@ func (c *Config) validateBrokerConfig() error {
 	if c.BrokerConfig == nil {
 		return errors.ConfigError("broker_config is required")
 	}
-	
+
 	switch c.BrokerType {
 	case "rabbitmq":
 		return c.validateRabbitMQConfig()
@@ -196,13 +196,13 @@ func (c *Config) validateBrokerConfig() error {
 
 func (c *Config) validateRabbitMQConfig() error {
 	v := validation.NewValidatorWithPrefix("broker_config")
-	
+
 	if url, ok := c.BrokerConfig["url"].(string); ok {
 		v.RequireString(url, "url")
 	} else {
 		v.RequireString("", "url")
 	}
-	
+
 	// Exchange is optional but if provided, must be valid
 	if exchange, ok := c.BrokerConfig["exchange"].(string); ok && exchange != "" {
 		if exchangeType, ok := c.BrokerConfig["exchange_type"].(string); ok {
@@ -212,13 +212,13 @@ func (c *Config) validateRabbitMQConfig() error {
 			c.BrokerConfig["exchange_type"] = "topic"
 		}
 	}
-	
+
 	return v.Error()
 }
 
 func (c *Config) validateKafkaConfig() error {
 	v := validation.NewValidatorWithPrefix("broker_config")
-	
+
 	// Check brokers
 	brokers, ok := c.BrokerConfig["brokers"].([]interface{})
 	if !ok || len(brokers) == 0 {
@@ -234,53 +234,53 @@ func (c *Config) validateKafkaConfig() error {
 			}
 		}
 	}
-	
+
 	return v.Error()
 }
 
 func (c *Config) validateRedisConfig() error {
 	v := validation.NewValidatorWithPrefix("broker_config")
-	
+
 	if address, ok := c.BrokerConfig["address"].(string); ok {
 		v.RequireString(address, "address")
 	} else {
 		v.RequireString("", "address")
 	}
-	
+
 	// DB must be a valid number if provided
 	if db, ok := c.BrokerConfig["db"].(float64); ok {
 		v.RequireNonNegative(int(db), "db")
 	}
-	
+
 	return v.Error()
 }
 
 func (c *Config) validateAWSConfig() error {
 	v := validation.NewValidatorWithPrefix("broker_config")
-	
+
 	if region, ok := c.BrokerConfig["region"].(string); ok {
 		v.RequireString(region, "region")
 	} else {
 		v.RequireString("", "region")
 	}
-	
+
 	// Must have either queue_url (SQS) or topic_arn (SNS)
 	queueURL, hasQueue := c.BrokerConfig["queue_url"].(string)
 	topicARN, hasTopic := c.BrokerConfig["topic_arn"].(string)
-	
+
 	if !hasQueue && !hasTopic {
 		v.Validate(func() error {
 			return errors.ConfigError("either queue_url or topic_arn is required")
 		})
 	}
-	
+
 	if hasQueue {
 		v.RequireString(queueURL, "queue_url")
 	}
 	if hasTopic {
 		v.RequireString(topicARN, "topic_arn")
 	}
-	
+
 	return v.Error()
 }
 
@@ -319,6 +319,6 @@ func (c *Config) GetName() string {
 }
 
 // GetID returns the trigger ID (implements base.TriggerConfig)
-func (c *Config) GetID() int {
+func (c *Config) GetID() string {
 	return c.ID
 }

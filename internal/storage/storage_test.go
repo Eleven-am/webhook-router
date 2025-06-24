@@ -26,13 +26,13 @@
 //		DatabaseType: "sqlite",
 //		DatabasePath: "webhook.db",
 //	}
-//	
+//
 //	store, err := storage.NewStorage(cfg)
 //	if err != nil {
 //		log.Fatal(err)
 //	}
 //	defer store.Close()
-//	
+//
 //	// Create a new route
 //	route := &storage.Route{
 //		Name:     "github-webhook",
@@ -40,7 +40,7 @@
 //		Method:   "POST",
 //		Queue:    "github-events",
 //	}
-//	
+//
 //	err = store.CreateRoute(route)
 //	if err != nil {
 //		log.Fatal(err)
@@ -376,13 +376,6 @@ func (m *MockStorage) GetDLQStatsByRoute() ([]*storage.DLQRouteStats, error) {
 }
 
 // Generic operations
-func (m *MockStorage) Query(query string, args ...interface{}) ([]map[string]interface{}, error) {
-	mockArgs := m.Called(query, args)
-	if mockArgs.Get(0) == nil {
-		return nil, mockArgs.Error(1)
-	}
-	return mockArgs.Get(0).([]map[string]interface{}), mockArgs.Error(1)
-}
 
 func (m *MockStorage) Transaction(fn func(storage.Transaction) error) error {
 	args := m.Called(fn)
@@ -409,8 +402,8 @@ func createTestRoute() *storage.Route {
 // createTestTrigger creates a standard test trigger for consistent testing
 func createTestTrigger() *storage.Trigger {
 	return &storage.Trigger{
-		Name:   "test-trigger",
-		Type:   "http",
+		Name: "test-trigger",
+		Type: "http",
 		Config: map[string]interface{}{
 			"url":      "https://api.example.com/webhook",
 			"interval": "5m",
@@ -420,11 +413,11 @@ func createTestTrigger() *storage.Trigger {
 	}
 }
 
-// createTestPipeline creates a standard test pipeline for consistent testing
+// createTestPipeline creates a standard test pipeline_old for consistent testing
 func createTestPipeline() *storage.Pipeline {
 	return &storage.Pipeline{
-		Name:        "test-pipeline",
-		Description: "Test pipeline for unit tests",
+		Name:        "test-pipeline_old",
+		Description: "Test pipeline_old for unit tests",
 		Stages: []map[string]interface{}{
 			{
 				"type": "transform",
@@ -436,7 +429,6 @@ func createTestPipeline() *storage.Pipeline {
 		Active: true,
 	}
 }
-
 
 // TestStorageRoutes tests route CRUD operations using mock storage
 func TestStorageRoutes(t *testing.T) {
@@ -467,7 +459,7 @@ func TestStorageRoutes(t *testing.T) {
 			Name:       "get-test-route",
 			Endpoint:   "/webhook/get-test",
 			Method:     "POST",
-			Queue:      "get-test-queue", 
+			Queue:      "get-test-queue",
 			RoutingKey: "get.test.event",
 			Active:     true,
 		}
@@ -523,7 +515,7 @@ func TestStorageRoutes(t *testing.T) {
 			ID:         1,
 			Name:       "update-test-route",
 			Endpoint:   "/webhook/update-test",
-			Method:     "POST", 
+			Method:     "POST",
 			Queue:      "updated-queue",
 			RoutingKey: "update.test.event",
 			Active:     false,

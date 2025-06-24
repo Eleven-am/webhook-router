@@ -6,7 +6,7 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
-	
+
 	"github.com/streadway/amqp"
 	"webhook-router/internal/brokers"
 	"webhook-router/internal/brokers/base"
@@ -19,7 +19,7 @@ import (
 // and exchange-based routing with AMQP protocol.
 type Broker struct {
 	*base.BaseBroker
-	pool             ConnectionPoolInterface
+	pool              ConnectionPoolInterface
 	connectionManager *base.ConnectionManager
 }
 
@@ -68,7 +68,7 @@ func NewBrokerWithPool(config *Config, pool ConnectionPoolInterface) (*Broker, e
 func (b *Broker) Connect(config brokers.BrokerConfig) error {
 	return b.connectionManager.ValidateAndConnect(config, (*Config)(nil), func(validatedConfig brokers.BrokerConfig) error {
 		rmqConfig := validatedConfig.(*Config)
-		
+
 		// Close existing pool if any
 		if b.pool != nil {
 			b.pool.Close()
@@ -152,7 +152,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 					)
 					return
 				}
-				
+
 				// Convert AMQP message to standard format
 				messageData := base.MessageData{
 					ID:        msg.MessageId,

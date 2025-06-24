@@ -24,7 +24,7 @@ import (
 // @Success 200 {array} models.RouteRuleAPI "List of routing rules"
 // @Failure 503 {string} string "Router not initialized"
 // @Failure 500 {string} string "Internal server error"
-// @Router /routing/rules [get]
+// @Router /api/routing/rules [get]
 func (h *Handlers) GetRoutingRules(w http.ResponseWriter, r *http.Request) {
 	if h.router == nil {
 		http.Error(w, "Router not initialized", http.StatusServiceUnavailable)
@@ -57,7 +57,7 @@ func (h *Handlers) GetRoutingRules(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} models.RouteRuleAPI "Routing rule"
 // @Failure 404 {string} string "Rule not found"
 // @Failure 503 {string} string "Router not initialized"
-// @Router /routing/rules/{id} [get]
+// @Router /api/routing/rules/{id} [get]
 func (h *Handlers) GetRoutingRule(w http.ResponseWriter, r *http.Request) {
 	if h.router == nil {
 		http.Error(w, "Router not initialized", http.StatusServiceUnavailable)
@@ -88,7 +88,7 @@ func (h *Handlers) GetRoutingRule(w http.ResponseWriter, r *http.Request) {
 // @Success 201 {object} routing.RouteRule "Created routing rule"
 // @Failure 400 {string} string "Invalid JSON or rule validation failed"
 // @Failure 503 {string} string "Router not initialized"
-// @Router /routing/rules [post]
+// @Router /api/routing/rules [post]
 func (h *Handlers) CreateRoutingRule(w http.ResponseWriter, r *http.Request) {
 	if h.router == nil {
 		http.Error(w, "Router not initialized", http.StatusServiceUnavailable)
@@ -130,7 +130,7 @@ func (h *Handlers) CreateRoutingRule(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} routing.RouteRule "Updated routing rule"
 // @Failure 400 {string} string "Invalid JSON or rule validation failed"
 // @Failure 503 {string} string "Router not initialized"
-// @Router /routing/rules/{id} [put]
+// @Router /api/routing/rules/{id} [put]
 func (h *Handlers) UpdateRoutingRule(w http.ResponseWriter, r *http.Request) {
 	if h.router == nil {
 		http.Error(w, "Router not initialized", http.StatusServiceUnavailable)
@@ -167,7 +167,7 @@ func (h *Handlers) UpdateRoutingRule(w http.ResponseWriter, r *http.Request) {
 // @Success 204 "No Content"
 // @Failure 404 {string} string "Rule not found"
 // @Failure 503 {string} string "Router not initialized"
-// @Router /routing/rules/{id} [delete]
+// @Router /api/routing/rules/{id} [delete]
 func (h *Handlers) DeleteRoutingRule(w http.ResponseWriter, r *http.Request) {
 	if h.router == nil {
 		http.Error(w, "Router not initialized", http.StatusServiceUnavailable)
@@ -199,7 +199,7 @@ func (h *Handlers) DeleteRoutingRule(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {string} string "Rule not found"
 // @Failure 500 {string} string "Route test failed"
 // @Failure 503 {string} string "Router not initialized"
-// @Router /routing/rules/{id}/test [post]
+// @Router /api/routing/rules/{id}/test [post]
 func (h *Handlers) TestRoutingRule(w http.ResponseWriter, r *http.Request) {
 	if h.router == nil {
 		http.Error(w, "Router not initialized", http.StatusServiceUnavailable)
@@ -252,7 +252,7 @@ func (h *Handlers) TestRoutingRule(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} map[string]interface{} "Router metrics"
 // @Failure 500 {string} string "Failed to get metrics"
 // @Failure 503 {string} string "Router not initialized"
-// @Router /routing/metrics [get]
+// @Router /api/routing/metrics [get]
 func (h *Handlers) GetRouterMetrics(w http.ResponseWriter, r *http.Request) {
 	if h.router == nil {
 		http.Error(w, "Router not initialized", http.StatusServiceUnavailable)

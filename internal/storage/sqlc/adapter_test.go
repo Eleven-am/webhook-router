@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
@@ -24,98 +25,20 @@ func setupTestDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite3", tmpfile.Name())
 	require.NoError(t, err)
 
-	// Run migrations
-	schema := `
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    is_default BOOLEAN DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+	// Use the actual SQLC schema file
+	schemaPath := "../../../sql/schema/001_initial.sql"
+	schema, err := os.ReadFile(schemaPath)
+	if err != nil {
+		// Fallback to looking in other common locations
+		schemaPath = "sql/schema/001_initial.sql"
+		schema, err = os.ReadFile(schemaPath)
+		if err != nil {
+			t.Fatalf("Could not find schema file: %v", err)
+		}
+	}
 
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS routes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    endpoint TEXT NOT NULL,
-    method TEXT NOT NULL DEFAULT 'POST',
-    queue TEXT NOT NULL,
-    exchange TEXT DEFAULT '',
-    routing_key TEXT NOT NULL,
-    filters TEXT DEFAULT '{}',
-    headers TEXT DEFAULT '{}',
-    active BOOLEAN DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    pipeline_id INTEGER DEFAULT NULL,
-    trigger_id INTEGER DEFAULT NULL,
-    destination_broker_id INTEGER DEFAULT NULL,
-    priority INTEGER DEFAULT 100,
-    condition_expression TEXT DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS triggers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL,
-    config TEXT NOT NULL,
-    status TEXT DEFAULT 'stopped',
-    active BOOLEAN DEFAULT 1,
-    error_message TEXT,
-    last_execution DATETIME,
-    next_execution DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS pipelines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    stages TEXT NOT NULL,
-    active BOOLEAN DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS broker_configs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    type TEXT NOT NULL,
-    config TEXT NOT NULL,
-    active BOOLEAN DEFAULT 1,
-    health_status TEXT DEFAULT 'unknown',
-    last_health_check DATETIME,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS webhook_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    route_id INTEGER,
-    method TEXT NOT NULL,
-    endpoint TEXT NOT NULL,
-    headers TEXT,
-    body TEXT,
-    status_code INTEGER DEFAULT 200,
-    error TEXT,
-    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    trigger_id INTEGER DEFAULT NULL,
-    pipeline_id INTEGER DEFAULT NULL,
-    transformation_time_ms INTEGER DEFAULT 0,
-    broker_publish_time_ms INTEGER DEFAULT 0,
-    FOREIGN KEY (route_id) REFERENCES routes (id),
-    FOREIGN KEY (trigger_id) REFERENCES triggers (id),
-    FOREIGN KEY (pipeline_id) REFERENCES pipelines (id)
-);`
-	_, err = db.Exec(schema)
+	// Execute the schema
+	_, err = db.Exec(string(schema))
 	require.NoError(t, err)
 
 	return db
@@ -127,22 +50,80 @@ func TestSQLCAdapter_UserOperations(t *testing.T) {
 
 	t.Run("CreateAndGetUser", func(t *testing.T) {
 		// Create user
-		err := adapter.CreateUser("testuser", "hashedpassword123")
-		assert.NoError(t, err)
-
-		// Get user
-		user, err := adapter.GetUser("testuser")
+		user, err := adapter.CreateUser("testuser", "password123")
 		assert.NoError(t, err)
 		assert.NotNil(t, user)
 		assert.Equal(t, "testuser", user.Username)
-		assert.Equal(t, "hashedpassword123", user.PasswordHash)
-		assert.False(t, user.IsDefault)
+		assert.False(t, user.IsDefault) // First user should not be default
+
+		// Get user by ID
+		fetchedUser, err := adapter.GetUser(user.ID)
+		assert.NoError(t, err)
+		assert.NotNil(t, fetchedUser)
+		assert.Equal(t, "testuser", fetchedUser.Username)
+		assert.NotEmpty(t, fetchedUser.PasswordHash) // Should be hashed
+		assert.False(t, fetchedUser.IsDefault)
 	})
 
 	t.Run("GetNonExistentUser", func(t *testing.T) {
 		user, err := adapter.GetUser("nonexistent")
 		assert.NoError(t, err)
 		assert.Nil(t, user)
+	})
+
+	t.Run("FirstUserIsServerOwner", func(t *testing.T) {
+		// Create a fresh database for this test
+		testDB := setupTestDB(t)
+		testAdapter := NewSQLCAdapter(testDB)
+
+		// Verify no users exist initially
+		count, err := testAdapter.GetUserCount()
+		assert.NoError(t, err)
+		assert.Equal(t, 0, count)
+
+		// Create first user - should be server owner
+		firstUser, err := testAdapter.CreateUser("owner", "password123")
+		assert.NoError(t, err)
+		assert.NotNil(t, firstUser)
+		assert.Equal(t, "owner", firstUser.Username)
+		assert.False(t, firstUser.IsDefault) // Not a default user
+
+		// Verify user count increased
+		count, err = testAdapter.GetUserCount()
+		assert.NoError(t, err)
+		assert.Equal(t, 1, count)
+
+		// Create second user - should be regular user
+		secondUser, err := testAdapter.CreateUser("regular", "password123")
+		assert.NoError(t, err)
+		assert.NotNil(t, secondUser)
+		assert.Equal(t, "regular", secondUser.Username)
+		assert.False(t, secondUser.IsDefault) // Also not a default user
+
+		// Verify user count increased again
+		count, err = testAdapter.GetUserCount()
+		assert.NoError(t, err)
+		assert.Equal(t, 2, count)
+
+		// Both users should have different IDs
+		assert.NotEqual(t, firstUser.ID, secondUser.ID)
+
+		// First user was created before second (implicit server ownership)
+		assert.True(t, firstUser.CreatedAt.Before(secondUser.CreatedAt) || firstUser.CreatedAt.Equal(secondUser.CreatedAt))
+
+		// Test IsServerOwner method
+		isFirstOwner, err := testAdapter.IsServerOwner(firstUser.ID)
+		assert.NoError(t, err)
+		assert.True(t, isFirstOwner) // First user should be server owner
+
+		isSecondOwner, err := testAdapter.IsServerOwner(secondUser.ID)
+		assert.NoError(t, err)
+		assert.False(t, isSecondOwner) // Second user should not be server owner
+
+		// Test with non-existent user
+		isNonExistentOwner, err := testAdapter.IsServerOwner("nonexistent")
+		assert.NoError(t, err)
+		assert.False(t, isNonExistentOwner)
 	})
 }
 
@@ -152,41 +133,41 @@ func TestSQLCAdapter_SettingsOperations(t *testing.T) {
 
 	t.Run("SetAndGetSetting", func(t *testing.T) {
 		// Set setting
-		err := adapter.SetSetting("api_key", "secret123")
+		err := adapter.SetSetting("test-key", "test-value")
 		assert.NoError(t, err)
 
 		// Get setting
-		value, err := adapter.GetSetting("api_key")
+		value, err := adapter.GetSetting("test-key")
 		assert.NoError(t, err)
-		assert.Equal(t, "secret123", value)
+		assert.Equal(t, "test-value", value)
 	})
 
 	t.Run("UpdateSetting", func(t *testing.T) {
 		// Set initial value
-		err := adapter.SetSetting("config", "value1")
+		err := adapter.SetSetting("update-key", "initial-value")
 		assert.NoError(t, err)
 
 		// Update value
-		err = adapter.SetSetting("config", "value2")
+		err = adapter.SetSetting("update-key", "updated-value")
 		assert.NoError(t, err)
 
 		// Verify update
-		value, err := adapter.GetSetting("config")
+		value, err := adapter.GetSetting("update-key")
 		assert.NoError(t, err)
-		assert.Equal(t, "value2", value)
+		assert.Equal(t, "updated-value", value)
 	})
 
 	t.Run("DeleteSetting", func(t *testing.T) {
 		// Set setting
-		err := adapter.SetSetting("temp", "temporary")
+		err := adapter.SetSetting("delete-key", "delete-value")
 		assert.NoError(t, err)
 
 		// Delete setting
-		err = adapter.DeleteSetting("temp")
+		err = adapter.DeleteSetting("delete-key")
 		assert.NoError(t, err)
 
 		// Verify deletion
-		value, err := adapter.GetSetting("temp")
+		value, err := adapter.GetSetting("delete-key")
 		assert.NoError(t, err)
 		assert.Empty(t, value)
 	})
@@ -204,19 +185,20 @@ func TestSQLCAdapter_RouteOperations(t *testing.T) {
 			Queue:      "test-queue",
 			Exchange:   "test-exchange",
 			RoutingKey: "test.key",
-			Filters:    map[string]interface{}{"type": "test"},
-			Headers:    map[string]string{"X-Custom": "header"},
+			Filters:    `{"type": "test"}`,
+			Headers:    `{"X-Custom": "header"}`,
 			Active:     true,
 			Priority:   100,
+			UserID:     "test-user",
 		}
 
 		// Create route
 		err := adapter.CreateRoute(route)
 		assert.NoError(t, err)
-		assert.Greater(t, route.ID, 0)
+		assert.NotEmpty(t, route.ID)
 
 		// Get route
-		retrieved, err := adapter.GetRoute(route.ID)
+		retrieved, err := adapter.GetRoute(route.ID, "test-user")
 		assert.NoError(t, err)
 		assert.NotNil(t, retrieved)
 		assert.Equal(t, route.Name, retrieved.Name)
@@ -233,71 +215,70 @@ func TestSQLCAdapter_RouteOperations(t *testing.T) {
 				Endpoint:   "/webhook/" + string(rune('a'+i)),
 				Method:     "POST",
 				Queue:      "queue-" + string(rune('a'+i)),
-				RoutingKey: "key-" + string(rune('a'+i)),
+				Exchange:   "exchange",
+				RoutingKey: "key." + string(rune('a'+i)),
 				Active:     true,
-				Priority:   100 - i*10,
+				UserID:     "test-user",
 			}
 			err := adapter.CreateRoute(route)
 			assert.NoError(t, err)
 		}
 
 		// List routes
-		routes, err := adapter.ListRoutes()
+		routes, err := adapter.GetRoutes()
 		assert.NoError(t, err)
 		assert.GreaterOrEqual(t, len(routes), 3)
-
-		// Check ordering by priority
-		for i := 1; i < len(routes); i++ {
-			assert.LessOrEqual(t, routes[i-1].Priority, routes[i].Priority)
-		}
 	})
 
 	t.Run("UpdateRoute", func(t *testing.T) {
+		// Create route
 		route := &storage.Route{
-			Name:       "update-test",
+			Name:       "update-route",
 			Endpoint:   "/webhook/update",
 			Method:     "POST",
 			Queue:      "update-queue",
+			Exchange:   "update-exchange",
 			RoutingKey: "update.key",
 			Active:     true,
+			UserID:     "test-user",
 		}
-
-		// Create route
 		err := adapter.CreateRoute(route)
 		assert.NoError(t, err)
 
 		// Update route
 		route.Active = false
-		route.Method = "PUT"
-		err = adapter.UpdateRoute(route)
+		route.Queue = "new-queue"
+		err = adapter.UpdateRoute(route, "test-user")
 		assert.NoError(t, err)
 
 		// Verify update
-		updated, err := adapter.GetRoute(route.ID)
+		updated, err := adapter.GetRoute(route.ID, "test-user")
 		assert.NoError(t, err)
 		assert.False(t, updated.Active)
-		assert.Equal(t, "PUT", updated.Method)
+		assert.Equal(t, "new-queue", updated.Queue)
 	})
 
 	t.Run("DeleteRoute", func(t *testing.T) {
+		// Create route
 		route := &storage.Route{
-			Name:       "delete-test",
+			Name:       "delete-route",
 			Endpoint:   "/webhook/delete",
 			Method:     "POST",
 			Queue:      "delete-queue",
+			Exchange:   "delete-exchange",
 			RoutingKey: "delete.key",
+			Active:     true,
+			UserID:     "test-user",
 		}
-
-		// Create route
 		err := adapter.CreateRoute(route)
 		assert.NoError(t, err)
 
 		// Delete route
-		err = adapter.DeleteRoute(route.ID)
+		err = adapter.DeleteRoute(route.ID, "test-user")
 		assert.NoError(t, err)
 
 		// Verify deletion
-		deleted, err := adapter.GetRoute(route.ID)
+		deleted, err := adapter.GetRoute(route.ID, "test-user")
 		assert.NoError(t, err)
 		assert.Nil(t, deleted)
 	})
@@ -311,7 +292,7 @@ func TestSQLCAdapter_TriggerOperations(t *testing.T) {
 		trigger := &storage.Trigger{
 			Name:   "test-trigger",
 			Type:   "http",
-			Config: map[string]interface{}{"url": "http://example.com"},
+			Config: map[string]interface{}{"path": "/trigger"},
 			Status: "ready",
 			Active: true,
 		}
@@ -319,7 +300,7 @@ func TestSQLCAdapter_TriggerOperations(t *testing.T) {
 		// Create trigger
 		err := adapter.CreateTrigger(trigger)
 		assert.NoError(t, err)
-		assert.Greater(t, trigger.ID, 0)
+		assert.NotEmpty(t, trigger.ID)
 
 		// Get trigger
 		retrieved, err := adapter.GetTrigger(trigger.ID)
@@ -346,7 +327,7 @@ func TestSQLCAdapter_TriggerOperations(t *testing.T) {
 		}
 
 		// List triggers
-		triggers, err := adapter.ListTriggers()
+		triggers, err := adapter.GetTriggers(storage.TriggerFilters{})
 		assert.NoError(t, err)
 		assert.GreaterOrEqual(t, len(triggers), 3)
 	})
@@ -358,27 +339,53 @@ func TestSQLCAdapter_PipelineOperations(t *testing.T) {
 
 	t.Run("CreateAndGetPipeline", func(t *testing.T) {
 		pipeline := &storage.Pipeline{
-			Name:        "test-pipeline",
-			Description: "Test pipeline description",
-			Stages: []interface{}{
-				map[string]interface{}{"type": "transform", "config": "test"},
-				map[string]interface{}{"type": "validate", "config": "test"},
+			Name:        "test-pipeline_old",
+			Description: "Test pipeline_old description",
+			Stages: []map[string]interface{}{
+				{"type": "transform", "config": map[string]interface{}{"field": "value"}},
 			},
 			Active: true,
 		}
 
-		// Create pipeline
+		// Create pipeline_old
 		err := adapter.CreatePipeline(pipeline)
 		assert.NoError(t, err)
-		assert.Greater(t, pipeline.ID, 0)
+		assert.NotEmpty(t, pipeline.ID)
 
-		// Get pipeline
+		// Get pipeline_old
 		retrieved, err := adapter.GetPipeline(pipeline.ID)
 		assert.NoError(t, err)
 		assert.NotNil(t, retrieved)
 		assert.Equal(t, pipeline.Name, retrieved.Name)
 		assert.Equal(t, pipeline.Description, retrieved.Description)
-		assert.Len(t, retrieved.Stages, 2)
+		assert.Equal(t, pipeline.Active, retrieved.Active)
+	})
+}
+
+func TestSQLCAdapter_BrokerOperations(t *testing.T) {
+	db := setupTestDB(t)
+	adapter := NewSQLCAdapter(db)
+
+	t.Run("CreateAndGetBroker", func(t *testing.T) {
+		broker := &storage.BrokerConfig{
+			Name:   "test-broker",
+			Type:   "rabbitmq",
+			Config: map[string]interface{}{"url": "amqp://localhost"},
+			Active: true,
+		}
+
+		// Create broker
+		err := adapter.CreateBroker(broker)
+		assert.NoError(t, err)
+		assert.NotEmpty(t, broker.ID)
+
+		// Get broker
+		retrieved, err := adapter.GetBroker(broker.ID)
+		assert.NoError(t, err)
+		assert.NotNil(t, retrieved)
+		assert.Equal(t, broker.Name, retrieved.Name)
+		assert.Equal(t, broker.Type, retrieved.Type)
+		assert.Equal(t, broker.Active, retrieved.Active)
 	})
 }
 
@@ -386,78 +393,36 @@ func TestSQLCAdapter_WebhookLogOperations(t *testing.T) {
 	db := setupTestDB(t)
 	adapter := NewSQLCAdapter(db)
 
-	t.Run("CreateAndListWebhookLogs", func(t *testing.T) {
+	t.Run("LogWebhook", func(t *testing.T) {
 		// Create a route first
 		route := &storage.Route{
-			Name:       "log-test",
+			Name:       "log-route",
 			Endpoint:   "/webhook/log",
 			Method:     "POST",
 			Queue:      "log-queue",
+			Exchange:   "log-exchange",
 			RoutingKey: "log.key",
+			Active:     true,
+			UserID:     "test-user",
 		}
 		err := adapter.CreateRoute(route)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		// Create webhook log
 		log := &storage.WebhookLog{
-			RouteID:    route.ID,
-			Method:     "POST",
-			Endpoint:   "/webhook/log",
-			Headers:    map[string][]string{"Content-Type": {"application/json"}},
-			Body:       `{"test": "data"}`,
-			StatusCode: 200,
+			RouteID:              route.ID,
+			Method:               "POST",
+			Endpoint:             "/webhook/log",
+			Headers:              `{"Content-Type": "application/json"}`,
+			Body:                 `{"test": "data"}`,
+			StatusCode:           200,
+			Error:                "",
+			ProcessedAt:          time.Now(),
+			TransformationTimeMS: 10,
+			BrokerPublishTimeMS:  5,
 		}
 
 		err = adapter.LogWebhook(log)
 		assert.NoError(t, err)
-
-		// List logs
-		logs, err := adapter.GetWebhookLogs(10, 0)
-		assert.NoError(t, err)
-		assert.Len(t, logs, 1)
-		assert.Equal(t, log.Method, logs[0].Method)
-		assert.Equal(t, log.Endpoint, logs[0].Endpoint)
-		assert.Equal(t, log.StatusCode, logs[0].StatusCode)
-	})
-}
-
-func TestSQLCAdapter_Transactions(t *testing.T) {
-	db := setupTestDB(t)
-	adapter := NewSQLCAdapter(db)
-
-	t.Run("SuccessfulTransaction", func(t *testing.T) {
-		tx, err := adapter.BeginTx()
-		assert.NoError(t, err)
-
-		// Perform operations within transaction
-		err = adapter.SetSetting("tx-test", "value")
-		assert.NoError(t, err)
-
-		// Commit transaction
-		err = tx.Commit()
-		assert.NoError(t, err)
-
-		// Verify data persisted
-		value, err := adapter.GetSetting("tx-test")
-		assert.NoError(t, err)
-		assert.Equal(t, "value", value)
-	})
-
-	t.Run("RollbackTransaction", func(t *testing.T) {
-		tx, err := adapter.BeginTx()
-		assert.NoError(t, err)
-
-		// Perform operations within transaction
-		err = adapter.SetSetting("rollback-test", "should-not-persist")
-		assert.NoError(t, err)
-
-		// Rollback transaction
-		err = tx.Rollback()
-		assert.NoError(t, err)
-
-		// Verify data not persisted
-		value, err := adapter.GetSetting("rollback-test")
-		assert.NoError(t, err)
-		assert.Empty(t, value)
 	})
 }

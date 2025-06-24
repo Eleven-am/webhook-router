@@ -58,7 +58,7 @@ func TestFactoryCreate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			broker, err := factory.Create(tt.config)
-			
+
 			if tt.wantErr && tt.errMsg != "" {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
@@ -68,7 +68,7 @@ func TestFactoryCreate(t *testing.T) {
 				// even without a real broker
 				assert.NoError(t, err)
 				assert.NotNil(t, broker)
-				
+
 				// Clean up
 				if broker != nil {
 					broker.Close()
@@ -80,11 +80,11 @@ func TestFactoryCreate(t *testing.T) {
 
 func TestFactoryWithInvalidConfigType(t *testing.T) {
 	factory := GetFactory()
-	
+
 	// Test with a different config type that implements BrokerConfig
 	// but is not the expected *Config type
 	wrongConfig := &mockBrokerConfig{}
-	
+
 	_, err := factory.Create(wrongConfig)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid config type")

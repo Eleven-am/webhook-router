@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/crypto"
 	"webhook-router/internal/signature"
 	"webhook-router/internal/storage"
@@ -11,17 +12,17 @@ import (
 
 // PrepareSignatureConfig prepares the signature configuration for storage
 // It validates the config and encrypts the secret if provided
-func PrepareSignatureConfig(route *storage.Route, encryptor *crypto.ConfigEncryptor) error {
-	if route.SignatureConfig == "" {
+func PrepareSignatureConfig(trigger *storage.Trigger, encryptor *crypto.ConfigEncryptor) error {
+	if trigger.SignatureConfig == "" {
 		// No signature configuration
-		route.SignatureSecret = ""
+		trigger.SignatureSecret = ""
 		return nil
 	}
 
 	// Parse and validate the configuration
-	config, err := signature.LoadConfig([]byte(route.SignatureConfig))
+	config, err := signature.LoadConfig([]byte(trigger.SignatureConfig))
 	if err != nil {
-		return fmt.Errorf("invalid signature configuration: %v", err)
+		return errors.ConfigError(fmt.Sprintf("invalid signature configuration: %v", err))
 	}
 
 	// Extract and encrypt secrets from the configuration
@@ -34,7 +35,7 @@ func PrepareSignatureConfig(route *storage.Route, encryptor *crypto.ConfigEncryp
 				// Encrypt the secret
 				encrypted, err := encryptor.Encrypt(secret)
 				if err != nil {
-					return fmt.Errorf("failed to encrypt secret: %v", err)
+					return errors.InternalError(fmt.Sprintf("failed to encrypt secret: %v", err), nil)
 				}
 
 				// Store encrypted secret reference
@@ -51,39 +52,39 @@ func PrepareSignatureConfig(route *storage.Route, encryptor *crypto.ConfigEncryp
 	if len(secrets) > 0 {
 		secretsJSON, err := json.Marshal(secrets)
 		if err != nil {
-			return fmt.Errorf("failed to marshal secrets: %v", err)
+			return errors.InternalError(fmt.Sprintf("failed to marshal secrets: %v", err), nil)
 		}
-		route.SignatureSecret = string(secretsJSON)
+		trigger.SignatureSecret = string(secretsJSON)
 	}
 
 	// Update the configuration with modified secret sources
 	configJSON, err := json.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal updated config: %v", err)
+		return errors.InternalError(fmt.Sprintf("failed to marshal updated config: %v", err), nil)
 	}
-	route.SignatureConfig = string(configJSON)
+	trigger.SignatureConfig = string(configJSON)
 
 	return nil
 }
 
 // BuildSignatureAuthConfig builds authentication config for signature verification
 // This is used when setting up HTTP triggers with signature verification
-func BuildSignatureAuthConfig(route *storage.Route, encryptor *crypto.ConfigEncryptor) (*signature.Config, error) {
-	if route.SignatureConfig == "" {
+func BuildSignatureAuthConfig(trigger *storage.Trigger, encryptor *crypto.ConfigEncryptor) (*signature.Config, error) {
+	if trigger.SignatureConfig == "" {
 		return nil, nil
 	}
 
 	// Parse the configuration
-	config, err := signature.LoadConfig([]byte(route.SignatureConfig))
+	config, err := signature.LoadConfig([]byte(trigger.SignatureConfig))
 	if err != nil {
-		return nil, fmt.Errorf("failed to load signature config: %v", err)
+		return nil, errors.InternalError(fmt.Sprintf("failed to load signature config: %v", err), nil)
 	}
 
 	// Decrypt secrets if they're stored in the database
-	if route.SignatureSecret != "" {
+	if trigger.SignatureSecret != "" {
 		var secrets map[string]string
-		if err := json.Unmarshal([]byte(route.SignatureSecret), &secrets); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal secrets: %v", err)
+		if err := json.Unmarshal([]byte(trigger.SignatureSecret), &secrets); err != nil {
+			return nil, errors.InternalError(fmt.Sprintf("failed to unmarshal secrets: %v", err), nil)
 		}
 
 		// Update config with decrypted secrets
@@ -94,7 +95,7 @@ func BuildSignatureAuthConfig(route *storage.Route, encryptor *crypto.ConfigEncr
 					// Decrypt the secret
 					decrypted, err := encryptor.Decrypt(encryptedSecret)
 					if err != nil {
-						return nil, fmt.Errorf("failed to decrypt secret: %v", err)
+						return nil, errors.InternalError(fmt.Sprintf("failed to decrypt secret: %v", err), nil)
 					}
 					// Update to static secret for runtime use
 					config.Verifications[i].SecretSource = "static:" + decrypted

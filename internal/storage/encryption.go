@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/crypto"
 )
 
@@ -17,12 +18,12 @@ func NewEncryptedConfig(encryptionKey string) (*EncryptedConfig, error) {
 		// No encryption if key not provided (development mode)
 		return &EncryptedConfig{}, nil
 	}
-	
+
 	encryptor, err := crypto.NewConfigEncryptor(encryptionKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create encryptor: %w", err)
+		return nil, errors.InternalError("failed to create encryptor", err)
 	}
-	
+
 	return &EncryptedConfig{encryptor: encryptor}, nil
 }
 
@@ -33,13 +34,13 @@ func (ec *EncryptedConfig) EncryptConfig(config map[string]interface{}) (string,
 		data, err := json.Marshal(config)
 		return string(data), err
 	}
-	
+
 	// Marshal to JSON
 	data, err := json.Marshal(config)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal config: %w", err)
+		return "", errors.InternalError("failed to marshal config", err)
 	}
-	
+
 	// Encrypt
 	return ec.encryptor.Encrypt(string(data))
 }
@@ -48,7 +49,7 @@ func (ec *EncryptedConfig) EncryptConfig(config map[string]interface{}) (string,
 func (ec *EncryptedConfig) DecryptConfig(encrypted string) (map[string]interface{}, error) {
 	var configData string
 	var err error
-	
+
 	if ec.encryptor == nil {
 		// No decryption needed
 		configData = encrypted
@@ -56,16 +57,16 @@ func (ec *EncryptedConfig) DecryptConfig(encrypted string) (map[string]interface
 		// Decrypt
 		configData, err = ec.encryptor.Decrypt(encrypted)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt config: %w", err)
+			return nil, errors.InternalError("failed to decrypt config", err)
 		}
 	}
-	
+
 	// Unmarshal JSON
 	var config map[string]interface{}
 	if err := json.Unmarshal([]byte(configData), &config); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+		return nil, errors.InternalError("failed to unmarshal config", err)
 	}
-	
+
 	return config, nil
 }
 
@@ -74,25 +75,25 @@ func (ec *EncryptedConfig) EncryptSensitiveFields(config map[string]interface{},
 	if ec.encryptor == nil {
 		return config, nil
 	}
-	
+
 	result := make(map[string]interface{})
 	for k, v := range config {
 		result[k] = v
 	}
-	
+
 	// Encrypt sensitive fields
 	for _, field := range sensitiveFields {
 		if val, exists := result[field]; exists {
 			if strVal, ok := val.(string); ok && strVal != "" {
 				encrypted, err := ec.encryptor.Encrypt(strVal)
 				if err != nil {
-					return nil, fmt.Errorf("failed to encrypt field %s: %w", field, err)
+					return nil, errors.InternalError(fmt.Sprintf("failed to encrypt field %s", field), err)
 				}
 				result[field] = encrypted
 			}
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -101,24 +102,24 @@ func (ec *EncryptedConfig) DecryptSensitiveFields(config map[string]interface{},
 	if ec.encryptor == nil {
 		return config, nil
 	}
-	
+
 	result := make(map[string]interface{})
 	for k, v := range config {
 		result[k] = v
 	}
-	
+
 	// Decrypt sensitive fields
 	for _, field := range sensitiveFields {
 		if val, exists := result[field]; exists {
 			if strVal, ok := val.(string); ok && strVal != "" {
 				decrypted, err := ec.encryptor.Decrypt(strVal)
 				if err != nil {
-					return nil, fmt.Errorf("failed to decrypt field %s: %w", field, err)
+					return nil, errors.InternalError(fmt.Sprintf("failed to decrypt field %s", field), err)
 				}
 				result[field] = decrypted
 			}
 		}
 	}
-	
+
 	return result, nil
 }

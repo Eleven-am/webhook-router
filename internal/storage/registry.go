@@ -1,67 +1,44 @@
 package storage
 
 import (
-	"fmt"
-	"sync"
+	"webhook-router/internal/common/registry"
 )
 
+// Registry wraps the generic registry with storage-specific functionality
 type Registry struct {
-	factories map[string]StorageFactory
-	mu        sync.RWMutex
+	*registry.Registry[StorageFactory]
 }
 
+// NewRegistry creates a new storage factory registry
 func NewRegistry() *Registry {
 	return &Registry{
-		factories: make(map[string]StorageFactory),
+		Registry: registry.New[StorageFactory](),
 	}
 }
 
-func (r *Registry) Register(storageType string, factory StorageFactory) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.factories[storageType] = factory
-}
-
+// Create creates a storage instance using the registered factory for the specified type
 func (r *Registry) Create(storageType string, config StorageConfig) (Storage, error) {
-	r.mu.RLock()
-	factory, exists := r.factories[storageType]
-	r.mu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("storage type %s not registered", storageType)
+	factory, err := r.Get(storageType)
+	if err != nil {
+		return nil, err
 	}
-
 	return factory.Create(config)
 }
 
-func (r *Registry) GetAvailableTypes() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	types := make([]string, 0, len(r.factories))
-	for storageType := range r.factories {
-		types = append(types, storageType)
-	}
-	return types
-}
-
-func (r *Registry) IsRegistered(storageType string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	_, exists := r.factories[storageType]
-	return exists
-}
-
+// DefaultRegistry is the global storage registry used by package-level functions
 var DefaultRegistry = NewRegistry()
 
+// Register adds a storage factory to the default registry
 func Register(storageType string, factory StorageFactory) {
 	DefaultRegistry.Register(storageType, factory)
 }
 
+// Create creates a storage instance using the default registry
 func Create(storageType string, config StorageConfig) (Storage, error) {
 	return DefaultRegistry.Create(storageType, config)
 }
 
+// GetAvailableTypes returns available storage types from the default registry
 func GetAvailableTypes() []string {
 	return DefaultRegistry.GetAvailableTypes()
 }

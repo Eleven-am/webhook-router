@@ -49,11 +49,11 @@ func (c *BaseConnConfig) SetConnectionDefaults(defaultTimeout time.Duration) {
 	if defaultTimeout == 0 {
 		defaultTimeout = 30 * time.Second
 	}
-	
+
 	if c.Timeout <= 0 {
 		c.Timeout = defaultTimeout
 	}
-	
+
 	if c.RetryMax <= 0 {
 		c.RetryMax = 3
 	}
@@ -143,14 +143,14 @@ func (e *ErrorHandlingConfig) SetErrorHandlingDefaults() {
 	if e.MaxRetries <= 0 {
 		e.MaxRetries = 3
 	}
-	
+
 	if e.RetryDelay <= 0 {
 		e.RetryDelay = 10 * time.Second
 	}
 }
 
 // TransformConfig defines data transformation settings used across HTTP triggers,
-// broker triggers, and pipeline stages for consistent header mapping and content transformation.
+// broker triggers, and pipeline_old stages for consistent header mapping and content transformation.
 type TransformConfig struct {
 	// Enabled activates data transformation
 	Enabled bool `json:"enabled"`
@@ -191,7 +191,7 @@ func (r *RateLimitConfig) SetRateLimitDefaults() {
 	if r.MaxRequests <= 0 {
 		r.MaxRequests = 100
 	}
-	
+
 	if r.Window <= 0 {
 		r.Window = time.Minute
 	}
@@ -217,11 +217,11 @@ func (v *ValidationConfig) SetValidationDefaults() {
 	if v.MaxBodySize <= 0 {
 		v.MaxBodySize = 10 * 1024 * 1024 // 10MB default
 	}
-	
+
 	if v.RequiredHeaders == nil {
 		v.RequiredHeaders = make([]string, 0)
 	}
-	
+
 	if v.RequiredParams == nil {
 		v.RequiredParams = make([]string, 0)
 	}
@@ -245,15 +245,15 @@ func (r *ResponseConfig) SetResponseDefaults() {
 	if r.StatusCode <= 0 {
 		r.StatusCode = 200
 	}
-	
+
 	if r.ContentType == "" {
 		r.ContentType = "application/json"
 	}
-	
+
 	if r.Headers == nil {
 		r.Headers = make(map[string]string)
 	}
-	
+
 	if r.Body == "" {
 		r.Body = `{"status": "ok"}`
 	}

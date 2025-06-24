@@ -6,11 +6,11 @@ import (
 
 func TestNewBasicRuleEngine(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	if engine == nil {
 		t.Fatal("NewBasicRuleEngine() returned nil")
 	}
-	
+
 	if engine.compiledRules == nil {
 		t.Error("NewBasicRuleEngine() should initialize compiledRules map")
 	}
@@ -19,16 +19,16 @@ func TestNewBasicRuleEngine(t *testing.T) {
 func TestBasicRuleEngine_GetSupportedOperators(t *testing.T) {
 	engine := NewBasicRuleEngine()
 	operators := engine.GetSupportedOperators()
-	
+
 	expectedOperators := []string{
 		"eq", "ne", "contains", "starts_with", "ends_with", "regex",
 		"gt", "lt", "gte", "lte", "in", "exists", "cidr",
 	}
-	
+
 	if len(operators) != len(expectedOperators) {
 		t.Errorf("GetSupportedOperators() returned %d operators, want %d", len(operators), len(expectedOperators))
 	}
-	
+
 	for _, expected := range expectedOperators {
 		if !SliceContains(operators, expected) {
 			t.Errorf("GetSupportedOperators() missing operator: %s", expected)
@@ -39,16 +39,16 @@ func TestBasicRuleEngine_GetSupportedOperators(t *testing.T) {
 func TestBasicRuleEngine_GetSupportedConditionTypes(t *testing.T) {
 	engine := NewBasicRuleEngine()
 	types := engine.GetSupportedConditionTypes()
-	
+
 	expectedTypes := []string{
 		"path", "method", "header", "query", "body", "body_json",
 		"remote_addr", "user_agent", "size", "context",
 	}
-	
+
 	if len(types) != len(expectedTypes) {
 		t.Errorf("GetSupportedConditionTypes() returned %d types, want %d", len(types), len(expectedTypes))
 	}
-	
+
 	for _, expected := range expectedTypes {
 		if !SliceContains(types, expected) {
 			t.Errorf("GetSupportedConditionTypes() missing type: %s", expected)
@@ -58,7 +58,7 @@ func TestBasicRuleEngine_GetSupportedConditionTypes(t *testing.T) {
 
 func TestBasicRuleEngine_CompileRule(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	tests := []struct {
 		name      string
 		rule      *RouteRule
@@ -116,7 +116,7 @@ func TestBasicRuleEngine_CompileRule(t *testing.T) {
 			wantError: false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := engine.CompileRule(tt.rule)
@@ -126,17 +126,17 @@ func TestBasicRuleEngine_CompileRule(t *testing.T) {
 			if !tt.wantError && err != nil {
 				t.Errorf("CompileRule() unexpected error = %v", err)
 			}
-			
+
 			if !tt.wantError {
 				// Verify rule was compiled and stored
 				engine.mu.RLock()
 				compiled, exists := engine.compiledRules[tt.rule.ID]
 				engine.mu.RUnlock()
-				
+
 				if !exists {
 					t.Errorf("CompileRule() should store compiled rule")
 				}
-				
+
 				if compiled != nil && len(compiled.CompiledConditions) != len(tt.rule.Conditions) {
 					t.Errorf("CompileRule() compiled %d conditions, want %d", len(compiled.CompiledConditions), len(tt.rule.Conditions))
 				}
@@ -147,7 +147,7 @@ func TestBasicRuleEngine_CompileRule(t *testing.T) {
 
 func TestBasicRuleEngine_EvaluateCondition(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	request := &RouteRequest{
 		ID:     "test-request",
 		Method: "GET",
@@ -168,7 +168,7 @@ func TestBasicRuleEngine_EvaluateCondition(t *testing.T) {
 			"role":    "admin",
 		},
 	}
-	
+
 	tests := []struct {
 		name      string
 		condition *RuleCondition
@@ -177,141 +177,141 @@ func TestBasicRuleEngine_EvaluateCondition(t *testing.T) {
 	}{
 		// Path conditions
 		{
-			name:     "path equals",
+			name:      "path equals",
 			condition: &RuleCondition{Type: "path", Operator: "eq", Value: "/api/users"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "path not equals",
+			name:      "path not equals",
 			condition: &RuleCondition{Type: "path", Operator: "ne", Value: "/api/posts"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "path contains",
+			name:      "path contains",
 			condition: &RuleCondition{Type: "path", Operator: "contains", Value: "users"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "path starts with",
+			name:      "path starts with",
 			condition: &RuleCondition{Type: "path", Operator: "starts_with", Value: "/api"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "path ends with",
+			name:      "path ends with",
 			condition: &RuleCondition{Type: "path", Operator: "ends_with", Value: "users"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "path regex match",
+			name:      "path regex match",
 			condition: &RuleCondition{Type: "path", Operator: "regex", Value: "^/api/.*"},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Method conditions
 		{
-			name:     "method equals",
+			name:      "method equals",
 			condition: &RuleCondition{Type: "method", Operator: "eq", Value: "GET"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "method in list",
+			name:      "method in list",
 			condition: &RuleCondition{Type: "method", Operator: "in", Value: []string{"GET", "POST"}},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Header conditions
 		{
-			name:     "header exists",
+			name:      "header exists",
 			condition: &RuleCondition{Type: "header", Field: "Content-Type", Operator: "exists"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "header equals",
+			name:      "header equals",
 			condition: &RuleCondition{Type: "header", Field: "Content-Type", Operator: "eq", Value: "application/json"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "header contains",
+			name:      "header contains",
 			condition: &RuleCondition{Type: "header", Field: "Content-Type", Operator: "contains", Value: "json"},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Query conditions
 		{
-			name:     "query exists",
+			name:      "query exists",
 			condition: &RuleCondition{Type: "query", Field: "page", Operator: "exists"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "query equals",
+			name:      "query equals",
 			condition: &RuleCondition{Type: "query", Field: "page", Operator: "eq", Value: "1"},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Body conditions
 		{
-			name:     "body contains",
+			name:      "body contains",
 			condition: &RuleCondition{Type: "body", Operator: "contains", Value: "test"},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Size conditions
 		{
-			name:     "size greater than",
+			name:      "size greater than",
 			condition: &RuleCondition{Type: "size", Operator: "gt", Value: 10},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "size less than",
+			name:      "size less than",
 			condition: &RuleCondition{Type: "size", Operator: "lt", Value: 100},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Remote address conditions
 		{
-			name:     "remote addr CIDR",
+			name:      "remote addr CIDR",
 			condition: &RuleCondition{Type: "remote_addr", Operator: "cidr", Value: "192.168.1.0/24"},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// User agent conditions
 		{
-			name:     "user agent equals",
+			name:      "user agent equals",
 			condition: &RuleCondition{Type: "user_agent", Operator: "eq", Value: "test-agent"},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Context conditions
 		{
-			name:     "context exists",
+			name:      "context exists",
 			condition: &RuleCondition{Type: "context", Field: "user_id", Operator: "exists"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "context equals",
+			name:      "context equals",
 			condition: &RuleCondition{Type: "context", Field: "role", Operator: "eq", Value: "admin"},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// JSON body conditions
 		{
-			name:     "json field equals",
+			name:      "json field equals",
 			condition: &RuleCondition{Type: "body_json", Field: "name", Operator: "eq", Value: "test"},
-			expected: true,
+			expected:  true,
 		},
 		{
-			name:     "json field numeric",
+			name:      "json field numeric",
 			condition: &RuleCondition{Type: "body_json", Field: "age", Operator: "gte", Value: 18},
-			expected: true,
+			expected:  true,
 		},
-		
+
 		// Negated conditions
 		{
-			name:     "negated condition",
+			name:      "negated condition",
 			condition: &RuleCondition{Type: "method", Operator: "eq", Value: "POST", Negate: true},
-			expected: true, // Should be true because method is GET, not POST
+			expected:  true, // Should be true because method is GET, not POST
 		},
-		
+
 		// Error cases
 		{
 			name:      "unsupported condition type",
@@ -329,23 +329,23 @@ func TestBasicRuleEngine_EvaluateCondition(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := engine.EvaluateCondition(tt.condition, request)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("EvaluateCondition() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("EvaluateCondition() unexpected error = %v", err)
 				return
 			}
-			
+
 			if result != tt.expected {
 				t.Errorf("EvaluateCondition() = %v, want %v", result, tt.expected)
 			}
@@ -355,7 +355,7 @@ func TestBasicRuleEngine_EvaluateCondition(t *testing.T) {
 
 func TestBasicRuleEngine_EvaluateRule(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	request := &RouteRequest{
 		Method: "GET",
 		Path:   "/api/users",
@@ -363,7 +363,7 @@ func TestBasicRuleEngine_EvaluateRule(t *testing.T) {
 			"Content-Type": "application/json",
 		},
 	}
-	
+
 	tests := []struct {
 		name     string
 		rule     *RouteRule
@@ -416,7 +416,7 @@ func TestBasicRuleEngine_EvaluateRule(t *testing.T) {
 			expected: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Compile the rule first
@@ -424,13 +424,13 @@ func TestBasicRuleEngine_EvaluateRule(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to compile rule: %v", err)
 			}
-			
+
 			result, err := engine.EvaluateRule(tt.rule, request)
 			if err != nil {
 				t.Errorf("EvaluateRule() unexpected error = %v", err)
 				return
 			}
-			
+
 			if result != tt.expected {
 				t.Errorf("EvaluateRule() = %v, want %v", result, tt.expected)
 			}
@@ -440,12 +440,12 @@ func TestBasicRuleEngine_EvaluateRule(t *testing.T) {
 
 func TestBasicRuleEngine_extractJSONField(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	tests := []struct {
-		name     string
-		body     []byte
-		field    string
-		expected string
+		name      string
+		body      []byte
+		field     string
+		expected  string
 		wantError bool
 	}{
 		{
@@ -473,23 +473,23 @@ func TestBasicRuleEngine_extractJSONField(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := engine.extractJSONField(tt.body, tt.field)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("extractJSONField() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("extractJSONField() unexpected error = %v", err)
 				return
 			}
-			
+
 			if result != tt.expected {
 				t.Errorf("extractJSONField() = %s, want %s", result, tt.expected)
 			}
@@ -499,7 +499,7 @@ func TestBasicRuleEngine_extractJSONField(t *testing.T) {
 
 func TestBasicRuleEngine_evaluateNumericComparison(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	tests := []struct {
 		name         string
 		testValue    string
@@ -572,23 +572,23 @@ func TestBasicRuleEngine_evaluateNumericComparison(t *testing.T) {
 			wantError:    true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := engine.evaluateNumericComparison(tt.testValue, tt.operator, tt.compareValue)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("evaluateNumericComparison() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("evaluateNumericComparison() unexpected error = %v", err)
 				return
 			}
-			
+
 			if result != tt.expected {
 				t.Errorf("evaluateNumericComparison() = %v, want %v", result, tt.expected)
 			}
@@ -598,7 +598,7 @@ func TestBasicRuleEngine_evaluateNumericComparison(t *testing.T) {
 
 func TestBasicRuleEngine_evaluateCIDR(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	tests := []struct {
 		name      string
 		testValue string
@@ -631,23 +631,23 @@ func TestBasicRuleEngine_evaluateCIDR(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := engine.evaluateCIDR(tt.testValue, tt.cidr)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("evaluateCIDR() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("evaluateCIDR() unexpected error = %v", err)
 				return
 			}
-			
+
 			if result != tt.expected {
 				t.Errorf("evaluateCIDR() = %v, want %v", result, tt.expected)
 			}
@@ -657,7 +657,7 @@ func TestBasicRuleEngine_evaluateCIDR(t *testing.T) {
 
 func TestBasicRuleEngine_toFloat64(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	tests := []struct {
 		name      string
 		value     interface{}
@@ -705,23 +705,23 @@ func TestBasicRuleEngine_toFloat64(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := engine.toFloat64(tt.value)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("toFloat64() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("toFloat64() unexpected error = %v", err)
 				return
 			}
-			
+
 			// Use tolerance for float comparison (float32 conversion can have precision differences)
 			const tolerance = 1e-6
 			diff := result - tt.expected
@@ -737,7 +737,7 @@ func TestBasicRuleEngine_toFloat64(t *testing.T) {
 
 func TestBasicRuleEngine_ClearCompiledRules(t *testing.T) {
 	engine := NewBasicRuleEngine()
-	
+
 	// Add a compiled rule
 	rule := &RouteRule{
 		ID: "test-rule",
@@ -745,29 +745,29 @@ func TestBasicRuleEngine_ClearCompiledRules(t *testing.T) {
 			{Type: "path", Operator: "eq", Value: "/test"},
 		},
 	}
-	
+
 	err := engine.CompileRule(rule)
 	if err != nil {
 		t.Fatalf("Failed to compile rule: %v", err)
 	}
-	
+
 	// Verify rule was compiled
 	engine.mu.RLock()
 	count := len(engine.compiledRules)
 	engine.mu.RUnlock()
-	
+
 	if count != 1 {
 		t.Errorf("Expected 1 compiled rule, got %d", count)
 	}
-	
+
 	// Clear compiled rules
 	engine.ClearCompiledRules()
-	
+
 	// Verify rules were cleared
 	engine.mu.RLock()
 	count = len(engine.compiledRules)
 	engine.mu.RUnlock()
-	
+
 	if count != 0 {
 		t.Errorf("Expected 0 compiled rules after clear, got %d", count)
 	}
@@ -775,7 +775,7 @@ func TestBasicRuleEngine_ClearCompiledRules(t *testing.T) {
 
 func BenchmarkBasicRuleEngine_EvaluateRule(b *testing.B) {
 	engine := NewBasicRuleEngine()
-	
+
 	rule := &RouteRule{
 		ID:      "bench-rule",
 		Enabled: true,
@@ -785,7 +785,7 @@ func BenchmarkBasicRuleEngine_EvaluateRule(b *testing.B) {
 			{Type: "header", Field: "Content-Type", Operator: "contains", Value: "json"},
 		},
 	}
-	
+
 	request := &RouteRequest{
 		Method: "GET",
 		Path:   "/api/users",
@@ -793,13 +793,13 @@ func BenchmarkBasicRuleEngine_EvaluateRule(b *testing.B) {
 			"Content-Type": "application/json",
 		},
 	}
-	
+
 	// Compile rule once
 	err := engine.CompileRule(rule)
 	if err != nil {
 		b.Fatalf("Failed to compile rule: %v", err)
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := engine.EvaluateRule(rule, request)

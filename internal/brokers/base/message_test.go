@@ -27,10 +27,10 @@ func TestConvertToIncomingMessage(t *testing.T) {
 		Body:      []byte(`{"event": "test", "data": "sample"}`),
 		Timestamp: timestamp,
 		Metadata: map[string]interface{}{
-			"queue":     "events",
-			"exchange":  "webhooks",
-			"retry":     0,
-			"priority":  5,
+			"queue":    "events",
+			"exchange": "webhooks",
+			"retry":    0,
+			"priority": 5,
 		},
 	}
 
@@ -73,7 +73,7 @@ func TestConvertToIncomingMessage_EmptyData(t *testing.T) {
 
 func TestNewMessageHandler(t *testing.T) {
 	mockLogger := NewMockMessageLogger()
-	
+
 	handler := func(msg *brokers.IncomingMessage) error {
 		return nil
 	}
@@ -88,7 +88,7 @@ func TestNewMessageHandler(t *testing.T) {
 
 func TestMessageHandler_Handle_Success(t *testing.T) {
 	mockLogger := NewMockMessageLogger()
-	
+
 	// Handler that succeeds
 	handler := func(msg *brokers.IncomingMessage) error {
 		return nil
@@ -110,14 +110,14 @@ func TestMessageHandler_Handle_Success(t *testing.T) {
 	result := mh.Handle(incomingMsg)
 
 	assert.True(t, result)
-	
+
 	// Error method should not be called for successful handling
 	mockLogger.AssertNotCalled(t, "Error")
 }
 
 func TestMessageHandler_Handle_Error(t *testing.T) {
 	mockLogger := NewMockMessageLogger()
-	
+
 	// Handler that fails
 	handlerError := errors.New("processing failed")
 	handler := func(msg *brokers.IncomingMessage) error {
@@ -138,19 +138,19 @@ func TestMessageHandler_Handle_Error(t *testing.T) {
 	}
 
 	// Set up logger expectation
-	mockLogger.On("Error", 
-		"Error handling kafka message", 
-		handlerError, 
+	mockLogger.On("Error",
+		"Error handling kafka message",
+		handlerError,
 		mock.MatchedBy(func(fields []logging.Field) bool {
 			// Verify the fields contain the expected data
 			fieldMap := make(map[string]interface{})
 			for _, field := range fields {
 				fieldMap[field.Key] = field.Value
 			}
-			
+
 			return fieldMap["broker_type"] == "kafka" &&
-				   fieldMap["topic"] == "user-events" &&
-				   fieldMap["message_id"] == "msg-789"
+				fieldMap["topic"] == "user-events" &&
+				fieldMap["message_id"] == "msg-789"
 		}),
 	).Return()
 
@@ -162,7 +162,7 @@ func TestMessageHandler_Handle_Error(t *testing.T) {
 
 func TestMessageHandler_Handle_WithExtraFields(t *testing.T) {
 	mockLogger := NewMockMessageLogger()
-	
+
 	handlerError := errors.New("custom error")
 	handler := func(msg *brokers.IncomingMessage) error {
 		return handlerError
@@ -181,20 +181,20 @@ func TestMessageHandler_Handle_WithExtraFields(t *testing.T) {
 	}
 
 	// Set up logger expectation with extra fields
-	mockLogger.On("Error", 
-		"Error handling redis message", 
-		handlerError, 
+	mockLogger.On("Error",
+		"Error handling redis message",
+		handlerError,
 		mock.MatchedBy(func(fields []logging.Field) bool {
 			fieldMap := make(map[string]interface{})
 			for _, field := range fields {
 				fieldMap[field.Key] = field.Value
 			}
-			
+
 			return fieldMap["broker_type"] == "redis" &&
-				   fieldMap["topic"] == "notifications" &&
-				   fieldMap["message_id"] == "msg-extra" &&
-				   fieldMap["custom_field"] == "custom_value" &&
-				   fieldMap["request_id"] == "req-123"
+				fieldMap["topic"] == "notifications" &&
+				fieldMap["message_id"] == "msg-extra" &&
+				fieldMap["custom_field"] == "custom_value" &&
+				fieldMap["request_id"] == "req-123"
 		}),
 	).Return()
 
@@ -272,11 +272,11 @@ func TestHeaderConverter_ToStringMap(t *testing.T) {
 
 	t.Run("complex values", func(t *testing.T) {
 		input := map[string]interface{}{
-			"simple":   "string",
-			"number":   42.5,
-			"slice":    []int{1, 2, 3},
-			"struct":   struct{ Name string }{Name: "test"},
-			"nil":      nil,
+			"simple": "string",
+			"number": 42.5,
+			"slice":  []int{1, 2, 3},
+			"struct": struct{ Name string }{Name: "test"},
+			"nil":    nil,
 		}
 
 		result := hc.ToStringMap(input)
@@ -311,7 +311,7 @@ func TestHeaderConverter_FromStringMap(t *testing.T) {
 
 		interfaceResult, ok := result.(map[string]interface{})
 		assert.True(t, ok)
-		
+
 		expected := map[string]interface{}{
 			"content-type": "application/json",
 			"x-api-key":    "secret123",
@@ -367,7 +367,7 @@ func TestMessageData_Workflow(t *testing.T) {
 		// 4. Create message handler
 		mockLogger := NewMockMessageLogger()
 		processedMessages := []string{}
-		
+
 		handler := func(msg *brokers.IncomingMessage) error {
 			processedMessages = append(processedMessages, msg.ID)
 			return nil
@@ -420,7 +420,7 @@ func TestMessageHandling_Concurrent(t *testing.T) {
 
 		// Verify all messages were processed
 		assert.Len(t, processed, 10)
-		
+
 		// Verify no duplicates
 		seen := make(map[string]bool)
 		for _, id := range processed {
@@ -463,11 +463,11 @@ func TestHeaderConverter_EdgeCases(t *testing.T) {
 
 	t.Run("special characters in keys and values", func(t *testing.T) {
 		input := map[string]interface{}{
-			"key with spaces":    "value with spaces",
-			"key-with-dashes":    "value-with-dashes",
+			"key with spaces":      "value with spaces",
+			"key-with-dashes":      "value-with-dashes",
 			"key_with_underscores": "value_with_underscores",
-			"key.with.dots":      "value.with.dots",
-			"key/with/slashes":   "value/with/slashes",
+			"key.with.dots":        "value.with.dots",
+			"key/with/slashes":     "value/with/slashes",
 		}
 
 		result := hc.ToStringMap(input)

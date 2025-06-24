@@ -1,8 +1,8 @@
 package signature
 
 import (
-	"testing"
 	"encoding/json"
+	"testing"
 )
 
 func TestConfigMarshalling(t *testing.T) {

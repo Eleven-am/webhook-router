@@ -30,8 +30,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"golang.org/x/crypto/pbkdf2"
 	"io"
 	"webhook-router/internal/common/errors"
 )
@@ -47,14 +49,12 @@ type ConfigEncryptor struct {
 
 // NewConfigEncryptor creates a new ConfigEncryptor with the provided encryption key.
 //
-// The key parameter will be processed to ensure it's exactly 32 bytes for AES-256:
-// - If the key is shorter than 32 bytes, it will be zero-padded
-// - If the key is longer than 32 bytes, it will be truncated
-// - Empty keys are rejected and return an error
+// The key parameter is processed using PBKDF2 key derivation to ensure it's
+// exactly 32 bytes for AES-256 and cryptographically strong regardless of input length.
+// This is more secure than simple padding or truncation.
 //
-// For security, use a cryptographically strong random key of at least 32 bytes.
-// The key should be stored securely (e.g., in environment variables) and never
-// hardcoded in source code.
+// For security, use a strong passphrase or random key. The key should be stored
+// securely (e.g., in environment variables) and never hardcoded in source code.
 //
 // Parameters:
 //   - key: The encryption key as a string. Must not be empty.
@@ -73,15 +73,13 @@ func NewConfigEncryptor(key string) (*ConfigEncryptor, error) {
 	if key == "" {
 		return nil, errors.ValidationError("encryption key cannot be empty")
 	}
-	
-	// Convert key to bytes and ensure it's 32 bytes for AES-256
-	keyBytes := []byte(key)
-	
-	// Pad or truncate to 32 bytes
-	finalKey := make([]byte, 32)
-	copy(finalKey, keyBytes)
-	
-	return &ConfigEncryptor{key: finalKey}, nil
+
+	// Use PBKDF2 to derive a proper 32-byte key from the input
+	// This is more secure than simple padding/truncation
+	salt := []byte("webhook-router-salt") // Static salt for deterministic key derivation
+	derivedKey := pbkdf2.Key([]byte(key), salt, 10000, 32, sha256.New)
+
+	return &ConfigEncryptor{key: derivedKey}, nil
 }
 
 // Encrypt encrypts a plaintext string using AES-256-GCM and returns the result
@@ -115,27 +113,27 @@ func (e *ConfigEncryptor) Encrypt(plaintext string) (string, error) {
 	if plaintext == "" {
 		return "", nil
 	}
-	
+
 	block, err := aes.NewCipher(e.key)
 	if err != nil {
 		return "", errors.InternalError("failed to create cipher", err)
 	}
-	
+
 	// Create GCM mode
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return "", errors.InternalError("failed to create GCM", err)
 	}
-	
+
 	// Create nonce
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", errors.InternalError("failed to create nonce", err)
 	}
-	
+
 	// Encrypt data
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	
+
 	// Encode to base64 for storage
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
@@ -172,34 +170,34 @@ func (e *ConfigEncryptor) Decrypt(ciphertext string) (string, error) {
 	if ciphertext == "" {
 		return "", nil
 	}
-	
+
 	// Decode from base64
 	data, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
 		return "", errors.InternalError("failed to decode ciphertext", err)
 	}
-	
+
 	block, err := aes.NewCipher(e.key)
 	if err != nil {
 		return "", errors.InternalError("failed to create cipher", err)
 	}
-	
+
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return "", errors.InternalError("failed to create GCM", err)
 	}
-	
+
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
 		return "", errors.ValidationError("ciphertext too short")
 	}
-	
+
 	nonce, ciphertextBytes := data[:nonceSize], data[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertextBytes, nil)
 	if err != nil {
 		return "", errors.InternalError("failed to decrypt", err)
 	}
-	
+
 	return string(plaintext), nil
 }
 
@@ -218,7 +216,7 @@ func (e *ConfigEncryptor) EncryptJSON(v interface{}) (string, error) {
 	if err != nil {
 		return "", errors.InternalError("failed to marshal JSON", err)
 	}
-	
+
 	// Encrypt the JSON string
 	return e.Encrypt(string(jsonBytes))
 }

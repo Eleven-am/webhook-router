@@ -82,7 +82,7 @@ func TestWrapErrorf(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := WrapErrorf(tt.err, tt.format, tt.args...)
-			
+
 			if tt.err == nil {
 				if result != nil {
 					t.Errorf("WrapErrorf() with nil error should return nil, got %v", result)
@@ -237,10 +237,10 @@ func TestBuildRequiredValidators(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			validators := BuildRequiredValidators(tt.fields)
-			
+
 			// Should return same number of validators as fields
 			if len(validators) != len(tt.fields) {
-				t.Errorf("BuildRequiredValidators() returned %d validators, want %d", 
+				t.Errorf("BuildRequiredValidators() returned %d validators, want %d",
 					len(validators), len(tt.fields))
 			}
 
@@ -263,7 +263,7 @@ func TestBuildRequiredValidators(t *testing.T) {
 
 			// Should have errors for empty fields
 			if errorCount != emptyCount {
-				t.Errorf("expected %d validation errors for empty fields, got %d", 
+				t.Errorf("expected %d validation errors for empty fields, got %d",
 					emptyCount, errorCount)
 			}
 		})
@@ -325,7 +325,7 @@ func TestBuildSetValidators(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			validators := BuildSetValidators(tt.fields, tt.values)
-			
+
 			// Count how many fields have values
 			fieldsWithValues := 0
 			for field := range tt.fields {
@@ -336,7 +336,7 @@ func TestBuildSetValidators(t *testing.T) {
 
 			// Should only create validators for fields that have values
 			if len(validators) != fieldsWithValues {
-				t.Errorf("BuildSetValidators() returned %d validators, expected %d", 
+				t.Errorf("BuildSetValidators() returned %d validators, expected %d",
 					len(validators), fieldsWithValues)
 			}
 
@@ -404,7 +404,7 @@ func TestCopyInterfaceMap(t *testing.T) {
 
 			// Check length
 			if len(result) != len(tt.input) {
-				t.Errorf("CopyInterfaceMap() returned map with %d elements, want %d", 
+				t.Errorf("CopyInterfaceMap() returned map with %d elements, want %d",
 					len(result), len(tt.input))
 			}
 

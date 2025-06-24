@@ -7,24 +7,28 @@ import (
 
 // Settings handlers
 
-// GetSettings returns all application settings
+// GetSettings returns non-sensitive application settings
 // @Summary Get application settings
-// @Description Returns all application configuration settings
+// @Description Returns non-sensitive application configuration settings (sensitive fields are filtered)
 // @Tags settings
 // @Produce json
 // @Security SessionAuth
-// @Success 200 {object} map[string]string "Application settings"
+// @Success 200 {object} map[string]string "Application settings (sensitive fields filtered)"
 // @Failure 500 {string} string "Internal server error"
-// @Router /settings [get]
+// @Router /api/settings [get]
 func (h *Handlers) GetSettings(w http.ResponseWriter, r *http.Request) {
-	settings, err := h.storage.GetAllSettings()
+	allSettings, err := h.storage.GetAllSettings()
 	if err != nil {
 		http.Error(w, "Failed to get settings", http.StatusInternalServerError)
 		return
 	}
 
+	// SECURITY FIX: Filter out sensitive settings before API response
+	// This prevents exposure of OAuth2 tokens, passwords, API keys, etc.
+	safeSettings := GetSafeSettings(allSettings)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(settings)
+	json.NewEncoder(w).Encode(safeSettings)
 }
 
 // UpdateSettings updates application settings
@@ -38,7 +42,7 @@ func (h *Handlers) GetSettings(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} map[string]string "Updated settings"
 // @Failure 400 {string} string "Invalid JSON"
 // @Failure 500 {string} string "Internal server error"
-// @Router /settings [post]
+// @Router /api/settings [post]
 func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var settings map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
@@ -54,13 +58,16 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Return updated settings
-	updatedSettings, err := h.storage.GetAllSettings()
+	// Return updated settings (filtered for security)
+	allUpdatedSettings, err := h.storage.GetAllSettings()
 	if err != nil {
 		http.Error(w, "Failed to get updated settings", http.StatusInternalServerError)
 		return
 	}
 
+	// SECURITY FIX: Filter sensitive settings from response
+	safeUpdatedSettings := GetSafeSettings(allUpdatedSettings)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updatedSettings)
+	json.NewEncoder(w).Encode(safeUpdatedSettings)
 }

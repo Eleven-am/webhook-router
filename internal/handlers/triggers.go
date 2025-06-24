@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
+	"webhook-router/internal/common/pagination"
 	"webhook-router/internal/storage"
 
 	"github.com/gorilla/mux"
@@ -14,19 +14,24 @@ import (
 
 // Trigger management handlers
 
-// GetTriggers returns all configured triggers
+// GetTriggers returns all configured triggers with pagination (with sensitive fields filtered)
 // @Summary Get all triggers
-// @Description Returns a list of all configured triggers with optional filtering
+// @Description Returns a paginated list of all configured triggers with optional filtering (sensitive credentials filtered)
 // @Tags triggers
 // @Produce json
 // @Security SessionAuth
+// @Param page query int false "Page number (default: 1)"
+// @Param per_page query int false "Items per page (default: 20, max: 100)"
 // @Param type query string false "Filter by trigger type"
 // @Param status query string false "Filter by trigger status"
 // @Param active query boolean false "Filter by active status"
-// @Success 200 {array} storage.Trigger "List of triggers"
+// @Success 200 {object} pagination.Response[storage.Trigger] "Paginated list of triggers (credentials filtered)"
 // @Failure 500 {string} string "Internal server error"
-// @Router /triggers [get]
+// @Router /api/triggers [get]
 func (h *Handlers) GetTriggers(w http.ResponseWriter, r *http.Request) {
+	// Parse pagination params
+	params := pagination.ParseParams(r)
+
 	// Parse query parameters for filtering
 	triggerType := r.URL.Query().Get("type")
 	status := r.URL.Query().Get("status")
@@ -42,34 +47,44 @@ func (h *Handlers) GetTriggers(w http.ResponseWriter, r *http.Request) {
 		filters.Active = &active
 	}
 
-	triggers, err := h.storage.GetTriggers(filters)
+	triggers, totalCount, err := h.storage.GetTriggersPaginated(filters, params.Limit, params.Offset)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get triggers: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	// SECURITY FIX: Filter sensitive credentials before API response
+	// This prevents exposure of IMAP passwords, OAuth2 secrets, API keys, etc.
+	filteredTriggers := FilterBrokerConfigs(triggers)
+
+	// Convert a filtered result to a proper slice type
+	var filteredSlice []interface{}
+	if ft, ok := filteredTriggers.([]interface{}); ok {
+		filteredSlice = ft
+	} else {
+		// Fallback if type assertion fails
+		filteredSlice = make([]interface{}, 0)
+	}
+
+	response := pagination.NewResponse(filteredSlice, params.Page, params.PerPage, totalCount)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(triggers)
+	json.NewEncoder(w).Encode(response)
 }
 
-// GetTrigger returns a specific trigger configuration
+// GetTrigger returns a specific trigger configuration (with sensitive fields filtered)
 // @Summary Get trigger
-// @Description Returns a specific trigger configuration by ID
+// @Description Returns a specific trigger configuration by ID (sensitive credentials filtered)
 // @Tags triggers
 // @Produce json
 // @Security SessionAuth
-// @Param id path int true "Trigger ID"
-// @Success 200 {object} storage.Trigger "Trigger configuration"
+// @Param id path string true "Trigger ID"
+// @Success 200 {object} storage.Trigger "Trigger configuration (credentials filtered)"
 // @Failure 400 {string} string "Invalid trigger ID"
 // @Failure 404 {string} string "Trigger not found"
-// @Router /triggers/{id} [get]
+// @Router /api/triggers/{id} [get]
 func (h *Handlers) GetTrigger(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid trigger ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	trigger, err := h.storage.GetTrigger(id)
 	if err != nil {
@@ -77,8 +92,11 @@ func (h *Handlers) GetTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY FIX: Filter sensitive credentials before API response
+	filteredTrigger := FilterBrokerConfig(trigger)
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(trigger)
+	json.NewEncoder(w).Encode(filteredTrigger)
 }
 
 // CreateTrigger creates a new trigger configuration
@@ -92,7 +110,7 @@ func (h *Handlers) GetTrigger(w http.ResponseWriter, r *http.Request) {
 // @Success 201 {object} storage.Trigger "Created trigger"
 // @Failure 400 {string} string "Invalid JSON"
 // @Failure 500 {string} string "Internal server error"
-// @Router /triggers [post]
+// @Router /api/triggers [post]
 func (h *Handlers) CreateTrigger(w http.ResponseWriter, r *http.Request) {
 	var trigger storage.Trigger
 	if err := json.NewDecoder(r.Body).Decode(&trigger); err != nil {
@@ -121,19 +139,15 @@ func (h *Handlers) CreateTrigger(w http.ResponseWriter, r *http.Request) {
 // @Accept json
 // @Produce json
 // @Security SessionAuth
-// @Param id path int true "Trigger ID"
+// @Param id path string true "Trigger ID"
 // @Param trigger body storage.Trigger true "Trigger configuration"
 // @Success 200 {object} storage.Trigger "Updated trigger"
 // @Failure 400 {string} string "Invalid JSON or trigger ID"
 // @Failure 500 {string} string "Failed to update trigger"
-// @Router /triggers/{id} [put]
+// @Router /api/triggers/{id} [put]
 func (h *Handlers) UpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid trigger ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	var trigger storage.Trigger
 	if err := json.NewDecoder(r.Body).Decode(&trigger); err != nil {
@@ -158,18 +172,14 @@ func (h *Handlers) UpdateTrigger(w http.ResponseWriter, r *http.Request) {
 // @Description Removes a trigger configuration
 // @Tags triggers
 // @Security SessionAuth
-// @Param id path int true "Trigger ID"
+// @Param id path string true "Trigger ID"
 // @Success 204 "No Content"
 // @Failure 400 {string} string "Invalid trigger ID"
 // @Failure 500 {string} string "Failed to delete trigger"
-// @Router /triggers/{id} [delete]
+// @Router /api/triggers/{id} [delete]
 func (h *Handlers) DeleteTrigger(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid trigger ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	if err := h.storage.DeleteTrigger(id); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to delete trigger: %v", err), http.StatusInternalServerError)
@@ -184,19 +194,15 @@ func (h *Handlers) DeleteTrigger(w http.ResponseWriter, r *http.Request) {
 // @Description Starts a specific trigger
 // @Tags triggers
 // @Security SessionAuth
-// @Param id path int true "Trigger ID"
+// @Param id path string true "Trigger ID"
 // @Success 200 {object} map[string]interface{} "Start result"
 // @Failure 400 {string} string "Invalid trigger ID"
 // @Failure 404 {string} string "Trigger not found"
 // @Failure 500 {string} string "Failed to start trigger"
-// @Router /triggers/{id}/start [post]
+// @Router /api/triggers/{id}/start [post]
 func (h *Handlers) StartTrigger(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid trigger ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	// Check if trigger manager is available
 	if h.triggerManager == nil {
@@ -221,7 +227,7 @@ func (h *Handlers) StartTrigger(w http.ResponseWriter, r *http.Request) {
 	// Get trigger details for response
 	trigger, err := h.storage.GetTrigger(id)
 	if err != nil {
-		trigger = &storage.Trigger{Name: fmt.Sprintf("Trigger %d", id)}
+		trigger = &storage.Trigger{Name: fmt.Sprintf("Trigger %s", id)}
 	}
 
 	result := map[string]interface{}{
@@ -238,19 +244,15 @@ func (h *Handlers) StartTrigger(w http.ResponseWriter, r *http.Request) {
 // @Description Stops a specific trigger
 // @Tags triggers
 // @Security SessionAuth
-// @Param id path int true "Trigger ID"
+// @Param id path string true "Trigger ID"
 // @Success 200 {object} map[string]interface{} "Stop result"
 // @Failure 400 {string} string "Invalid trigger ID"
 // @Failure 404 {string} string "Trigger not found"
 // @Failure 500 {string} string "Failed to stop trigger"
-// @Router /triggers/{id}/stop [post]
+// @Router /api/triggers/{id}/stop [post]
 func (h *Handlers) StopTrigger(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid trigger ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	// Check if trigger manager is available
 	if h.triggerManager == nil {
@@ -267,7 +269,7 @@ func (h *Handlers) StopTrigger(w http.ResponseWriter, r *http.Request) {
 	// Get trigger details for response
 	trigger, err := h.storage.GetTrigger(id)
 	if err != nil {
-		trigger = &storage.Trigger{Name: fmt.Sprintf("Trigger %d", id)}
+		trigger = &storage.Trigger{Name: fmt.Sprintf("Trigger %s", id)}
 	}
 
 	result := map[string]interface{}{
@@ -284,18 +286,14 @@ func (h *Handlers) StopTrigger(w http.ResponseWriter, r *http.Request) {
 // @Description Tests a trigger configuration
 // @Tags triggers
 // @Security SessionAuth
-// @Param id path int true "Trigger ID"
+// @Param id path string true "Trigger ID"
 // @Success 200 {object} map[string]interface{} "Test result"
 // @Failure 400 {string} string "Invalid trigger ID or configuration"
 // @Failure 404 {string} string "Trigger not found"
-// @Router /triggers/{id}/test [post]
+// @Router /api/triggers/{id}/test [post]
 func (h *Handlers) TestTrigger(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	id, err := strconv.Atoi(vars["id"])
-	if err != nil {
-		http.Error(w, "Invalid trigger ID", http.StatusBadRequest)
-		return
-	}
+	id := vars["id"]
 
 	trigger, err := h.storage.GetTrigger(id)
 	if err != nil {
@@ -353,7 +351,7 @@ func (h *Handlers) TestTrigger(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Security SessionAuth
 // @Success 200 {object} map[string]interface{} "List of trigger types"
-// @Router /triggers/types [get]
+// @Router /api/triggers/types [get]
 func (h *Handlers) GetAvailableTriggerTypes(w http.ResponseWriter, r *http.Request) {
 	types := []string{"http", "schedule", "polling", "broker"}
 

@@ -1,6 +1,6 @@
 # Ignore build artifacts
-webhook-router
-webhook_router.db
+to_be_deleted/webhook-router
+to_be_deleted/webhook_router.db
 
 # Ignore Docker files
 Dockerfile

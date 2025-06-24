@@ -6,10 +6,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/lucsky/cuid"
+	"golang.org/x/crypto/bcrypt"
+	"webhook-router/internal/common/errors"
+	"webhook-router/internal/common/utils"
+	"webhook-router/internal/crypto"
 	"webhook-router/internal/storage"
 	postgres "webhook-router/internal/storage/generated/postgres"
 )
@@ -20,16 +26,27 @@ import (
 // pipelines, brokers, and webhook logs.
 type PostgreSQLCAdapter struct {
 	BaseAdapter
-	conn    *pgx.Conn
-	queries *postgres.Queries
+	conn      *pgx.Conn
+	queries   *postgres.Queries
+	encryptor *crypto.ConfigEncryptor // Optional encryptor for sensitive data
 }
 
 // NewPostgreSQLCAdapter creates a new PostgreSQL storage adapter using SQLC-generated queries.
 // The conn parameter should be an open PostgreSQL database connection.
 func NewPostgreSQLCAdapter(conn *pgx.Conn) *PostgreSQLCAdapter {
 	return &PostgreSQLCAdapter{
-		conn:    conn,
-		queries: postgres.New(conn),
+		conn:      conn,
+		queries:   postgres.New(conn),
+		encryptor: nil,
+	}
+}
+
+// NewSecurePostgreSQLCAdapter creates a new PostgreSQL storage adapter with encryption.
+func NewSecurePostgreSQLCAdapter(conn *pgx.Conn, encryptor *crypto.ConfigEncryptor) *PostgreSQLCAdapter {
+	return &PostgreSQLCAdapter{
+		conn:      conn,
+		queries:   postgres.New(conn),
+		encryptor: encryptor,
 	}
 }
 
@@ -62,18 +79,72 @@ func (s *PostgreSQLCAdapter) intToPgInt32(val *int) *int32 {
 
 // User operations
 
-func (s *PostgreSQLCAdapter) CreateUser(username, passwordHash string) error {
+func (s *PostgreSQLCAdapter) CreateUser(username, password string) (*storage.User, error) {
 	ctx := context.Background()
+
+	// Hash the password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, errors.InternalError("failed to hash password", err)
+	}
+
+	// Check if this is the first user - they become the server owner
+	userCount, err := s.queries.CountUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// First user is the server owner (not a default user)
+	// Subsequent users are regular users (also not default users)
+	// Note: Server ownership is implicit based on user creation order
 	isDefault := false
-	_, err := s.queries.CreateUser(ctx, postgres.CreateUserParams{
+	isFirstUser := userCount == 0
+
+	result, err := s.queries.CreateUser(ctx, postgres.CreateUserParams{
+		ID:           cuid.New(),
 		Username:     username,
-		PasswordHash: passwordHash,
+		PasswordHash: string(hashedPassword),
 		IsDefault:    &isDefault,
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+
+	// Log if this is the first user (server owner)
+	if isFirstUser {
+		// This user becomes the implicit server owner
+		// Future authorization logic can check if userID matches the first created user
+	}
+
+	// Convert to storage.User
+	return &storage.User{
+		ID:           result.ID,
+		Username:     result.Username,
+		PasswordHash: result.PasswordHash,
+		IsDefault:    s.ConvertNullableBool(result.IsDefault),
+		CreatedAt:    s.timestampToTime(result.CreatedAt),
+		UpdatedAt:    s.timestampToTime(result.UpdatedAt),
+	}, nil
 }
 
-func (s *PostgreSQLCAdapter) GetUser(username string) (*storage.User, error) {
+func (s *PostgreSQLCAdapter) GetUser(userID string) (*storage.User, error) {
+	ctx := context.Background()
+	user, err := s.queries.GetUser(ctx, userID)
+	if err != nil {
+		return nil, s.HandlePgxNotFound(err)
+	}
+
+	return &storage.User{
+		ID:           user.ID,
+		Username:     user.Username,
+		PasswordHash: user.PasswordHash,
+		IsDefault:    s.ConvertNullableBool(user.IsDefault),
+		CreatedAt:    s.timestampToTime(user.CreatedAt),
+		UpdatedAt:    s.timestampToTime(user.UpdatedAt),
+	}, nil
+}
+
+func (s *PostgreSQLCAdapter) GetUserByUsername(username string) (*storage.User, error) {
 	ctx := context.Background()
 	user, err := s.queries.GetUserByUsername(ctx, username)
 	if err != nil {
@@ -81,7 +152,7 @@ func (s *PostgreSQLCAdapter) GetUser(username string) (*storage.User, error) {
 	}
 
 	return &storage.User{
-		ID:           int(user.ID),
+		ID:           user.ID,
 		Username:     user.Username,
 		PasswordHash: user.PasswordHash,
 		IsDefault:    s.ConvertNullableBool(user.IsDefault),
@@ -118,149 +189,212 @@ func (s *PostgreSQLCAdapter) DeleteSetting(key string) error {
 
 // Route operations
 
-func (s *PostgreSQLCAdapter) CreateRoute(route *storage.Route) error {
-	ctx := context.Background()
+// func (s *PostgreSQLCAdapter) CreateRoute(route *storage.Route) error {
+// 	ctx := context.Background()
+//
+// 	// Convert signature fields
+// 	var signatureConfig *string
+// 	var signatureSecret *string
+// 	if route.SignatureConfig != "" {
+// 		signatureConfig = &route.SignatureConfig
+// 	}
+// 	if route.SignatureSecret != "" {
+// 		signatureSecret = &route.SignatureSecret
+// 	}
+//
+// 	params := postgres.CreateRouteParams{
+// 		ID:                  cuid.New(),
+// 		Name:                route.Name,
+// 		Method:              route.Method,
+// 		Queue:               route.Queue,
+// 		Exchange:            &route.Exchange,
+// 		RoutingKey:          route.RoutingKey,
+// 		Filters:             []byte(route.Filters),
+// 		Headers:             []byte(route.Headers),
+// 		Active:              &route.Active,
+// 		Priority:            s.intToPgInt32(&route.Priority),
+// 		ConditionExpression: &route.ConditionExpression,
+// 		PipelineID:          route.PipelineID,
+// 		TriggerID:           route.TriggerID,
+// 		DestinationBrokerID: route.DestinationBrokerID,
+// 		SignatureConfig:     signatureConfig,
+// 		SignatureSecret:     signatureSecret,
+// 		UserID:              route.UserID,
+// 	}
+//
+// 	result, err := s.queries.CreateRoute(ctx, params)
+// 	if err != nil {
+// 		return err
+// 	}
+//
+// 	route.ID = result.ID
+// 	route.CreatedAt = s.timestampToTime(result.CreatedAt)
+// 	route.UpdatedAt = s.timestampToTime(result.UpdatedAt)
+// 	return nil
+// }
 
-	// Convert signature fields
-	var signatureConfig []byte
-	var signatureSecret *string
-	if route.SignatureConfig != "" {
-		signatureConfig = []byte(route.SignatureConfig)
-	}
-	if route.SignatureSecret != "" {
-		signatureSecret = &route.SignatureSecret
-	}
+// User-scoped route methods (new interface implementation)
+// func (s *PostgreSQLCAdapter) GetRoute(id string, userID string) (*storage.Route, error) {
+// 	ctx := context.Background()
+// 	route, err := s.queries.GetRouteByUser(ctx, postgres.GetRouteByUserParams{
+// 		ID:     id,
+// 		UserID: userID,
+// 	})
+// 	if err != nil {
+// 		return nil, s.HandlePgxNotFound(err)
+// 	}
+//
+// 	return s.routeFromDB(route)
+// }
 
-	params := postgres.CreateRouteParams{
-		Name:                route.Name,
-		Endpoint:            route.Endpoint,
-		Method:              route.Method,
-		Queue:               route.Queue,
-		Exchange:            &route.Exchange,
-		RoutingKey:          route.RoutingKey,
-		Filters:             []byte(route.Filters),
-		Headers:             []byte(route.Headers),
-		Active:              &route.Active,
-		Priority:            s.intToPgInt32(&route.Priority),
-		ConditionExpression: &route.ConditionExpression,
-		PipelineID:          s.intToPgInt32(route.PipelineID),
-		TriggerID:           s.intToPgInt32(route.TriggerID),
-		DestinationBrokerID: s.intToPgInt32(route.DestinationBrokerID),
-		SignatureConfig:     signatureConfig,
-		SignatureSecret:     signatureSecret,
-	}
+// GetRouteByEndpoint finds a route by its endpoint path (interface method - checks any method).
+// Returns nil if no matching route is found.
 
-	result, err := s.queries.CreateRoute(ctx, params)
-	if err != nil {
-		return err
-	}
+// func (s *PostgreSQLCAdapter) ListTriggers() ([]*storage.Route, error) {
+// 	ctx := context.Background()
+// 	routes, err := s.queries.ListTriggers(ctx)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	result := make([]*storage.Route, len(routes))
+// 	for i, route := range routes {
+// 		result[i], err = s.routeFromDB(route)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 	}
+//
+// 	return result, nil
+// }
 
-	route.ID = int(result.ID)
-	route.CreatedAt = s.timestampToTime(result.CreatedAt)
-	route.UpdatedAt = s.timestampToTime(result.UpdatedAt)
-	return nil
-}
+// GetRoutesPaginated implements Storage interface with pagination
+// func (s *PostgreSQLCAdapter) GetRoutesPaginated(limit, offset int) ([]*storage.Route, int, error) {
+// 	ctx := context.Background()
+//
+// 	// Get total count
+// 	countResult, err := s.queries.CountRoutes(ctx)
+// 	if err != nil {
+// 		return nil, 0, err
+// 	}
+// 	totalCount := int(countResult)
+//
+// 	// Get paginated routes
+// 	routes, err := s.queries.ListTriggersPaginated(ctx, postgres.ListTriggersPaginatedParams{
+// 		Limit:  int32(limit),
+// 		Offset: int32(offset),
+// 	})
+// 	if err != nil {
+// 		return nil, 0, err
+// 	}
+//
+// 	result := make([]*storage.Route, len(routes))
+// 	for i, route := range routes {
+// 		result[i], err = s.routeFromDB(route)
+// 		if err != nil {
+// 			return nil, 0, err
+// 		}
+// 	}
+//
+// 	return result, totalCount, nil
+// }
 
-func (s *PostgreSQLCAdapter) GetRoute(id int) (*storage.Route, error) {
-	ctx := context.Background()
-	route, err := s.queries.GetRoute(ctx, int32(id))
-	if err != nil {
-		return nil, s.HandlePgxNotFound(err)
-	}
+// User-scoped update
+// func (s *PostgreSQLCAdapter) UpdateRoute(route *storage.Route, userID string) error {
+// 	ctx := context.Background()
+//
+// 	// Convert signature fields
+// 	var signatureConfig *string
+// 	var signatureSecret *string
+// 	if route.SignatureConfig != "" {
+// 		signatureConfig = &route.SignatureConfig
+// 	}
+// 	if route.SignatureSecret != "" {
+// 		signatureSecret = &route.SignatureSecret
+// 	}
+//
+// 	params := postgres.UpdateRouteByUserParams{
+// 		ID:                  route.ID,
+// 		UserID:              userID,
+// 		Name:                route.Name,
+// 		Method:              route.Method,
+// 		Queue:               route.Queue,
+// 		Exchange:            &route.Exchange,
+// 		RoutingKey:          route.RoutingKey,
+// 		Filters:             []byte(route.Filters),
+// 		Headers:             []byte(route.Headers),
+// 		Active:              &route.Active,
+// 		Priority:            s.intToPgInt32(&route.Priority),
+// 		ConditionExpression: &route.ConditionExpression,
+// 		PipelineID:          route.PipelineID,
+// 		TriggerID:           route.TriggerID,
+// 		DestinationBrokerID: route.DestinationBrokerID,
+// 		SignatureConfig:     signatureConfig,
+// 		SignatureSecret:     signatureSecret,
+// 	}
+//
+// 	_, err := s.queries.UpdateRouteByUser(ctx, params)
+// 	return err
+// }
 
-	return s.routeFromDB(route)
-}
+// User-scoped delete
+// func (s *PostgreSQLCAdapter) DeleteRoute(id string, userID string) error {
+// 	ctx := context.Background()
+// 	return s.queries.DeleteRouteByUser(ctx, postgres.DeleteRouteByUserParams{
+// 		ID:     id,
+// 		UserID: userID,
+// 	})
+// }
 
-func (s *PostgreSQLCAdapter) GetRouteByEndpoint(endpoint, method string) (*storage.Route, error) {
-	ctx := context.Background()
-
-	route, err := s.queries.GetRouteByEndpoint(ctx, postgres.GetRouteByEndpointParams{
-		Endpoint: endpoint,
-		Method:   method,
-	})
-	if err != nil {
-		return nil, s.HandlePgxNotFound(err)
-	}
-
-	return s.routeFromDB(route)
-}
-
-func (s *PostgreSQLCAdapter) ListRoutes() ([]*storage.Route, error) {
-	ctx := context.Background()
-	routes, err := s.queries.ListRoutes(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]*storage.Route, len(routes))
-	for i, route := range routes {
-		result[i], err = s.routeFromDB(route)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return result, nil
-}
-
-func (s *PostgreSQLCAdapter) UpdateRoute(route *storage.Route) error {
-	ctx := context.Background()
-
-	// Convert signature fields
-	var signatureConfig []byte
-	var signatureSecret *string
-	if route.SignatureConfig != "" {
-		signatureConfig = []byte(route.SignatureConfig)
-	}
-	if route.SignatureSecret != "" {
-		signatureSecret = &route.SignatureSecret
-	}
-
-	params := postgres.UpdateRouteParams{
-		ID:                  int32(route.ID),
-		Name:                route.Name,
-		Endpoint:            route.Endpoint,
-		Method:              route.Method,
-		Queue:               route.Queue,
-		Exchange:            &route.Exchange,
-		RoutingKey:          route.RoutingKey,
-		Filters:             []byte(route.Filters),
-		Headers:             []byte(route.Headers),
-		Active:              &route.Active,
-		Priority:            s.intToPgInt32(&route.Priority),
-		ConditionExpression: &route.ConditionExpression,
-		PipelineID:          s.intToPgInt32(route.PipelineID),
-		TriggerID:           s.intToPgInt32(route.TriggerID),
-		DestinationBrokerID: s.intToPgInt32(route.DestinationBrokerID),
-		SignatureConfig:     signatureConfig,
-		SignatureSecret:     signatureSecret,
-	}
-
-	_, err := s.queries.UpdateRoute(ctx, params)
-	return err
-}
-
-func (s *PostgreSQLCAdapter) DeleteRoute(id int) error {
-	ctx := context.Background()
-	return s.queries.DeleteRoute(ctx, int32(id))
-}
+// GetRoutesByUser returns all routes for a specific user
+// func (s *PostgreSQLCAdapter) GetRoutesByUser(userID string) ([]*storage.Route, error) {
+// 	ctx := context.Background()
+// 	routes, err := s.queries.GetRoutesByUser(ctx, userID)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	result := make([]*storage.Route, len(routes))
+// 	for i, route := range routes {
+// 		result[i], err = s.routeFromDB(route)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 	}
+//
+// 	return result, nil
+// }
 
 // Trigger operations
 
 func (s *PostgreSQLCAdapter) CreateTrigger(trigger *storage.Trigger) error {
 	ctx := context.Background()
 
-	configJSON, err := s.MarshalJSON(trigger.Config)
+	// Encrypt sensitive fields in config before storing
+	encryptedConfig, err := s.encryptSensitiveConfig(trigger.Config)
+	if err != nil {
+		return err
+	}
+
+	configJSON, err := s.MarshalJSON(encryptedConfig)
 	if err != nil {
 		return err
 	}
 
 	params := postgres.CreateTriggerParams{
-		Name:   trigger.Name,
-		Type:   trigger.Type,
-		Config: []byte(configJSON),
-		Status: &trigger.Status,
-		Active: &trigger.Active,
+		ID:          cuid.New(),
+		Name:        trigger.Name,
+		Type:        trigger.Type,
+		Config:      []byte(configJSON),
+		Status:      &trigger.Status,
+		Active:      &trigger.Active,
+		DlqEnabled:  &trigger.DLQEnabled,
+		DlqRetryMax: func() *int32 { v := int32(trigger.DLQRetryMax); return &v }(),
+	}
+
+	// Handle optional DLQ broker ID
+	if trigger.DLQBrokerID != nil {
+		params.DlqBrokerID = trigger.DLQBrokerID
 	}
 
 	result, err := s.queries.CreateTrigger(ctx, params)
@@ -268,15 +402,29 @@ func (s *PostgreSQLCAdapter) CreateTrigger(trigger *storage.Trigger) error {
 		return err
 	}
 
-	trigger.ID = int(result.ID)
+	trigger.ID = result.ID
 	trigger.CreatedAt = s.timestampToTime(result.CreatedAt)
 	trigger.UpdatedAt = s.timestampToTime(result.UpdatedAt)
 	return nil
 }
 
-func (s *PostgreSQLCAdapter) GetTrigger(id int) (*storage.Trigger, error) {
+func (s *PostgreSQLCAdapter) GetTrigger(id string) (*storage.Trigger, error) {
 	ctx := context.Background()
-	trigger, err := s.queries.GetTrigger(ctx, int32(id))
+	trigger, err := s.queries.GetTrigger(ctx, id)
+	if err != nil {
+		return nil, s.HandlePgxNotFound(err)
+	}
+
+	return s.triggerFromDB(trigger)
+}
+
+func (s *PostgreSQLCAdapter) GetHTTPTriggerByUserPathMethod(userID, path, method string) (*storage.Trigger, error) {
+	ctx := context.Background()
+	trigger, err := s.queries.GetHTTPTriggerByUserPathMethod(ctx, postgres.GetHTTPTriggerByUserPathMethodParams{
+		UserID:   userID,
+		Config:   []byte(path),   // First json extract parameter
+		Config_2: []byte(method), // Second json extract parameter
+	})
 	if err != nil {
 		return nil, s.HandlePgxNotFound(err)
 	}
@@ -305,27 +453,40 @@ func (s *PostgreSQLCAdapter) ListTriggers() ([]*storage.Trigger, error) {
 func (s *PostgreSQLCAdapter) UpdateTrigger(trigger *storage.Trigger) error {
 	ctx := context.Background()
 
-	configJSON, err := s.MarshalJSON(trigger.Config)
+	// Encrypt sensitive fields in config before storing
+	encryptedConfig, err := s.encryptSensitiveConfig(trigger.Config)
+	if err != nil {
+		return err
+	}
+
+	configJSON, err := s.MarshalJSON(encryptedConfig)
 	if err != nil {
 		return err
 	}
 
 	params := postgres.UpdateTriggerParams{
-		ID:     int32(trigger.ID),
-		Name:   trigger.Name,
-		Type:   trigger.Type,
-		Config: []byte(configJSON),
-		Status: &trigger.Status,
-		Active: &trigger.Active,
+		ID:          trigger.ID,
+		Name:        trigger.Name,
+		Type:        trigger.Type,
+		Config:      []byte(configJSON),
+		Status:      &trigger.Status,
+		Active:      &trigger.Active,
+		DlqEnabled:  &trigger.DLQEnabled,
+		DlqRetryMax: func() *int32 { v := int32(trigger.DLQRetryMax); return &v }(),
+	}
+
+	// Handle optional DLQ broker ID
+	if trigger.DLQBrokerID != nil {
+		params.DlqBrokerID = trigger.DLQBrokerID
 	}
 
 	_, err = s.queries.UpdateTrigger(ctx, params)
 	return err
 }
 
-func (s *PostgreSQLCAdapter) DeleteTrigger(id int) error {
+func (s *PostgreSQLCAdapter) DeleteTrigger(id string) error {
 	ctx := context.Background()
-	return s.queries.DeleteTrigger(ctx, int32(id))
+	return s.queries.DeleteTrigger(ctx, id)
 }
 
 // Pipeline operations
@@ -339,6 +500,7 @@ func (s *PostgreSQLCAdapter) CreatePipeline(pipeline *storage.Pipeline) error {
 	}
 
 	params := postgres.CreatePipelineParams{
+		ID:          cuid.New(),
 		Name:        pipeline.Name,
 		Description: s.ConvertStringToNullable(pipeline.Description),
 		Stages:      []byte(stagesJSON),
@@ -350,15 +512,15 @@ func (s *PostgreSQLCAdapter) CreatePipeline(pipeline *storage.Pipeline) error {
 		return err
 	}
 
-	pipeline.ID = int(result.ID)
+	pipeline.ID = result.ID
 	pipeline.CreatedAt = s.timestampToTime(result.CreatedAt)
 	pipeline.UpdatedAt = s.timestampToTime(result.UpdatedAt)
 	return nil
 }
 
-func (s *PostgreSQLCAdapter) GetPipeline(id int) (*storage.Pipeline, error) {
+func (s *PostgreSQLCAdapter) GetPipeline(id string) (*storage.Pipeline, error) {
 	ctx := context.Background()
-	pipeline, err := s.queries.GetPipeline(ctx, int32(id))
+	pipeline, err := s.queries.GetPipeline(ctx, id)
 	if err != nil {
 		return nil, s.HandlePgxNotFound(err)
 	}
@@ -393,7 +555,7 @@ func (s *PostgreSQLCAdapter) UpdatePipeline(pipeline *storage.Pipeline) error {
 	}
 
 	params := postgres.UpdatePipelineParams{
-		ID:          int32(pipeline.ID),
+		ID:          pipeline.ID,
 		Name:        pipeline.Name,
 		Description: s.ConvertStringToNullable(pipeline.Description),
 		Stages:      []byte(stagesJSON),
@@ -404,27 +566,36 @@ func (s *PostgreSQLCAdapter) UpdatePipeline(pipeline *storage.Pipeline) error {
 	return err
 }
 
-func (s *PostgreSQLCAdapter) DeletePipeline(id int) error {
+func (s *PostgreSQLCAdapter) DeletePipeline(id string) error {
 	ctx := context.Background()
-	return s.queries.DeletePipeline(ctx, int32(id))
+	return s.queries.DeletePipeline(ctx, id)
 }
 
 // BrokerConfig operations
 
-func (s *PostgreSQLCAdapter) CreateBrokerConfig(config *storage.BrokerConfig) error {
+func (s *PostgreSQLCAdapter) CreateBroker(config *storage.BrokerConfig) error {
 	ctx := context.Background()
 
-	configJSON, err := s.MarshalJSON(config.Config)
+	// Encrypt sensitive fields in config before storing
+	encryptedConfig, err := s.encryptSensitiveConfig(config.Config)
+	if err != nil {
+		return err
+	}
+
+	configJSON, err := s.MarshalJSON(encryptedConfig)
 	if err != nil {
 		return err
 	}
 
 	params := postgres.CreateBrokerConfigParams{
+		ID:           cuid.New(),
 		Name:         config.Name,
 		Type:         config.Type,
 		Config:       []byte(configJSON),
 		Active:       &config.Active,
 		HealthStatus: &config.HealthStatus,
+		DlqEnabled:   config.DlqEnabled,
+		DlqBrokerID:  config.DlqBrokerID,
 	}
 
 	result, err := s.queries.CreateBrokerConfig(ctx, params)
@@ -432,15 +603,15 @@ func (s *PostgreSQLCAdapter) CreateBrokerConfig(config *storage.BrokerConfig) er
 		return err
 	}
 
-	config.ID = int(result.ID)
+	config.ID = result.ID
 	config.CreatedAt = s.timestampToTime(result.CreatedAt)
 	config.UpdatedAt = s.timestampToTime(result.UpdatedAt)
 	return nil
 }
 
-func (s *PostgreSQLCAdapter) GetBrokerConfig(id int) (*storage.BrokerConfig, error) {
+func (s *PostgreSQLCAdapter) GetBroker(id string) (*storage.BrokerConfig, error) {
 	ctx := context.Background()
-	config, err := s.queries.GetBrokerConfig(ctx, int32(id))
+	config, err := s.queries.GetBrokerConfig(ctx, id)
 	if err != nil {
 		return nil, s.HandlePgxNotFound(err)
 	}
@@ -448,7 +619,7 @@ func (s *PostgreSQLCAdapter) GetBrokerConfig(id int) (*storage.BrokerConfig, err
 	return s.brokerConfigFromDB(config)
 }
 
-func (s *PostgreSQLCAdapter) ListBrokerConfigs() ([]*storage.BrokerConfig, error) {
+func (s *PostgreSQLCAdapter) GetBrokers() ([]*storage.BrokerConfig, error) {
 	ctx := context.Background()
 	configs, err := s.queries.ListBrokerConfigs(ctx)
 	if err != nil {
@@ -466,16 +637,53 @@ func (s *PostgreSQLCAdapter) ListBrokerConfigs() ([]*storage.BrokerConfig, error
 	return result, nil
 }
 
-func (s *PostgreSQLCAdapter) UpdateBrokerConfig(config *storage.BrokerConfig) error {
+// GetBrokersPaginated implements Storage interface with pagination
+func (s *PostgreSQLCAdapter) GetBrokersPaginated(limit, offset int) ([]*storage.BrokerConfig, int, error) {
 	ctx := context.Background()
 
-	configJSON, err := s.MarshalJSON(config.Config)
+	// Get total count
+	countResult, err := s.queries.CountBrokerConfigs(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	totalCount := int(countResult)
+
+	// Get paginated broker configs
+	configs, err := s.queries.ListBrokerConfigsPaginated(ctx, postgres.ListBrokerConfigsPaginatedParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	result := make([]*storage.BrokerConfig, len(configs))
+	for i, config := range configs {
+		result[i], err = s.brokerConfigFromDB(config)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	return result, totalCount, nil
+}
+
+func (s *PostgreSQLCAdapter) UpdateBroker(config *storage.BrokerConfig) error {
+	ctx := context.Background()
+
+	// Encrypt sensitive fields in config before storing
+	encryptedConfig, err := s.encryptSensitiveConfig(config.Config)
+	if err != nil {
+		return err
+	}
+
+	configJSON, err := s.MarshalJSON(encryptedConfig)
 	if err != nil {
 		return err
 	}
 
 	params := postgres.UpdateBrokerConfigParams{
-		ID:     int32(config.ID),
+		ID:     config.ID,
 		Name:   config.Name,
 		Type:   config.Type,
 		Config: []byte(configJSON),
@@ -486,53 +694,9 @@ func (s *PostgreSQLCAdapter) UpdateBrokerConfig(config *storage.BrokerConfig) er
 	return err
 }
 
-func (s *PostgreSQLCAdapter) DeleteBrokerConfig(id int) error {
+func (s *PostgreSQLCAdapter) DeleteBroker(id string) error {
 	ctx := context.Background()
-	return s.queries.DeleteBrokerConfig(ctx, int32(id))
-}
-
-// WebhookLog operations
-
-func (s *PostgreSQLCAdapter) LogWebhook(log *storage.WebhookLog) error {
-	ctx := context.Background()
-
-	params := postgres.CreateWebhookLogParams{
-		RouteID:              s.intToPgInt32(&log.RouteID),
-		Method:               log.Method,
-		Endpoint:             log.Endpoint,
-		Headers:              []byte(log.Headers),
-		Body:                 s.ConvertStringToNullable(log.Body),
-		StatusCode:           s.intToPgInt32(&log.StatusCode),
-		Error:                s.ConvertStringToNullable(log.Error),
-		TransformationTimeMs: s.intToPgInt32(&log.TransformationTimeMS),
-		BrokerPublishTimeMs:  s.intToPgInt32(&log.BrokerPublishTimeMS),
-		TriggerID:            s.intToPgInt32(log.TriggerID),
-		PipelineID:           s.intToPgInt32(log.PipelineID),
-	}
-
-	_, err := s.queries.CreateWebhookLog(ctx, params)
-	return err
-}
-
-func (s *PostgreSQLCAdapter) GetWebhookLogs(limit, offset int) ([]*storage.WebhookLog, error) {
-	ctx := context.Background()
-	logs, err := s.queries.ListWebhookLogs(ctx, postgres.ListWebhookLogsParams{
-		Limit:  int32(limit),
-		Offset: int32(offset),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]*storage.WebhookLog, len(logs))
-	for i, log := range logs {
-		result[i], err = s.webhookLogFromDB(log)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return result, nil
+	return s.queries.DeleteBrokerConfig(ctx, id)
 }
 
 // Transaction support
@@ -552,35 +716,34 @@ func (s *PostgreSQLCAdapter) BeginTx() (storage.Transaction, error) {
 
 // Helper methods for converting from database types
 
-func (s *PostgreSQLCAdapter) routeFromDB(route postgres.Route) (*storage.Route, error) {
-	// Convert signature fields
-	signatureConfig := ""
-	if len(route.SignatureConfig) > 0 {
-		signatureConfig = string(route.SignatureConfig)
-	}
-
-	return &storage.Route{
-		ID:                  int(route.ID),
-		Name:                route.Name,
-		Endpoint:            route.Endpoint,
-		Method:              route.Method,
-		Queue:               route.Queue,
-		Exchange:            s.ConvertNullableString(route.Exchange),
-		RoutingKey:          route.RoutingKey,
-		Filters:             string(route.Filters),
-		Headers:             string(route.Headers),
-		Active:              s.ConvertNullableBool(route.Active),
-		Priority:            s.convertInt32PtrToInt(route.Priority),
-		ConditionExpression: s.ConvertNullableString(route.ConditionExpression),
-		SignatureConfig:     signatureConfig,
-		SignatureSecret:     s.ConvertNullableString(route.SignatureSecret),
-		CreatedAt:           s.timestampToTime(route.CreatedAt),
-		UpdatedAt:           s.timestampToTime(route.UpdatedAt),
-		PipelineID:          s.convertInt32PtrToIntPtr(route.PipelineID),
-		TriggerID:           s.convertInt32PtrToIntPtr(route.TriggerID),
-		DestinationBrokerID: s.convertInt32PtrToIntPtr(route.DestinationBrokerID),
-	}, nil
-}
+// func (s *PostgreSQLCAdapter) routeFromDB(route postgres.Route) (*storage.Route, error) {
+// 	// Convert signature fields
+// 	signatureConfig := ""
+// 	if route.SignatureConfig != nil && *route.SignatureConfig != "" {
+// 		signatureConfig = *route.SignatureConfig
+// 	}
+//
+// 	return &storage.Route{
+// 		ID:                  route.ID,
+// 		Name:                route.Name,
+// 		Method:              route.Method,
+// 		Queue:               route.Queue,
+// 		Exchange:            s.ConvertNullableString(route.Exchange),
+// 		RoutingKey:          route.RoutingKey,
+// 		Filters:             string(route.Filters),
+// 		Headers:             string(route.Headers),
+// 		Active:              s.ConvertNullableBool(route.Active),
+// 		Priority:            s.convertInt32PtrToInt(route.Priority),
+// 		ConditionExpression: s.ConvertNullableString(route.ConditionExpression),
+// 		SignatureConfig:     signatureConfig,
+// 		SignatureSecret:     s.ConvertNullableString(route.SignatureSecret),
+// 		CreatedAt:           s.timestampToTime(route.CreatedAt),
+// 		UpdatedAt:           s.timestampToTime(route.UpdatedAt),
+// 		PipelineID:          route.PipelineID,
+// 		TriggerID:           route.TriggerID,
+// 		DestinationBrokerID: route.DestinationBrokerID,
+// 	}, nil
+// }
 
 // Helper functions for type conversions
 func (s *PostgreSQLCAdapter) convertInt32PtrToInt(val *int32) int {
@@ -611,16 +774,29 @@ func (s *PostgreSQLCAdapter) triggerFromDB(trigger postgres.Trigger) (*storage.T
 		return nil, err
 	}
 
+	// Decrypt sensitive fields in config after loading
+	decryptedConfig, err := s.decryptSensitiveConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
 	t := &storage.Trigger{
-		ID:           int(trigger.ID),
+		ID:           trigger.ID,
 		Name:         trigger.Name,
 		Type:         trigger.Type,
-		Config:       config,
+		Config:       decryptedConfig,
 		Status:       s.ConvertNullableString(trigger.Status),
 		Active:       s.ConvertNullableBool(trigger.Active),
 		ErrorMessage: s.ConvertNullableString(trigger.ErrorMessage),
 		CreatedAt:    s.timestampToTime(trigger.CreatedAt),
 		UpdatedAt:    s.timestampToTime(trigger.UpdatedAt),
+		DLQEnabled:   s.ConvertNullableBool(trigger.DlqEnabled),
+		DLQRetryMax: func() int {
+			if trigger.DlqRetryMax != nil {
+				return int(*trigger.DlqRetryMax)
+			}
+			return 3
+		}(),
 	}
 
 	if trigger.LastExecution.Valid {
@@ -628,6 +804,11 @@ func (s *PostgreSQLCAdapter) triggerFromDB(trigger postgres.Trigger) (*storage.T
 	}
 	if trigger.NextExecution.Valid {
 		t.NextExecution = &trigger.NextExecution.Time
+	}
+
+	// Handle DLQ broker ID
+	if trigger.DlqBrokerID != nil {
+		t.DLQBrokerID = trigger.DlqBrokerID
 	}
 
 	return t, nil
@@ -640,7 +821,7 @@ func (s *PostgreSQLCAdapter) pipelineFromDB(pipeline postgres.Pipeline) (*storag
 	}
 
 	return &storage.Pipeline{
-		ID:          int(pipeline.ID),
+		ID:          pipeline.ID,
 		Name:        pipeline.Name,
 		Description: s.ConvertNullableString(pipeline.Description),
 		Stages:      stages,
@@ -656,11 +837,17 @@ func (s *PostgreSQLCAdapter) brokerConfigFromDB(config postgres.BrokerConfig) (*
 		return nil, err
 	}
 
+	// Decrypt sensitive fields in config after loading
+	decryptedConfig, err := s.decryptSensitiveConfig(configData)
+	if err != nil {
+		return nil, err
+	}
+
 	bc := &storage.BrokerConfig{
-		ID:           int(config.ID),
+		ID:           config.ID,
 		Name:         config.Name,
 		Type:         config.Type,
-		Config:       configData,
+		Config:       decryptedConfig,
 		Active:       s.ConvertNullableBool(config.Active),
 		HealthStatus: s.ConvertNullableString(config.HealthStatus),
 		CreatedAt:    s.timestampToTime(config.CreatedAt),
@@ -672,33 +859,6 @@ func (s *PostgreSQLCAdapter) brokerConfigFromDB(config postgres.BrokerConfig) (*
 	}
 
 	return bc, nil
-}
-
-func (s *PostgreSQLCAdapter) webhookLogFromDB(log postgres.WebhookLog) (*storage.WebhookLog, error) {
-	wl := &storage.WebhookLog{
-		ID:                   int(log.ID),
-		RouteID:              s.convertInt32PtrToInt64(log.RouteID),
-		Method:               log.Method,
-		Endpoint:             log.Endpoint,
-		Headers:              string(log.Headers),
-		Body:                 s.ConvertNullableString(log.Body),
-		StatusCode:           s.convertInt32PtrToInt64(log.StatusCode),
-		Error:                s.ConvertNullableString(log.Error),
-		ProcessedAt:          s.timestampToTime(log.ProcessedAt),
-		TransformationTimeMS: s.convertInt32PtrToInt64(log.TransformationTimeMs),
-		BrokerPublishTimeMS:  s.convertInt32PtrToInt64(log.BrokerPublishTimeMs),
-	}
-
-	if log.TriggerID != nil {
-		tid := int(*log.TriggerID)
-		wl.TriggerID = &tid
-	}
-	if log.PipelineID != nil {
-		pid := int(*log.PipelineID)
-		wl.PipelineID = &pid
-	}
-
-	return wl, nil
 }
 
 // PostgreSQLCTransaction implements storage.Transaction interface
@@ -732,7 +892,6 @@ func (s *PostgreSQLCAdapter) Ping() error {
 
 // GetStatistics is not part of the Storage interface and is not used anywhere.
 // The actual statistics methods are GetStats() and GetRouteStats() which are already implemented.
-// This TODO was misleading - statistics functionality is already working.
 
 // Storage interface implementations
 
@@ -745,43 +904,70 @@ func (s *PostgreSQLCAdapter) Health() error {
 	return s.Ping()
 }
 
-func (s *PostgreSQLCAdapter) GetRoutes() ([]*storage.Route, error) {
-	return s.ListRoutes()
-}
-
-func (s *PostgreSQLCAdapter) FindMatchingRoutes(endpoint, method string) ([]*storage.Route, error) {
-	// Use the optimized GetRouteByEndpoint method
-	route, err := s.GetRouteByEndpoint(endpoint, method)
-	if err != nil {
-		return nil, err
-	}
-	if route == nil {
-		return []*storage.Route{}, nil
-	}
-	return []*storage.Route{route}, nil
-}
+// func (s *PostgreSQLCAdapter) GetRoutes() ([]*storage.Route, error) {
+// 	return s.ListTriggers()
+// }
 
 func (s *PostgreSQLCAdapter) ValidateUser(username, password string) (*storage.User, error) {
-	user, err := s.GetUser(username)
+	user, err := s.GetUserByUsername(username)
 	if err != nil || user == nil {
-		return nil, err
+		return nil, errors.AuthError("invalid credentials")
 	}
-	// Note: Password validation should be done by the caller
+
+	// Validate password using bcrypt
+	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
+	if err != nil {
+		return nil, errors.AuthError("invalid credentials")
+	}
+
 	return user, nil
 }
 
-func (s *PostgreSQLCAdapter) UpdateUserCredentials(userID int, username, password string) error {
+func (s *PostgreSQLCAdapter) GetUserCount() (int, error) {
 	ctx := context.Background()
+	count, err := s.queries.CountUsers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+// IsServerOwner determines if the given user is the server owner
+// The server owner is the first user created (earliest created_at timestamp)
+func (s *PostgreSQLCAdapter) IsServerOwner(userID string) (bool, error) {
+	// Get the earliest created user ID
+	ctx := context.Background()
+	var firstUserID string
+	err := s.conn.QueryRow(ctx, "SELECT id FROM users ORDER BY created_at ASC LIMIT 1").Scan(&firstUserID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return false, nil // No users exist
+		}
+		return false, err
+	}
+
+	return firstUserID == userID, nil
+}
+
+func (s *PostgreSQLCAdapter) UpdateUserCredentials(userID string, username, password string) error {
+	ctx := context.Background()
+
+	// Hash the new password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return errors.InternalError("failed to hash password", err)
+	}
+
 	return s.queries.UpdateUserCredentials(ctx, postgres.UpdateUserCredentialsParams{
-		ID:           int32(userID),
+		ID:           userID,
 		Username:     username,
-		PasswordHash: password,
+		PasswordHash: string(hashedPassword),
 	})
 }
 
-func (s *PostgreSQLCAdapter) IsDefaultUser(userID int) (bool, error) {
+func (s *PostgreSQLCAdapter) IsDefaultUser(userID string) (bool, error) {
 	ctx := context.Background()
-	user, err := s.queries.GetUser(ctx, int32(userID))
+	user, err := s.queries.GetUser(ctx, userID)
 	if err != nil {
 		return false, err
 	}
@@ -809,7 +995,7 @@ func (s *PostgreSQLCAdapter) GetStats() (*storage.Stats, error) {
 	ctx := context.Background()
 
 	// Get active routes count
-	routes, err := s.queries.ListRoutes(ctx)
+	routes, err := s.queries.ListTriggers(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -829,54 +1015,121 @@ func (s *PostgreSQLCAdapter) GetStats() (*storage.Stats, error) {
 		Valid: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get webhook log stats: %w", err)
+		return nil, errors.InternalError("failed to get webhook log stats", err)
 	}
 
 	return &storage.Stats{
 		TotalRequests:   int(stats.TotalCount),
 		SuccessRequests: int(stats.SuccessCount),
 		FailedRequests:  int(stats.ErrorCount),
-		ActiveRoutes:    activeRoutes,
+		ActiveTriggers:  activeRoutes,
 	}, nil
 }
 
 // GetRouteStats returns detailed statistics for a specific route
-func (s *PostgreSQLCAdapter) GetRouteStats(routeID int) (map[string]interface{}, error) {
+// func (s *PostgreSQLCAdapter) GetRouteStats(routeID string) (map[string]interface{}, error) {
+// 	ctx := context.Background()
+//
+// 	stats, err := s.queries.GetRouteStatistics(ctx, &routeID)
+// 	if err != nil {
+// 		return nil, errors.InternalError("failed to get route statistics", err)
+// 	}
+//
+// 	// Convert to sql.Null types for BuildStatsResult
+// 	avgTransformTime := sql.NullFloat64{
+// 		Float64: stats.AvgTransformationTime,
+// 		Valid:   stats.AvgTransformationTime != 0, // PostgreSQL uses 0 for no data
+// 	}
+//
+// 	avgTotalTime := sql.NullFloat64{
+// 		Float64: stats.AvgTotalTime,
+// 		Valid:   stats.AvgTotalTime != 0, // PostgreSQL uses 0 for no data
+// 	}
+//
+// 	var lastProcessed sql.NullTime
+// 	// LastProcessed should be a pgtype.Timestamp from PostgreSQL
+// 	if stats.LastProcessed != nil {
+// 		switch v := stats.LastProcessed.(type) {
+// 		case pgtype.Timestamp:
+// 			if v.Valid {
+// 				lastProcessed = sql.NullTime{Time: v.Time, Valid: true}
+// 			}
+// 		case time.Time:
+// 			lastProcessed = sql.NullTime{Time: v, Valid: true}
+// 		}
+// 	}
+//
+// 	return s.BuildStatsResult(
+// 		routeID,
+// 		stats.Name,
+// 		stats.TotalRequests,
+// 		stats.SuccessfulRequests,
+// 		stats.FailedRequests,
+// 		avgTransformTime,
+// 		avgTotalTime,
+// 		lastProcessed,
+// 	), nil
+// }
+
+// GetDashboardStats implements Storage interface for PostgreSQL
+// GetDashboardStats is implemented in postgres_adapter_dashboard.go
+
+// GetDLQStatsForUser returns DLQ statistics for a specific user
+func (s *PostgreSQLCAdapter) GetDLQStatsForUser(userID string) (*storage.DLQStats, error) {
 	ctx := context.Background()
 
-	stats, err := s.queries.GetRouteStatistics(ctx, int32(routeID))
+	// Get pending messages count for user
+	var pendingCount int64
+	pendingQuery := `
+		SELECT COUNT(*) 
+		FROM dlq_messages dm
+		INNER JOIN routes r ON dm.route_id = r.id
+		WHERE dm.status = 'pending' AND r.user_id = $1
+	`
+	err := s.conn.QueryRow(ctx, pendingQuery, userID).Scan(&pendingCount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get route statistics: %w", err)
+		return nil, err
 	}
 
-	// Convert to sql.Null types for BuildStatsResult
-	avgTransformTime := sql.NullFloat64{
-		Float64: stats.AvgTransformationTime,
-		Valid:   stats.AvgTransformationTime != 0, // PostgreSQL uses 0 for no data
+	// Get abandoned messages count for user
+	var abandonedCount int64
+	abandonedQuery := `
+		SELECT COUNT(*) 
+		FROM dlq_messages dm
+		INNER JOIN routes r ON dm.route_id = r.id
+		WHERE dm.status = 'abandoned' AND r.user_id = $1
+	`
+	err = s.conn.QueryRow(ctx, abandonedQuery, userID).Scan(&abandonedCount)
+	if err != nil {
+		return nil, err
 	}
 
-	avgPublishTime := sql.NullFloat64{
-		Float64: stats.AvgPublishTime,
-		Valid:   stats.AvgPublishTime != 0, // PostgreSQL uses 0 for no data
+	// Get processed messages count for user (last 24 hours)
+	var processedCount int64
+	processedQuery := `
+		SELECT COUNT(*) 
+		FROM dlq_messages dm
+		INNER JOIN routes r ON dm.route_id = r.id
+		WHERE dm.status = 'processed' 
+		AND dm.updated_at >= $1
+		AND r.user_id = $2
+	`
+	since := time.Now().Add(-24 * time.Hour)
+	err = s.conn.QueryRow(ctx, processedQuery, since, userID).Scan(&processedCount)
+	if err != nil {
+		return nil, err
 	}
 
-	var lastProcessed sql.NullTime
-	if stats.LastProcessed != nil {
-		if t, ok := stats.LastProcessed.(time.Time); ok {
-			lastProcessed = sql.NullTime{Time: t, Valid: true}
-		}
-	}
+	// We could get average retry count here if needed
+	// but it's not part of the current DLQStats struct
 
-	return s.BuildStatsResult(
-		routeID,
-		stats.Name,
-		stats.TotalRequests,
-		stats.SuccessfulRequests,
-		stats.FailedRequests,
-		avgTransformTime,
-		avgPublishTime,
-		lastProcessed,
-	), nil
+	return &storage.DLQStats{
+		TotalMessages:     pendingCount + abandonedCount,
+		PendingMessages:   pendingCount,
+		RetryingMessages:  0, // We don't track retrying state separately
+		AbandonedMessages: abandonedCount,
+		OldestFailure:     nil, // Could be added if needed
+	}, nil
 }
 
 // GetTriggers returns triggers matching the specified filters
@@ -889,57 +1142,84 @@ func (s *PostgreSQLCAdapter) GetTriggers(filters storage.TriggerFilters) ([]*sto
 	return s.ApplyTriggerFilters(triggers, filters), nil
 }
 
+// GetTriggersPaginated implements Storage interface with pagination
+func (s *PostgreSQLCAdapter) GetTriggersPaginated(filters storage.TriggerFilters, limit, offset int) ([]*storage.Trigger, int, error) {
+	ctx := context.Background()
+
+	// Get total count
+	countResult, err := s.queries.CountTriggers(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	totalCount := int(countResult)
+
+	// Get paginated triggers
+	triggers, err := s.queries.ListTriggersPaginated(ctx, postgres.ListTriggersPaginatedParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Convert and apply filters
+	result := make([]*storage.Trigger, 0, len(triggers))
+	for _, trigger := range triggers {
+		t, err := s.triggerFromDB(trigger)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		// Apply filters
+		if filters.Type != "" && t.Type != filters.Type {
+			continue
+		}
+		if filters.Status != "" && t.Status != filters.Status {
+			continue
+		}
+		if filters.Active != nil && t.Active != *filters.Active {
+			continue
+		}
+
+		result = append(result, t)
+	}
+
+	return result, totalCount, nil
+}
+
 func (s *PostgreSQLCAdapter) GetPipelines() ([]*storage.Pipeline, error) {
 	return s.ListPipelines()
 }
 
-// Broker interface aliases
-func (s *PostgreSQLCAdapter) CreateBroker(broker *storage.BrokerConfig) error {
-	return s.CreateBrokerConfig(broker)
-}
-
-func (s *PostgreSQLCAdapter) GetBroker(id int) (*storage.BrokerConfig, error) {
-	return s.GetBrokerConfig(id)
-}
-
-func (s *PostgreSQLCAdapter) GetBrokers() ([]*storage.BrokerConfig, error) {
-	return s.ListBrokerConfigs()
-}
-
-func (s *PostgreSQLCAdapter) UpdateBroker(broker *storage.BrokerConfig) error {
-	return s.UpdateBrokerConfig(broker)
-}
-
-func (s *PostgreSQLCAdapter) DeleteBroker(id int) error {
-	return s.DeleteBrokerConfig(id)
-}
-
-// Query executes a raw SQL query and returns results as a slice of maps
-func (s *PostgreSQLCAdapter) Query(query string, args ...interface{}) ([]map[string]interface{}, error) {
+// GetPipelinesPaginated implements Storage interface with pagination
+func (s *PostgreSQLCAdapter) GetPipelinesPaginated(limit, offset int) ([]*storage.Pipeline, int, error) {
 	ctx := context.Background()
-	rows, err := s.conn.Query(ctx, query, args...)
+
+	// Get total count
+	countResult, err := s.queries.CountPipelines(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	defer rows.Close()
+	totalCount := int(countResult)
 
-	var results []map[string]interface{}
-	for rows.Next() {
-		vals, err := rows.Values()
+	// Get paginated pipelines
+	pipelines, err := s.queries.ListPipelinesPaginated(ctx, postgres.ListPipelinesPaginatedParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	result := make([]*storage.Pipeline, len(pipelines))
+	for i, pipeline := range pipelines {
+		result[i], err = s.pipelineFromDB(pipeline)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-
-		fields := rows.FieldDescriptions()
-		row := make(map[string]interface{})
-		for i, field := range fields {
-			row[string(field.Name)] = vals[i]
-		}
-
-		results = append(results, row)
 	}
 
-	return results, rows.Err()
+	return result, totalCount, nil
 }
 
 // Transaction executes a function within a database transaction
@@ -965,23 +1245,34 @@ func (s *PostgreSQLCAdapter) CreateDLQMessage(message *storage.DLQMessage) error
 
 	headers, err := json.Marshal(message.Headers)
 	if err != nil {
-		return fmt.Errorf("failed to marshal headers: %w", err)
+		return errors.InternalError("failed to marshal headers", err)
 	}
 
 	metadata, err := json.Marshal(message.Metadata)
 	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
+		return errors.InternalError("failed to marshal metadata", err)
 	}
 
-	// For PostgreSQL, we need to handle the DLQ broker IDs
-	// Assuming the storage layer will provide the correct broker IDs
+	// Extract broker IDs from metadata if available
+	sourceBrokerID := "1" // Default
+	dlqBrokerID := "1"    // Default
+
+	if message.Metadata != nil {
+		if srcID, ok := message.Metadata["source_broker_id"].(string); ok {
+			sourceBrokerID = srcID
+		}
+		if dlqID, ok := message.Metadata["dlq_broker_id"].(string); ok {
+			dlqBrokerID = dlqID
+		}
+	}
+
 	params := postgres.CreateDLQMessageParams{
+		ID:             cuid.New(),
 		MessageID:      message.MessageID,
-		RouteID:        int32(message.RouteID),
-		TriggerID:      s.intToPgInt32(message.TriggerID),
-		PipelineID:     s.intToPgInt32(message.PipelineID),
-		SourceBrokerID: int32(1), // Default to 1 if not provided
-		DlqBrokerID:    int32(1), // Default to 1 if not provided
+		TriggerID:      message.TriggerID,
+		PipelineID:     message.PipelineID,
+		SourceBrokerID: sourceBrokerID,
+		DlqBrokerID:    dlqBrokerID,
 		BrokerName:     message.BrokerName,
 		Queue:          message.Queue,
 		Exchange:       s.ConvertStringToNullable(message.Exchange),
@@ -1011,17 +1302,17 @@ func (s *PostgreSQLCAdapter) CreateDLQMessage(message *storage.DLQMessage) error
 
 	result, err := s.queries.CreateDLQMessage(ctx, params)
 	if err != nil {
-		return fmt.Errorf("failed to create DLQ message: %w", err)
+		return errors.InternalError("failed to create DLQ message", err)
 	}
 
-	message.ID = int(result.ID)
+	message.ID = result.ID
 	return nil
 }
 
 // GetDLQMessage implements Storage interface
-func (s *PostgreSQLCAdapter) GetDLQMessage(id int) (*storage.DLQMessage, error) {
+func (s *PostgreSQLCAdapter) GetDLQMessage(id string) (*storage.DLQMessage, error) {
 	ctx := context.Background()
-	msg, err := s.queries.GetDLQMessage(ctx, int32(id))
+	msg, err := s.queries.GetDLQMessage(ctx, id)
 	if err != nil {
 		return nil, s.HandlePgxNotFound(err)
 	}
@@ -1081,28 +1372,91 @@ func (s *PostgreSQLCAdapter) ListDLQMessages(limit, offset int) ([]*storage.DLQM
 	return result, nil
 }
 
-// ListDLQMessagesByRoute implements Storage interface
-func (s *PostgreSQLCAdapter) ListDLQMessagesByRoute(routeID int, limit, offset int) ([]*storage.DLQMessage, error) {
+// ListDLQMessagesWithCount implements Storage interface with count
+func (s *PostgreSQLCAdapter) ListDLQMessagesWithCount(limit, offset int) ([]*storage.DLQMessage, int, error) {
 	ctx := context.Background()
-	messages, err := s.queries.ListDLQMessagesByRoute(ctx, postgres.ListDLQMessagesByRouteParams{
-		RouteID: int32(routeID),
-		Limit:   int32(limit),
-		Offset:  int32(offset),
+
+	// Get total count
+	countResult, err := s.queries.CountDLQMessages(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	totalCount := int(countResult)
+
+	// Get paginated messages
+	messages, err := s.queries.ListDLQMessages(ctx, postgres.ListDLQMessagesParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	result := make([]*storage.DLQMessage, len(messages))
 	for i, msg := range messages {
 		result[i], err = s.dlqMessageFromDB(msg)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
-	return result, nil
+	return result, totalCount, nil
 }
+
+// ListDLQMessagesByRoute implements Storage interface
+// func (s *PostgreSQLCAdapter) ListDLQMessagesByRoute(routeID string, limit, offset int) ([]*storage.DLQMessage, error) {
+// 	ctx := context.Background()
+// 	messages, err := s.queries.ListDLQMessagesByRoute(ctx, postgres.ListDLQMessagesByRouteParams{
+// 		TriggerID: routeID,
+// 		Limit:   int32(limit),
+// 		Offset:  int32(offset),
+// 	})
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	result := make([]*storage.DLQMessage, len(messages))
+// 	for i, msg := range messages {
+// 		result[i], err = s.dlqMessageFromDB(msg)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 	}
+//
+// 	return result, nil
+// }
+
+// ListDLQMessagesByRouteWithCount implements Storage interface with count
+// func (s *PostgreSQLCAdapter) ListDLQMessagesByRouteWithCount(routeID string, limit, offset int) ([]*storage.DLQMessage, int, error) {
+// 	ctx := context.Background()
+//
+// 	// Get total count for this route
+// 	countResult, err := s.queries.CountDLQMessagesByRoute(ctx, routeID)
+// 	if err != nil {
+// 		return nil, 0, err
+// 	}
+// 	totalCount := int(countResult)
+//
+// 	// Get paginated messages
+// 	messages, err := s.queries.ListDLQMessagesByRoute(ctx, postgres.ListDLQMessagesByRouteParams{
+// 		TriggerID: routeID,
+// 		Limit:   int32(limit),
+// 		Offset:  int32(offset),
+// 	})
+// 	if err != nil {
+// 		return nil, 0, err
+// 	}
+//
+// 	result := make([]*storage.DLQMessage, len(messages))
+// 	for i, msg := range messages {
+// 		result[i], err = s.dlqMessageFromDB(msg)
+// 		if err != nil {
+// 			return nil, 0, err
+// 		}
+// 	}
+//
+// 	return result, totalCount, nil
+// }
 
 // ListDLQMessagesByStatus implements Storage interface
 func (s *PostgreSQLCAdapter) ListDLQMessagesByStatus(status string, limit, offset int) ([]*storage.DLQMessage, error) {
@@ -1133,11 +1487,11 @@ func (s *PostgreSQLCAdapter) UpdateDLQMessage(message *storage.DLQMessage) error
 
 	metadata, err := json.Marshal(message.Metadata)
 	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
+		return errors.InternalError("failed to marshal metadata", err)
 	}
 
 	params := postgres.UpdateDLQMessageParams{
-		ID:           int32(message.ID),
+		ID:           message.ID,
 		ErrorMessage: message.ErrorMessage,
 		FailureCount: s.intToPgInt32(&message.FailureCount),
 		LastFailure: pgtype.Timestamp{
@@ -1162,18 +1516,18 @@ func (s *PostgreSQLCAdapter) UpdateDLQMessage(message *storage.DLQMessage) error
 }
 
 // UpdateDLQMessageStatus implements Storage interface
-func (s *PostgreSQLCAdapter) UpdateDLQMessageStatus(id int, status string) error {
+func (s *PostgreSQLCAdapter) UpdateDLQMessageStatus(id string, status string) error {
 	ctx := context.Background()
 	return s.queries.UpdateDLQMessageStatus(ctx, postgres.UpdateDLQMessageStatusParams{
-		ID:     int32(id),
+		ID:     id,
 		Status: &status,
 	})
 }
 
 // DeleteDLQMessage implements Storage interface
-func (s *PostgreSQLCAdapter) DeleteDLQMessage(id int) error {
+func (s *PostgreSQLCAdapter) DeleteDLQMessage(id string) error {
 	ctx := context.Background()
-	return s.queries.DeleteDLQMessage(ctx, int32(id))
+	return s.queries.DeleteDLQMessage(ctx, id)
 }
 
 // DeleteOldDLQMessages implements Storage interface
@@ -1225,7 +1579,51 @@ func (s *PostgreSQLCAdapter) GetDLQStats() (*storage.DLQStats, error) {
 }
 
 // GetDLQStatsByRoute implements Storage interface
-func (s *PostgreSQLCAdapter) GetDLQStatsByRoute() ([]*storage.DLQRouteStats, error) {
+// func (s *PostgreSQLCAdapter) GetDLQStatsByRoute() ([]*storage.DLQRouteStats, error) {
+// 	ctx := context.Background()
+//
+// 	// Calculate stats manually since we don't have a dedicated query
+// 	allMessages, err := s.queries.ListDLQMessages(ctx, postgres.ListDLQMessagesParams{
+// 		Limit:  10000,
+// 		Offset: 0,
+// 	})
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	// Group by route ID
+// 	routeStats := make(map[string]*storage.DLQRouteStats)
+// 	for _, msg := range allMessages {
+// 		routeID := msg.RouteID
+// 		if _, exists := routeStats[routeID]; !exists {
+// 			routeStats[routeID] = &storage.DLQRouteStats{
+// 				TriggerID: routeID,
+// 			}
+// 		}
+//
+// 		routeStats[routeID].MessageCount++
+//
+// 		if msg.Status != nil {
+// 			switch *msg.Status {
+// 			case "pending":
+// 				routeStats[routeID].PendingCount++
+// 			case "abandoned":
+// 				routeStats[routeID].AbandonedCount++
+// 			}
+// 		}
+// 	}
+//
+// 	// Convert map to slice
+// 	var result []*storage.DLQRouteStats
+// 	for _, stat := range routeStats {
+// 		result = append(result, stat)
+// 	}
+//
+// 	return result, nil
+// }
+
+// GetDLQStatsByError implements Storage interface
+func (s *PostgreSQLCAdapter) GetDLQStatsByError() ([]*storage.DLQErrorStats, error) {
 	ctx := context.Background()
 
 	// Calculate stats manually since we don't have a dedicated query
@@ -1237,32 +1635,175 @@ func (s *PostgreSQLCAdapter) GetDLQStatsByRoute() ([]*storage.DLQRouteStats, err
 		return nil, err
 	}
 
-	// Group by route ID
-	routeStats := make(map[int]*storage.DLQRouteStats)
+	// Group by error message
+	errorStats := make(map[string]*storage.DLQErrorStats)
 	for _, msg := range allMessages {
-		routeID := int(msg.RouteID)
-		if _, exists := routeStats[routeID]; !exists {
-			routeStats[routeID] = &storage.DLQRouteStats{
-				RouteID: routeID,
+		if msg.ErrorMessage == "" {
+			continue
+		}
+
+		errorMsg := msg.ErrorMessage
+
+		// Convert timestamps
+		firstFailure := msg.FirstFailure.Time
+		lastFailure := msg.LastFailure.Time
+
+		if _, exists := errorStats[errorMsg]; !exists {
+			errorStats[errorMsg] = &storage.DLQErrorStats{
+				ErrorMessage: errorMsg,
+				MessageCount: 0,
+				FirstSeen:    firstFailure,
+				LastSeen:     lastFailure,
 			}
 		}
 
-		routeStats[routeID].MessageCount++
+		errorStats[errorMsg].MessageCount++
 
-		if msg.Status != nil {
-			switch *msg.Status {
-			case "pending":
-				routeStats[routeID].PendingCount++
-			case "abandoned":
-				routeStats[routeID].AbandonedCount++
-			}
+		// Update first seen if earlier
+		if firstFailure.Before(errorStats[errorMsg].FirstSeen) {
+			errorStats[errorMsg].FirstSeen = firstFailure
+		}
+
+		// Update last seen if later
+		if lastFailure.After(errorStats[errorMsg].LastSeen) {
+			errorStats[errorMsg].LastSeen = lastFailure
 		}
 	}
 
 	// Convert map to slice
-	var result []*storage.DLQRouteStats
-	for _, stat := range routeStats {
+	var result []*storage.DLQErrorStats
+	for _, stat := range errorStats {
 		result = append(result, stat)
+	}
+
+	// Sort by message count (descending)
+	for i := 0; i < len(result)-1; i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[i].MessageCount < result[j].MessageCount {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// GetTriggerStats implements Storage interface - replaces GetRouteStats
+func (s *PostgreSQLCAdapter) GetTriggerStats(triggerID string) (map[string]interface{}, error) {
+	ctx := context.Background()
+
+	stats, err := s.queries.GetTriggerStatistics(ctx, &triggerID)
+	if err != nil {
+		return nil, errors.InternalError("failed to get trigger statistics", err)
+	}
+
+	// Convert to sql.Null types for BuildStatsResult
+	var avgTransformTime sql.NullFloat64
+	if stats.AvgTransformationTime != 0 {
+		avgTransformTime = sql.NullFloat64{Float64: stats.AvgTransformationTime, Valid: true}
+	}
+
+	var avgTotalTime sql.NullFloat64
+	if stats.AvgTotalTime != 0 {
+		avgTotalTime = sql.NullFloat64{Float64: stats.AvgTotalTime, Valid: true}
+	}
+
+	var lastProcessed sql.NullTime
+	if stats.LastProcessed != nil {
+		if t, ok := stats.LastProcessed.(time.Time); ok {
+			lastProcessed = sql.NullTime{Time: t, Valid: true}
+		}
+	}
+
+	return s.BuildStatsResult(
+		triggerID,
+		stats.Name,
+		stats.TotalRequests,
+		stats.SuccessfulRequests,
+		stats.FailedRequests,
+		avgTransformTime,
+		avgTotalTime,
+		lastProcessed,
+	), nil
+}
+
+// ListDLQMessagesByTrigger implements Storage interface - replaces ListDLQMessagesByRoute
+func (s *PostgreSQLCAdapter) ListDLQMessagesByTrigger(triggerID string, limit, offset int) ([]*storage.DLQMessage, error) {
+	ctx := context.Background()
+	msgs, err := s.queries.ListDLQMessagesByTrigger(ctx, postgres.ListDLQMessagesByTriggerParams{
+		TriggerID: &triggerID,
+		Limit:     int32(limit),
+		Offset:    int32(offset),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*storage.DLQMessage
+	for _, msg := range msgs {
+		dlqMsg, err := s.dlqMessageFromDB(msg)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, dlqMsg)
+	}
+
+	return result, nil
+}
+
+// ListDLQMessagesByTriggerWithCount implements Storage interface with count - replaces ListDLQMessagesByRouteWithCount
+func (s *PostgreSQLCAdapter) ListDLQMessagesByTriggerWithCount(triggerID string, limit, offset int) ([]*storage.DLQMessage, int, error) {
+	ctx := context.Background()
+
+	// Get total count for this trigger
+	countResult, err := s.queries.CountDLQMessagesByTrigger(ctx, &triggerID)
+	if err != nil {
+		return nil, 0, err
+	}
+	totalCount := int(countResult)
+
+	// Get paginated messages
+	msgs, err := s.queries.ListDLQMessagesByTrigger(ctx, postgres.ListDLQMessagesByTriggerParams{
+		TriggerID: &triggerID,
+		Limit:     int32(limit),
+		Offset:    int32(offset),
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var result []*storage.DLQMessage
+	for _, msg := range msgs {
+		dlqMsg, err := s.dlqMessageFromDB(msg)
+		if err != nil {
+			return nil, 0, err
+		}
+		result = append(result, dlqMsg)
+	}
+
+	return result, totalCount, nil
+}
+
+// GetDLQStatsByTrigger implements Storage interface - replaces GetDLQStatsByRoute
+func (s *PostgreSQLCAdapter) GetDLQStatsByTrigger() ([]*storage.DLQTriggerStats, error) {
+	ctx := context.Background()
+
+	stats, err := s.queries.GetDLQStatsByTrigger(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*storage.DLQTriggerStats
+	for _, stat := range stats {
+		if stat.TriggerID == nil {
+			continue
+		}
+		result = append(result, &storage.DLQTriggerStats{
+			TriggerID:      *stat.TriggerID,
+			MessageCount:   stat.MessageCount,
+			PendingCount:   stat.PendingCount,
+			AbandonedCount: stat.AbandonedCount,
+		})
 	}
 
 	return result, nil
@@ -1272,20 +1813,19 @@ func (s *PostgreSQLCAdapter) GetDLQStatsByRoute() ([]*storage.DLQRouteStats, err
 func (s *PostgreSQLCAdapter) dlqMessageFromDB(msg postgres.DlqMessage) (*storage.DLQMessage, error) {
 	var headers map[string]string
 	if err := json.Unmarshal(msg.Headers, &headers); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal headers: %w", err)
+		return nil, errors.InternalError("failed to unmarshal headers", err)
 	}
 
 	var metadata map[string]interface{}
 	if err := json.Unmarshal(msg.Metadata, &metadata); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		return nil, errors.InternalError("failed to unmarshal metadata", err)
 	}
 
 	result := &storage.DLQMessage{
-		ID:           int(msg.ID),
+		ID:           msg.ID,
 		MessageID:    msg.MessageID,
-		RouteID:      int(msg.RouteID),
-		TriggerID:    s.convertInt32PtrToIntPtr(msg.TriggerID),
-		PipelineID:   s.convertInt32PtrToIntPtr(msg.PipelineID),
+		TriggerID:    msg.TriggerID,
+		PipelineID:   msg.PipelineID,
 		BrokerName:   msg.BrokerName,
 		Queue:        msg.Queue,
 		Exchange:     s.ConvertNullableString(msg.Exchange),
@@ -1307,4 +1847,591 @@ func (s *PostgreSQLCAdapter) dlqMessageFromDB(msg postgres.DlqMessage) (*storage
 	}
 
 	return result, nil
+}
+
+// encryptSensitiveConfig encrypts sensitive fields in a configuration map
+// Returns the encrypted config and any error encountered
+func (s *PostgreSQLCAdapter) encryptSensitiveConfig(config map[string]interface{}) (map[string]interface{}, error) {
+	if s.encryptor == nil {
+		return config, nil // No encryption configured
+	}
+
+	// Create a copy to avoid modifying the original
+	encrypted := make(map[string]interface{})
+	for k, v := range config {
+		encrypted[k] = v
+	}
+
+	// Define sensitive field patterns
+	sensitivePatterns := []string{
+		"password", "secret", "token", "api_key", "apikey", "access_key",
+		"secret_access_key", "client_secret", "private_key", "encryption_key",
+		"jwt_secret", "signature_secret", "oauth2_token", "refresh_token",
+		"access_token", "auth_token", "bearer_token",
+	}
+
+	// Encrypt sensitive fields
+	for key, value := range encrypted {
+		if s.isSensitiveField(key, sensitivePatterns) {
+			if strVal, ok := value.(string); ok && strVal != "" {
+				encryptedValue, err := s.encryptor.Encrypt(strVal)
+				if err != nil {
+					return nil, err
+				}
+				encrypted[key] = encryptedValue
+			}
+		}
+	}
+
+	return encrypted, nil
+}
+
+// decryptSensitiveConfig decrypts sensitive fields in a configuration map
+// Returns the decrypted config and any error encountered
+func (s *PostgreSQLCAdapter) decryptSensitiveConfig(config map[string]interface{}) (map[string]interface{}, error) {
+	if s.encryptor == nil {
+		return config, nil // No encryption configured
+	}
+
+	// Create a copy to avoid modifying the original
+	decrypted := make(map[string]interface{})
+	for k, v := range config {
+		decrypted[k] = v
+	}
+
+	// Define sensitive field patterns
+	sensitivePatterns := []string{
+		"password", "secret", "token", "api_key", "apikey", "access_key",
+		"secret_access_key", "client_secret", "private_key", "encryption_key",
+		"jwt_secret", "signature_secret", "oauth2_token", "refresh_token",
+		"access_token", "auth_token", "bearer_token",
+	}
+
+	// Decrypt sensitive fields
+	for key, value := range decrypted {
+		if s.isSensitiveField(key, sensitivePatterns) {
+			if strVal, ok := value.(string); ok && strVal != "" {
+				decryptedValue, err := s.encryptor.Decrypt(strVal)
+				if err != nil {
+					// If decryption fails, it might be plaintext data from before encryption was enabled
+					// Log warning but don't fail - return original value for backward compatibility
+					continue
+				}
+				decrypted[key] = decryptedValue
+			}
+		}
+	}
+
+	return decrypted, nil
+}
+
+// isSensitiveField checks if a field name matches sensitive field patterns
+func (s *PostgreSQLCAdapter) isSensitiveField(fieldName string, patterns []string) bool {
+	fieldLower := strings.ToLower(fieldName)
+	for _, pattern := range patterns {
+		if strings.Contains(fieldLower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// Execution log methods for comprehensive trigger tracking
+
+// CreateExecutionLog creates a new execution log entry
+func (s *PostgreSQLCAdapter) CreateExecutionLog(log *storage.ExecutionLog) error {
+	ctx := context.Background()
+
+	query := `
+		INSERT INTO execution_logs (
+			id, trigger_id, trigger_type, trigger_config,
+			input_method, input_endpoint, input_headers, input_body,
+			pipeline_id, pipeline_stages, transformation_data, transformation_time_ms,
+			broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key,
+			broker_publish_time_ms, broker_response, status, status_code,
+			error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+	`
+
+	_, err := s.conn.Exec(ctx, query,
+		log.InputMethod, log.InputEndpoint, log.InputHeaders, log.InputBody,
+		log.PipelineID, log.PipelineStages, log.TransformationData, log.TransformationTimeMS,
+		log.BrokerID, log.BrokerType, log.BrokerQueue, log.BrokerExchange, log.BrokerRoutingKey,
+		log.BrokerPublishTimeMS, log.BrokerResponse, log.Status, log.StatusCode,
+		log.ErrorMessage, log.OutputData, log.TotalLatencyMS, log.StartedAt, log.CompletedAt, log.UserID,
+	)
+	return err
+}
+
+// UpdateExecutionLog updates an existing execution log
+func (s *PostgreSQLCAdapter) UpdateExecutionLog(log *storage.ExecutionLog) error {
+	ctx := context.Background()
+
+	query := `
+		UPDATE execution_logs SET
+			trigger_config = $1, input_headers = $2, input_body = $3,
+			pipeline_stages = $4, transformation_data = $5, transformation_time_ms = $6,
+			broker_type = $7, broker_queue = $8, broker_exchange = $9, broker_routing_key = $10,
+			broker_publish_time_ms = $11, broker_response = $12, status = $13, status_code = $14,
+			error_message = $15, output_data = $16, total_latency_ms = $17, completed_at = $18
+		WHERE id = $19
+	`
+
+	_, err := s.conn.Exec(ctx, query,
+		log.TriggerConfig, log.InputHeaders, log.InputBody,
+		log.PipelineStages, log.TransformationData, log.TransformationTimeMS,
+		log.BrokerType, log.BrokerQueue, log.BrokerExchange, log.BrokerRoutingKey,
+		log.BrokerPublishTimeMS, log.BrokerResponse, log.Status, log.StatusCode,
+		log.ErrorMessage, log.OutputData, log.TotalLatencyMS, log.CompletedAt,
+		log.ID,
+	)
+	return err
+}
+
+// GetExecutionLog retrieves a single execution log by ID
+func (s *PostgreSQLCAdapter) GetExecutionLog(id string) (*storage.ExecutionLog, error) {
+	ctx := context.Background()
+
+	query := `
+		SELECT id, trigger_id, trigger_type, trigger_config,
+			input_method, input_endpoint, input_headers, input_body,
+			pipeline_id, pipeline_stages, transformation_data, transformation_time_ms,
+			broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key,
+			broker_publish_time_ms, broker_response, status, status_code,
+			error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+		FROM execution_logs WHERE id = $1
+	`
+
+	var log storage.ExecutionLog
+	var triggerID, routeID, pipelineID, brokerID *string
+	var completedAt *time.Time
+
+	err := s.conn.QueryRow(ctx, query, id).Scan(
+		&log.ID, &triggerID, &log.TriggerType, &log.TriggerConfig, &routeID,
+		&log.InputMethod, &log.InputEndpoint, &log.InputHeaders, &log.InputBody,
+		&pipelineID, &log.PipelineStages, &log.TransformationData, &log.TransformationTimeMS,
+		&brokerID, &log.BrokerType, &log.BrokerQueue, &log.BrokerExchange, &log.BrokerRoutingKey,
+		&log.BrokerPublishTimeMS, &log.BrokerResponse, &log.Status, &log.StatusCode,
+		&log.ErrorMessage, &log.OutputData, &log.TotalLatencyMS, &log.StartedAt, &completedAt, &log.UserID,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, errors.NotFoundError("execution log")
+		}
+		return nil, err
+	}
+
+	// Handle nullable fields
+	log.TriggerID = triggerID
+	log.PipelineID = pipelineID
+	log.BrokerID = brokerID
+	log.CompletedAt = completedAt
+
+	return &log, nil
+}
+
+// ListExecutionLogsWithCount retrieves paginated execution logs with total count for a user
+func (s *PostgreSQLCAdapter) ListExecutionLogsWithCount(userID string, limit, offset int) ([]*storage.ExecutionLog, int, error) {
+	ctx := context.Background()
+
+	// Get logs
+	query := `
+		SELECT id, trigger_id, trigger_type, trigger_config,
+			input_method, input_endpoint, input_headers, input_body,
+			pipeline_id, pipeline_stages, transformation_data, transformation_time_ms,
+			broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key,
+			broker_publish_time_ms, broker_response, status, status_code,
+			error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+		FROM execution_logs 
+		WHERE user_id = $1
+		ORDER BY started_at DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := s.conn.Query(ctx, query, userID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var logs []*storage.ExecutionLog
+	for rows.Next() {
+		var log storage.ExecutionLog
+		var triggerID, routeID, pipelineID, brokerID *string
+		var completedAt *time.Time
+
+		err := rows.Scan(
+			&log.ID, &triggerID, &log.TriggerType, &log.TriggerConfig, &routeID,
+			&log.InputMethod, &log.InputEndpoint, &log.InputHeaders, &log.InputBody,
+			&pipelineID, &log.PipelineStages, &log.TransformationData, &log.TransformationTimeMS,
+			&brokerID, &log.BrokerType, &log.BrokerQueue, &log.BrokerExchange, &log.BrokerRoutingKey,
+			&log.BrokerPublishTimeMS, &log.BrokerResponse, &log.Status, &log.StatusCode,
+			&log.ErrorMessage, &log.OutputData, &log.TotalLatencyMS, &log.StartedAt, &completedAt, &log.UserID,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		// Handle nullable fields
+		log.TriggerID = triggerID
+		log.PipelineID = pipelineID
+		log.BrokerID = brokerID
+		log.CompletedAt = completedAt
+
+		logs = append(logs, &log)
+	}
+
+	// Get total count
+	countQuery := `SELECT COUNT(*) FROM execution_logs WHERE user_id = $1`
+	var total int
+	err = s.conn.QueryRow(ctx, countQuery, userID).Scan(&total)
+	if err != nil {
+		return logs, 0, err
+	}
+
+	return logs, total, nil
+}
+
+// ListExecutionLogs retrieves paginated execution logs for a user
+func (s *PostgreSQLCAdapter) ListExecutionLogs(userID string, limit, offset int) ([]*storage.ExecutionLog, error) {
+	logs, _, err := s.ListExecutionLogsWithCount(userID, limit, offset)
+	return logs, err
+}
+
+// GetExecutionLogsByTriggerID retrieves execution logs for a specific trigger
+func (s *PostgreSQLCAdapter) GetExecutionLogsByTriggerID(triggerID string, userID string, limit, offset int) ([]*storage.ExecutionLog, error) {
+	ctx := context.Background()
+
+	query := `
+		SELECT id, trigger_id, trigger_type, trigger_config,
+			input_method, input_endpoint, input_headers, input_body,
+			pipeline_id, pipeline_stages, transformation_data, transformation_time_ms,
+			broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key,
+			broker_publish_time_ms, broker_response, status, status_code,
+			error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+		FROM execution_logs 
+		WHERE trigger_id = $1 AND user_id = $2
+		ORDER BY started_at DESC
+		LIMIT $3 OFFSET $4
+	`
+
+	rows, err := s.conn.Query(ctx, query, triggerID, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []*storage.ExecutionLog
+	for rows.Next() {
+		var log storage.ExecutionLog
+		var triggerIDVal, routeID, pipelineID, brokerID *string
+		var completedAt *time.Time
+
+		err := rows.Scan(
+			&log.ID, &triggerIDVal, &log.TriggerType, &log.TriggerConfig, &routeID,
+			&log.InputMethod, &log.InputEndpoint, &log.InputHeaders, &log.InputBody,
+			&pipelineID, &log.PipelineStages, &log.TransformationData, &log.TransformationTimeMS,
+			&brokerID, &log.BrokerType, &log.BrokerQueue, &log.BrokerExchange, &log.BrokerRoutingKey,
+			&log.BrokerPublishTimeMS, &log.BrokerResponse, &log.Status, &log.StatusCode,
+			&log.ErrorMessage, &log.OutputData, &log.TotalLatencyMS, &log.StartedAt, &completedAt, &log.UserID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Handle nullable fields
+		log.TriggerID = triggerIDVal
+		log.PipelineID = pipelineID
+		log.BrokerID = brokerID
+		log.CompletedAt = completedAt
+
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
+// GetExecutionLogsByTriggerType retrieves execution logs for a specific trigger type
+func (s *PostgreSQLCAdapter) GetExecutionLogsByTriggerType(triggerType string, userID string, limit, offset int) ([]*storage.ExecutionLog, error) {
+	ctx := context.Background()
+
+	query := `
+		SELECT id, trigger_id, trigger_type, trigger_config,
+			input_method, input_endpoint, input_headers, input_body,
+			pipeline_id, pipeline_stages, transformation_data, transformation_time_ms,
+			broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key,
+			broker_publish_time_ms, broker_response, status, status_code,
+			error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+		FROM execution_logs 
+		WHERE trigger_type = $1 AND user_id = $2
+		ORDER BY started_at DESC
+		LIMIT $3 OFFSET $4
+	`
+
+	rows, err := s.conn.Query(ctx, query, triggerType, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []*storage.ExecutionLog
+	for rows.Next() {
+		var log storage.ExecutionLog
+		var triggerID, routeID, pipelineID, brokerID *string
+		var completedAt *time.Time
+
+		err := rows.Scan(
+			&log.ID, &triggerID, &log.TriggerType, &log.TriggerConfig, &routeID,
+			&log.InputMethod, &log.InputEndpoint, &log.InputHeaders, &log.InputBody,
+			&pipelineID, &log.PipelineStages, &log.TransformationData, &log.TransformationTimeMS,
+			&brokerID, &log.BrokerType, &log.BrokerQueue, &log.BrokerExchange, &log.BrokerRoutingKey,
+			&log.BrokerPublishTimeMS, &log.BrokerResponse, &log.Status, &log.StatusCode,
+			&log.ErrorMessage, &log.OutputData, &log.TotalLatencyMS, &log.StartedAt, &completedAt, &log.UserID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Handle nullable fields
+		log.TriggerID = triggerID
+		log.PipelineID = pipelineID
+		log.BrokerID = brokerID
+		log.CompletedAt = completedAt
+
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
+// GetExecutionLogsByStatus retrieves execution logs by status
+func (s *PostgreSQLCAdapter) GetExecutionLogsByStatus(status string, userID string, limit, offset int) ([]*storage.ExecutionLog, error) {
+	ctx := context.Background()
+
+	query := `
+		SELECT id, trigger_id, trigger_type, trigger_config,
+			input_method, input_endpoint, input_headers, input_body,
+			pipeline_id, pipeline_stages, transformation_data, transformation_time_ms,
+			broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key,
+			broker_publish_time_ms, broker_response, status, status_code,
+			error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+		FROM execution_logs 
+		WHERE status = $1 AND user_id = $2
+		ORDER BY started_at DESC
+		LIMIT $3 OFFSET $4
+	`
+
+	rows, err := s.conn.Query(ctx, query, status, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []*storage.ExecutionLog
+	for rows.Next() {
+		var log storage.ExecutionLog
+		var triggerID, routeID, pipelineID, brokerID *string
+		var completedAt *time.Time
+
+		err := rows.Scan(
+			&log.ID, &triggerID, &log.TriggerType, &log.TriggerConfig, &routeID,
+			&log.InputMethod, &log.InputEndpoint, &log.InputHeaders, &log.InputBody,
+			&pipelineID, &log.PipelineStages, &log.TransformationData, &log.TransformationTimeMS,
+			&brokerID, &log.BrokerType, &log.BrokerQueue, &log.BrokerExchange, &log.BrokerRoutingKey,
+			&log.BrokerPublishTimeMS, &log.BrokerResponse, &log.Status, &log.StatusCode,
+			&log.ErrorMessage, &log.OutputData, &log.TotalLatencyMS, &log.StartedAt, &completedAt, &log.UserID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Handle nullable fields
+		log.TriggerID = triggerID
+		log.PipelineID = pipelineID
+		log.BrokerID = brokerID
+		log.CompletedAt = completedAt
+
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
+// OAuth2 Service methods
+
+// CreateOAuth2Service implements Storage interface
+func (s *PostgreSQLCAdapter) CreateOAuth2Service(service *storage.OAuth2Service) error {
+	ctx := context.Background()
+
+	// Generate ID if not provided
+	if service.ID == "" {
+		service.ID = cuid.New()
+	}
+
+	// Encrypt client secret if encryptor is available
+	encryptedSecret := service.ClientSecret
+	if s.encryptor != nil && service.ClientSecret != "" {
+		encrypted, err := s.encryptor.Encrypt(service.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt client secret: %w", err)
+		}
+		encryptedSecret = encrypted
+	}
+
+	// Serialize scopes to JSON
+	scopesJSON, err := json.Marshal(service.Scopes)
+	if err != nil {
+		return fmt.Errorf("failed to marshal scopes: %w", err)
+	}
+
+	scopesStr := string(scopesJSON)
+	_, err = s.queries.CreateOAuth2Service(ctx, postgres.CreateOAuth2ServiceParams{
+		ID:           service.ID,
+		Name:         service.Name,
+		ClientID:     service.ClientID,
+		ClientSecret: encryptedSecret,
+		TokenUrl:     service.TokenURL,
+		AuthUrl:      utils.StringOrNil(service.AuthURL),
+		RedirectUrl:  utils.StringOrNil(service.RedirectURL),
+		Scopes:       utils.StringOrNil(scopesStr),
+		GrantType:    "client_credentials", // Default grant type
+		UserID:       service.UserID,
+	})
+
+	return err
+}
+
+// GetOAuth2Service implements Storage interface
+func (s *PostgreSQLCAdapter) GetOAuth2Service(id string) (*storage.OAuth2Service, error) {
+	ctx := context.Background()
+
+	dbService, err := s.queries.GetOAuth2Service(ctx, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("OAuth2 service not found")
+		}
+		return nil, err
+	}
+
+	return s.oauth2ServiceFromDB(dbService)
+}
+
+// GetOAuth2ServiceByName implements Storage interface
+func (s *PostgreSQLCAdapter) GetOAuth2ServiceByName(name string, userID string) (*storage.OAuth2Service, error) {
+	ctx := context.Background()
+
+	dbService, err := s.queries.GetOAuth2ServiceByName(ctx, postgres.GetOAuth2ServiceByNameParams{
+		Name:   name,
+		UserID: userID,
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("OAuth2 service not found")
+		}
+		return nil, err
+	}
+
+	return s.oauth2ServiceFromDB(dbService)
+}
+
+// ListOAuth2Services implements Storage interface
+func (s *PostgreSQLCAdapter) ListOAuth2Services(userID string) ([]*storage.OAuth2Service, error) {
+	ctx := context.Background()
+
+	dbServices, err := s.queries.ListOAuth2Services(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	var services []*storage.OAuth2Service
+	for _, dbService := range dbServices {
+		service, err := s.oauth2ServiceFromDB(dbService)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, service)
+	}
+
+	return services, nil
+}
+
+// UpdateOAuth2Service implements Storage interface
+func (s *PostgreSQLCAdapter) UpdateOAuth2Service(service *storage.OAuth2Service) error {
+	ctx := context.Background()
+
+	// Encrypt client secret if encryptor is available
+	encryptedSecret := service.ClientSecret
+	if s.encryptor != nil && service.ClientSecret != "" {
+		encrypted, err := s.encryptor.Encrypt(service.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt client secret: %w", err)
+		}
+		encryptedSecret = encrypted
+	}
+
+	// Serialize scopes to JSON
+	scopesJSON, err := json.Marshal(service.Scopes)
+	if err != nil {
+		return fmt.Errorf("failed to marshal scopes: %w", err)
+	}
+
+	scopesStr := string(scopesJSON)
+	_, err = s.queries.UpdateOAuth2Service(ctx, postgres.UpdateOAuth2ServiceParams{
+		ID:           service.ID,
+		Name:         service.Name,
+		ClientID:     service.ClientID,
+		ClientSecret: encryptedSecret,
+		TokenUrl:     service.TokenURL,
+		AuthUrl:      utils.StringOrNil(service.AuthURL),
+		RedirectUrl:  utils.StringOrNil(service.RedirectURL),
+		Scopes:       utils.StringOrNil(scopesStr),
+		GrantType:    "client_credentials", // Default grant type
+	})
+
+	return err
+}
+
+// DeleteOAuth2Service implements Storage interface
+func (s *PostgreSQLCAdapter) DeleteOAuth2Service(id string) error {
+	ctx := context.Background()
+	return s.queries.DeleteOAuth2Service(ctx, id)
+}
+
+// oauth2ServiceFromDB converts database OAuth2 service to storage model
+func (s *PostgreSQLCAdapter) oauth2ServiceFromDB(dbService postgres.Oauth2Service) (*storage.OAuth2Service, error) {
+	service := &storage.OAuth2Service{
+		ID:           dbService.ID,
+		Name:         dbService.Name,
+		ClientID:     dbService.ClientID,
+		ClientSecret: dbService.ClientSecret,
+		TokenURL:     dbService.TokenUrl,
+		UserID:       dbService.UserID,
+		CreatedAt:    dbService.CreatedAt.Time,
+		UpdatedAt:    dbService.UpdatedAt.Time,
+	}
+
+	// Decrypt client secret if encryptor is available
+	if s.encryptor != nil && service.ClientSecret != "" {
+		decrypted, err := s.encryptor.Decrypt(service.ClientSecret)
+		if err == nil {
+			service.ClientSecret = decrypted
+		}
+		// If decryption fails, keep the original value (might be plaintext)
+	}
+
+	// Handle optional fields
+	if dbService.AuthUrl != nil {
+		service.AuthURL = *dbService.AuthUrl
+	}
+	if dbService.RedirectUrl != nil {
+		service.RedirectURL = *dbService.RedirectUrl
+	}
+	if dbService.Scopes != nil && *dbService.Scopes != "" {
+		if err := json.Unmarshal([]byte(*dbService.Scopes), &service.Scopes); err != nil {
+			// Log error but don't fail - scopes are optional
+			service.Scopes = []string{}
+		}
+	}
+
+	return service, nil
 }

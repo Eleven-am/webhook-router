@@ -10,16 +10,16 @@ import (
 	"github.com/streadway/amqp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	
+
 	"webhook-router/internal/brokers"
 	"webhook-router/internal/brokers/rabbitmq"
 )
 
 // MockAMQPConnection provides a mock AMQP connection for testing
 type MockAMQPConnection struct {
-	closed        bool
-	channelFunc   func() (*MockAMQPChannel, error)
-	mu            sync.Mutex
+	closed      bool
+	channelFunc func() (*MockAMQPChannel, error)
+	mu          sync.Mutex
 }
 
 func (m *MockAMQPConnection) IsClosed() bool {
@@ -50,13 +50,13 @@ func (m *MockAMQPConnection) Channel() (*amqp.Channel, error) {
 
 // MockAMQPChannel provides a mock AMQP channel for testing
 type MockAMQPChannel struct {
-	closed          bool
-	publishFunc     func(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
-	queueDeclareFunc func(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error)
+	closed              bool
+	publishFunc         func(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error
+	queueDeclareFunc    func(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error)
 	exchangeDeclareFunc func(name, kind string, durable, autoDelete, internal, noWait bool, args amqp.Table) error
-	queueBindFunc   func(name, key, exchange string, noWait bool, args amqp.Table) error
-	consumeFunc     func(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error)
-	mu              sync.Mutex
+	queueBindFunc       func(name, key, exchange string, noWait bool, args amqp.Table) error
+	consumeFunc         func(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error)
+	mu                  sync.Mutex
 }
 
 func (m *MockAMQPChannel) Close() error {
@@ -109,26 +109,26 @@ func TestNewBroker(t *testing.T) {
 	t.Run("ValidConfig", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 5,
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		assert.NoError(t, err)
 		assert.NotNil(t, broker)
 		assert.Equal(t, "rabbitmq", broker.Name())
-		
+
 		// Clean up
 		broker.Close()
 	})
-	
+
 	t.Run("InvalidConfig", func(t *testing.T) {
 		config := &rabbitmq.Config{
 			URL: "", // Invalid
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		assert.Error(t, err)
 		assert.Nil(t, broker)
@@ -139,44 +139,44 @@ func TestConnectionPool(t *testing.T) {
 	t.Run("PoolOperations", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		pool, err := rabbitmq.NewConnectionPool("amqp://guest:guest@localhost:5672/", 2)
 		require.NoError(t, err)
 		defer pool.Close()
-		
+
 		// Get connection from pool
 		conn1, err := pool.GetConnection()
 		assert.NoError(t, err)
 		assert.NotNil(t, conn1)
-		
+
 		// Get another connection
 		conn2, err := pool.GetConnection()
 		assert.NoError(t, err)
 		assert.NotNil(t, conn2)
-		
+
 		// Return a connection
 		pool.ReturnConnection(conn1)
-		
+
 		// Should be able to get it again
 		conn3, err := pool.GetConnection()
 		assert.NoError(t, err)
 		assert.NotNil(t, conn3)
-		
+
 		// Clean up
 		pool.ReturnConnection(conn2)
 		pool.ReturnConnection(conn3)
 	})
-	
+
 	t.Run("ClosedPool", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		pool, err := rabbitmq.NewConnectionPool("amqp://guest:guest@localhost:5672/", 1)
 		require.NoError(t, err)
-		
+
 		// Close the pool
 		pool.Close()
-		
+
 		// Try to get connection from closed pool
 		conn, err := pool.GetConnection()
 		assert.Error(t, err)
@@ -188,23 +188,23 @@ func TestClient(t *testing.T) {
 	t.Run("PublishWebhook", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		pool, err := rabbitmq.NewConnectionPool("amqp://guest:guest@localhost:5672/", 1)
 		require.NoError(t, err)
 		defer pool.Close()
-		
+
 		client, err := pool.NewClient()
 		require.NoError(t, err)
 		defer client.Close()
-		
+
 		// Test publishing to queue
 		err = client.PublishWebhook("test-queue", "", "", []byte(`{"test": "data"}`))
 		assert.NoError(t, err)
-		
+
 		// Test publishing to exchange
 		err = client.PublishWebhook("", "test-exchange", "test.routing.key", []byte(`{"test": "data"}`))
 		assert.NoError(t, err)
-		
+
 		// Test publishing to both queue and exchange
 		err = client.PublishWebhook("test-queue", "test-exchange", "test.routing.key", []byte(`{"test": "data"}`))
 		assert.NoError(t, err)
@@ -215,26 +215,26 @@ func TestBrokerPublish(t *testing.T) {
 	t.Run("PublishSuccess", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 2,
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		require.NoError(t, err)
 		defer broker.Close()
-		
+
 		// Test publish to queue
 		msg := &brokers.Message{
 			MessageID: "test-123",
 			Queue:     "test-queue",
 			Body:      []byte(`{"test": "message"}`),
 		}
-		
+
 		err = broker.Publish(msg)
 		assert.NoError(t, err)
-		
+
 		// Test publish to exchange
 		msg2 := &brokers.Message{
 			MessageID:  "test-456",
@@ -242,17 +242,17 @@ func TestBrokerPublish(t *testing.T) {
 			RoutingKey: "test.key",
 			Body:       []byte(`{"test": "exchange message"}`),
 		}
-		
+
 		err = broker.Publish(msg2)
 		assert.NoError(t, err)
 	})
-	
+
 	t.Run("PublishWithoutConnection", func(t *testing.T) {
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@invalid:5672/",
 			PoolSize: 1,
 		}
-		
+
 		// This will fail to create broker due to invalid connection
 		broker, err := rabbitmq.NewBroker(config)
 		assert.Error(t, err)
@@ -264,37 +264,37 @@ func TestBrokerSubscribe(t *testing.T) {
 	t.Run("SubscribeSuccess", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 2,
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		require.NoError(t, err)
 		defer broker.Close()
-		
+
 		receivedMessages := make(chan *brokers.IncomingMessage, 10)
 		handler := func(msg *brokers.IncomingMessage) error {
 			receivedMessages <- msg
 			return nil
 		}
-		
+
 		// Subscribe to a queue
 		ctx := context.Background()
 		err = broker.Subscribe(ctx, "test-subscribe-queue", handler)
 		assert.NoError(t, err)
-		
+
 		// Publish a message to the queue
 		msg := &brokers.Message{
 			MessageID: "sub-test-123",
 			Queue:     "test-subscribe-queue",
 			Body:      []byte(`{"subscribe": "test"}`),
 		}
-		
+
 		err = broker.Publish(msg)
 		assert.NoError(t, err)
-		
+
 		// Wait for message to be received
 		select {
 		case received := <-receivedMessages:
@@ -304,25 +304,25 @@ func TestBrokerSubscribe(t *testing.T) {
 			t.Fatal("Timeout waiting for message")
 		}
 	})
-	
+
 	t.Run("SubscribeWithError", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 2,
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		require.NoError(t, err)
 		defer broker.Close()
-		
+
 		// Handler that returns error
 		errorHandler := func(msg *brokers.IncomingMessage) error {
 			return fmt.Errorf("handler error")
 		}
-		
+
 		// Subscribe should succeed even with error handler
 		ctx := context.Background()
 		err = broker.Subscribe(ctx, "test-error-queue", errorHandler)
@@ -334,16 +334,16 @@ func TestBrokerHealth(t *testing.T) {
 	t.Run("HealthyBroker", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 1,
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		require.NoError(t, err)
 		defer broker.Close()
-		
+
 		// Check health
 		err = broker.Health()
 		assert.NoError(t, err)
@@ -354,43 +354,43 @@ func TestBrokerConnect(t *testing.T) {
 	t.Run("ConnectWithNewConfig", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 1,
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		require.NoError(t, err)
 		defer broker.Close()
-		
+
 		// Connect with new config
 		newConfig := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 3,
 		}
-		
+
 		err = broker.Connect(newConfig)
 		assert.NoError(t, err)
 	})
-	
+
 	t.Run("ConnectWithInvalidConfig", func(t *testing.T) {
 		// Skip if no RabbitMQ available
 		t.Skip("Requires RabbitMQ connection")
-		
+
 		config := &rabbitmq.Config{
 			URL:      "amqp://guest:guest@localhost:5672/",
 			PoolSize: 1,
 		}
-		
+
 		broker, err := rabbitmq.NewBroker(config)
 		require.NoError(t, err)
 		defer broker.Close()
-		
+
 		// Try to connect with invalid config
 		err = broker.Connect(nil)
 		assert.Error(t, err)
-		
+
 		// Try with wrong config type - this should fail type assertion
 		invalidConfig := &rabbitmq.Config{URL: "invalid://wrong"}
 		err = broker.Connect(invalidConfig)
@@ -401,7 +401,7 @@ func TestBrokerConnect(t *testing.T) {
 func TestConvertAMQPHeaders(t *testing.T) {
 	// This test can run without RabbitMQ connection
 	// We need to test the convertAMQPHeaders function indirectly through Subscribe
-	
+
 	t.Run("HeaderConversion", func(t *testing.T) {
 		// Create a test to verify header conversion logic
 		headers := amqp.Table{
@@ -410,7 +410,7 @@ func TestConvertAMQPHeaders(t *testing.T) {
 			"bool-header":   true,
 			"float-header":  3.14,
 		}
-		
+
 		// The function is internal, but we can test it through the Subscribe flow
 		// This verifies the conversion logic is working
 		assert.NotNil(t, headers)
@@ -421,15 +421,15 @@ func TestConvertAMQPHeaders(t *testing.T) {
 func BenchmarkConnectionPool(b *testing.B) {
 	// Skip if no RabbitMQ available
 	b.Skip("Requires RabbitMQ connection")
-	
+
 	pool, err := rabbitmq.NewConnectionPool("amqp://guest:guest@localhost:5672/", 10)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer pool.Close()
-	
+
 	b.ResetTimer()
-	
+
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			conn, err := pool.GetConnection()
@@ -445,26 +445,26 @@ func BenchmarkConnectionPool(b *testing.B) {
 func BenchmarkPublish(b *testing.B) {
 	// Skip if no RabbitMQ available
 	b.Skip("Requires RabbitMQ connection")
-	
+
 	config := &rabbitmq.Config{
 		URL:      "amqp://guest:guest@localhost:5672/",
 		PoolSize: 10,
 	}
-	
+
 	broker, err := rabbitmq.NewBroker(config)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer broker.Close()
-	
+
 	msg := &brokers.Message{
 		MessageID: "bench-test",
 		Queue:     "benchmark-queue",
 		Body:      []byte(`{"benchmark": "data"}`),
 	}
-	
+
 	b.ResetTimer()
-	
+
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			if err := broker.Publish(msg); err != nil {

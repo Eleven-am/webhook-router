@@ -357,6 +357,12 @@ func TestTriggerBuilder_RealWorldScenario(t *testing.T) {
 
 	require.NoError(t, err)
 
+	// Wait for context to timeout and processing to complete
+	<-ctx.Done()
+
+	// Give a small buffer for async processing to complete
+	time.Sleep(50 * time.Millisecond)
+
 	// Verify processing occurred
 	assert.Greater(t, processedCount, 0)
 	assert.False(t, lastEventTime.IsZero())

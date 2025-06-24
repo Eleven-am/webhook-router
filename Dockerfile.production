@@ -1,0 +1,114 @@
+# Production Dockerfile for Webhook Router with PostgreSQL and Redis support
+# Handles migrations properly for PgBouncer environments
+
+FROM golang:1.24-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache gcc musl-dev sqlite-dev postgresql-dev
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build arguments for multi-arch support
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG VERSION=latest
+ARG BUILD_TIME
+
+# Build the application with version info
+RUN CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -a -installsuffix cgo \
+    -ldflags "-extldflags '-static' -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME}" \
+    -o webhook-router main_no_frontend.go
+
+# No need for entrypoint script - the application handles everything internally
+
+# Final stage - production runtime
+FROM alpine:latest
+
+# Install runtime dependencies including PostgreSQL client for migrations
+RUN apk --no-cache add \
+    ca-certificates \
+    sqlite \
+    postgresql-client \
+    tzdata \
+    curl \
+    && rm -rf /var/cache/apk/*
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/webhook-router .
+
+# Create necessary directories
+RUN mkdir -p /data /app/logs && \
+    chown -R nobody:nobody /data /app
+
+# Production environment variables
+ENV DATABASE_TYPE=postgres
+ENV DATABASE_PATH=/data/webhook_router.db
+
+# PostgreSQL configuration (through PgBouncer)
+ENV POSTGRES_HOST=pgbouncer
+ENV POSTGRES_PORT=6432
+ENV POSTGRES_DB=webhook_router
+ENV POSTGRES_USER=webhook_router
+ENV POSTGRES_PASSWORD=""
+ENV POSTGRES_SSL_MODE=require
+
+# Direct PostgreSQL URL for migrations (bypassing PgBouncer)
+# Format: postgres://user:password@host:port/database?sslmode=require
+ENV MIGRATION_DATABASE_URL=""
+
+# Redis configuration
+ENV REDIS_ADDRESS=redis:6379
+ENV REDIS_PASSWORD=""
+ENV REDIS_DB=0
+ENV REDIS_POOL_SIZE=50
+
+# Connection pool settings for production
+ENV DATABASE_MAX_CONNECTIONS=25
+ENV DATABASE_MAX_IDLE_CONNECTIONS=5
+ENV DATABASE_CONNECTION_MAX_LIFETIME=1h
+
+# Security
+ENV ENCRYPTION_KEY=""
+ENV ALLOWED_WEBHOOK_HOSTS=""
+ENV BLOCK_PRIVATE_IPS=true
+
+# Performance
+ENV PORT=8080
+ENV WORKER_POOL_SIZE=100
+ENV PIPELINE_WORKER_COUNT=20
+ENV LOG_LEVEL=info
+
+# Rate limiting
+ENV RATE_LIMIT_ENABLED=true
+ENV RATE_LIMIT_DEFAULT=1000
+ENV RATE_LIMIT_WINDOW=60s
+
+# Monitoring
+ENV METRICS_ENABLED=true
+ENV METRICS_PORT=9090
+
+# Use non-root user
+USER nobody
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Volume for persistent data
+VOLUME ["/data"]
+
+# Health check with timeout
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+  CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Run the binary directly
+CMD ["./webhook-router"]

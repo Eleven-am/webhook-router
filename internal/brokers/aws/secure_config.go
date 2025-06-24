@@ -1,7 +1,9 @@
 package aws
 
 import (
+	"crypto/rand"
 	"fmt"
+	"sync"
 	"time"
 	"webhook-router/internal/common/validation"
 	"webhook-router/internal/crypto"
@@ -9,21 +11,24 @@ import (
 
 // SecureConfig extends Config with encrypted credential storage
 type SecureConfig struct {
-	Region                  string
-	EncryptedAccessKeyID    string // Base64-encoded encrypted AccessKeyID
+	Region                   string
+	EncryptedAccessKeyID     string // Base64-encoded encrypted AccessKeyID
 	EncryptedSecretAccessKey string // Base64-encoded encrypted SecretAccessKey
-	EncryptedSessionToken   string // Base64-encoded encrypted SessionToken (optional)
-	QueueURL                string // For SQS
-	TopicArn                string // For SNS
-	Timeout                 time.Duration
-	RetryMax                int
-	VisibilityTimeout       int64 // SQS message visibility timeout in seconds
-	WaitTimeSeconds         int64 // SQS long polling wait time
-	MaxMessages             int64 // SQS max messages per receive
-	
+	EncryptedSessionToken    string // Base64-encoded encrypted SessionToken (optional)
+	QueueURL                 string // For SQS
+	TopicArn                 string // For SNS
+	Timeout                  time.Duration
+	RetryMax                 int
+	VisibilityTimeout        int64 // SQS message visibility timeout in seconds
+	WaitTimeSeconds          int64 // SQS long polling wait time
+	MaxMessages              int64 // SQS max messages per receive
+
 	// Runtime fields (not persisted)
-	encryptor   *crypto.ConfigEncryptor
-	decryptedConfig *Config // Cache for decrypted credentials
+	encryptor        *crypto.ConfigEncryptor
+	decryptedConfig  *Config       // Cache for decrypted credentials
+	credentialExpiry time.Time     // When cached credentials expire
+	credentialTTL    time.Duration // How long to cache credentials
+	mu               sync.RWMutex  // Protects credential cache access
 }
 
 // NewSecureConfig creates a new SecureConfig with the provided encryptor
@@ -36,6 +41,7 @@ func NewSecureConfig(encryptor *crypto.ConfigEncryptor) *SecureConfig {
 		WaitTimeSeconds:   20,
 		MaxMessages:       1,
 		encryptor:         encryptor,
+		credentialTTL:     5 * time.Minute, // Default 5-minute credential cache TTL
 	}
 }
 
@@ -73,7 +79,7 @@ func (sc *SecureConfig) SetCredentials(accessKeyID, secretAccessKey, sessionToke
 	}
 
 	// Clear cached decrypted config to force re-decryption
-	sc.decryptedConfig = nil
+	sc.securelyWipeCredentialCache()
 
 	return nil
 }
@@ -84,10 +90,26 @@ func (sc *SecureConfig) GetDecryptedConfig() (*Config, error) {
 		return nil, fmt.Errorf("encryptor not initialized")
 	}
 
-	// Return cached config if available
-	if sc.decryptedConfig != nil {
+	sc.mu.RLock()
+	// Check if cached config is still valid (not expired)
+	if sc.decryptedConfig != nil && time.Now().Before(sc.credentialExpiry) {
+		config := sc.decryptedConfig
+		sc.mu.RUnlock()
+		return config, nil
+	}
+	sc.mu.RUnlock()
+
+	// Need to decrypt credentials (cache expired or empty)
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if sc.decryptedConfig != nil && time.Now().Before(sc.credentialExpiry) {
 		return sc.decryptedConfig, nil
 	}
+
+	// Clear any existing cached credentials securely
+	sc.unsafeWipeCredentialCache()
 
 	config := &Config{
 		Region:            sc.Region,
@@ -127,8 +149,9 @@ func (sc *SecureConfig) GetDecryptedConfig() (*Config, error) {
 		config.SessionToken = decrypted
 	}
 
-	// Cache the decrypted config
+	// Cache the decrypted config with expiry time
 	sc.decryptedConfig = config
+	sc.credentialExpiry = time.Now().Add(sc.credentialTTL)
 
 	return config, nil
 }
@@ -136,40 +159,40 @@ func (sc *SecureConfig) GetDecryptedConfig() (*Config, error) {
 // Validate validates the secure configuration
 func (sc *SecureConfig) Validate() error {
 	v := validation.NewValidatorWithPrefix("AWS secure config")
-	
+
 	// Required fields
 	v.RequireString(sc.Region, "region")
 	v.RequireString(sc.EncryptedAccessKeyID, "encrypted_access_key_id")
 	v.RequireString(sc.EncryptedSecretAccessKey, "encrypted_secret_access_key")
-	
+
 	// Either QueueURL or TopicArn is required
 	if sc.QueueURL == "" && sc.TopicArn == "" {
 		v.Validate(func() error {
 			return fmt.Errorf("either QueueURL (for SQS) or TopicArn (for SNS) is required")
 		})
 	}
-	
+
 	// Set defaults
 	if sc.Timeout <= 0 {
 		sc.Timeout = 30 * time.Second
 	}
-	
+
 	if sc.RetryMax <= 0 {
 		sc.RetryMax = 3
 	}
-	
+
 	if sc.VisibilityTimeout <= 0 {
 		sc.VisibilityTimeout = 30
 	}
-	
+
 	if sc.WaitTimeSeconds < 0 {
 		sc.WaitTimeSeconds = 20
 	}
-	
+
 	if sc.MaxMessages <= 0 {
 		sc.MaxMessages = 1
 	}
-	
+
 	// Validate ranges
 	v.RequirePositive(sc.RetryMax, "retry_max")
 	v.RequireNonNegative(int(sc.VisibilityTimeout), "visibility_timeout")
@@ -185,7 +208,7 @@ func (sc *SecureConfig) Validate() error {
 			})
 		}
 	}
-	
+
 	return v.Error()
 }
 
@@ -207,13 +230,62 @@ func (sc *SecureConfig) GetConnectionString() string {
 
 // ClearCredentials securely clears any cached decrypted credentials from memory
 func (sc *SecureConfig) ClearCredentials() {
+	sc.securelyWipeCredentialCache()
+}
+
+// SetCredentialTTL sets the time-to-live for cached credentials
+func (sc *SecureConfig) SetCredentialTTL(ttl time.Duration) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	sc.credentialTTL = ttl
+	// If TTL is being reduced and current cache would exceed new TTL, clear it
+	if sc.decryptedConfig != nil && time.Now().Add(ttl).Before(sc.credentialExpiry) {
+		sc.unsafeWipeCredentialCache()
+	}
+}
+
+// securelyWipeCredentialCache safely clears credentials with proper locking
+func (sc *SecureConfig) securelyWipeCredentialCache() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.unsafeWipeCredentialCache()
+}
+
+// unsafeWipeCredentialCache clears credentials without locking (must hold write lock)
+func (sc *SecureConfig) unsafeWipeCredentialCache() {
 	if sc.decryptedConfig != nil {
-		// Zero out the sensitive fields
+		// Securely overwrite sensitive fields with random data first
+		sc.secureOverwrite(&sc.decryptedConfig.AccessKeyID)
+		sc.secureOverwrite(&sc.decryptedConfig.SecretAccessKey)
+		sc.secureOverwrite(&sc.decryptedConfig.SessionToken)
+
+		// Set to empty strings
 		sc.decryptedConfig.AccessKeyID = ""
 		sc.decryptedConfig.SecretAccessKey = ""
 		sc.decryptedConfig.SessionToken = ""
 		sc.decryptedConfig = nil
 	}
+	sc.credentialExpiry = time.Time{} // Reset expiry
+}
+
+// secureOverwrite overwrites a string with random data to prevent memory recovery
+func (sc *SecureConfig) secureOverwrite(s *string) {
+	if s == nil || len(*s) == 0 {
+		return
+	}
+
+	// Create random data of the same length
+	randomData := make([]byte, len(*s))
+	if _, err := rand.Read(randomData); err != nil {
+		// Fallback to zeros if random generation fails
+		for i := range randomData {
+			randomData[i] = 0
+		}
+	}
+
+	// Overwrite the string data
+	*s = string(randomData)
 }
 
 // FromEnvironment creates a SecureConfig from environment variables

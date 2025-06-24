@@ -20,10 +20,10 @@ func NewDistributedExecutorAdapter(executor distributed.Executor) *DistributedEx
 }
 
 // ExecuteScheduledTask implements the trigger manager's distributed executor function signature
-func (a *DistributedExecutorAdapter) ExecuteScheduledTask(triggerID int, taskID string, handler func() error) error {
+func (a *DistributedExecutorAdapter) ExecuteScheduledTask(triggerID string, taskID string, handler func() error) error {
 	// Create a task that wraps the handler
 	task := distributed.NewSimpleTask(
-		fmt.Sprintf("trigger-%d-%s", triggerID, taskID),
+		fmt.Sprintf("trigger-%s-%s", triggerID, taskID),
 		func(ctx context.Context) error {
 			return handler()
 		},
@@ -35,14 +35,14 @@ func (a *DistributedExecutorAdapter) ExecuteScheduledTask(triggerID int, taskID 
 
 // TriggerTask represents a trigger-specific task
 type TriggerTask struct {
-	triggerID   int
+	triggerID   string
 	triggerName string
 	taskID      string
 	handler     func() error
 }
 
 // NewTriggerTask creates a new trigger task
-func NewTriggerTask(triggerID int, triggerName, taskID string, handler func() error) distributed.Task {
+func NewTriggerTask(triggerID string, triggerName, taskID string, handler func() error) distributed.Task {
 	return &TriggerTask{
 		triggerID:   triggerID,
 		triggerName: triggerName,
@@ -52,7 +52,7 @@ func NewTriggerTask(triggerID int, triggerName, taskID string, handler func() er
 }
 
 func (t *TriggerTask) ID() string {
-	return fmt.Sprintf("trigger-%d-%s", t.triggerID, t.taskID)
+	return fmt.Sprintf("trigger-%s-%s", t.triggerID, t.taskID)
 }
 
 func (t *TriggerTask) Execute(ctx context.Context) error {

@@ -1,6 +1,8 @@
 package triggers_test
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,10 +13,106 @@ import (
 	"webhook-router/internal/brokers"
 	"webhook-router/internal/config"
 	"webhook-router/internal/storage"
+	"webhook-router/internal/storage/sqlc"
+	"webhook-router/internal/testutil"
 	"webhook-router/internal/triggers"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// testBrokerConfig implements brokers.BrokerConfig for testing
+type testBrokerConfig struct{}
+
+func (c *testBrokerConfig) Validate() error {
+	return nil
+}
+
+func (c *testBrokerConfig) GetConnectionString() string {
+	return "mock://localhost:5672"
+}
+
+func (c *testBrokerConfig) GetType() string {
+	return "mock"
+}
+
+// testTriggerFactory creates test triggers that work with BaseTriggerConfig
+type testTriggerFactory struct {
+	triggerType string
+}
+
+func (f *testTriggerFactory) Create(config triggers.TriggerConfig) (triggers.Trigger, error) {
+	return &testTrigger{
+		triggerType: f.triggerType,
+		config:      config,
+	}, nil
+}
+
+func (f *testTriggerFactory) GetType() string {
+	return f.triggerType
+}
+
+// testTrigger implements triggers.Trigger for testing
+type testTrigger struct {
+	triggerType string
+	config      triggers.TriggerConfig
+	running     bool
+	handler     triggers.TriggerHandler
+}
+
+func (t *testTrigger) ID() string {
+	return t.config.GetID()
+}
+
+func (t *testTrigger) Name() string {
+	return t.config.GetName()
+}
+
+func (t *testTrigger) Type() string {
+	return t.triggerType
+}
+
+func (t *testTrigger) IsRunning() bool {
+	return t.running
+}
+
+func (t *testTrigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
+	t.handler = handler
+	t.running = true
+	return nil
+}
+
+func (t *testTrigger) Stop() error {
+	t.running = false
+	t.handler = nil
+	return nil
+}
+
+func (t *testTrigger) Health() error {
+	return nil
+}
+
+func (t *testTrigger) Config() triggers.TriggerConfig {
+	return t.config
+}
+
+func (t *testTrigger) LastExecution() *time.Time {
+	return nil
+}
+
+func (t *testTrigger) NextExecution() *time.Time {
+	return nil
+}
+
+func (t *testTrigger) Status() *triggers.TriggerStatus {
+	return &triggers.TriggerStatus{
+		ID:          t.ID(),
+		Name:        t.Name(),
+		Type:        t.Type(),
+		IsRunning:   t.IsRunning(),
+		Health:      "healthy",
+		HealthError: "",
+	}
+}
 
 // TestManager_Integration tests the trigger manager with real database and components
 func TestManager_Integration(t *testing.T) {
@@ -24,6 +122,9 @@ func TestManager_Integration(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Register storage factory for testing
+	storage.Register("sqlite", &sqlc.Factory{})
 
 	// Initialize storage
 	cfg := &config.Config{
@@ -35,9 +136,9 @@ func TestManager_Integration(t *testing.T) {
 
 	// Initialize broker registry and mock broker
 	brokerRegistry := brokers.NewRegistry()
-	mockBroker := &MockBroker{}
-	mockBroker.On("Name").Return("mock")
-	mockBroker.On("Health").Return(nil)
+	mockBroker := testutil.NewMockBroker("mock")
+	err = mockBroker.Connect(&testBrokerConfig{})
+	require.NoError(t, err)
 
 	// Create manager
 	config := &triggers.ManagerConfig{
@@ -46,6 +147,11 @@ func TestManager_Integration(t *testing.T) {
 		MaxRetries:          2,
 	}
 	manager := triggers.NewManager(store, brokerRegistry, mockBroker, config)
+
+	// Register test trigger factories that work with BaseTriggerConfig
+	manager.GetRegistry().Register("http", &testTriggerFactory{triggerType: "http"})
+	manager.GetRegistry().Register("polling", &testTriggerFactory{triggerType: "polling"})
+	manager.GetRegistry().Register("schedule", &testTriggerFactory{triggerType: "schedule"})
 
 	t.Run("Manager_Lifecycle", func(t *testing.T) {
 		// Test manager start
@@ -72,8 +178,9 @@ func TestManager_Integration(t *testing.T) {
 			Type:   "http",
 			Active: true,
 			Config: map[string]interface{}{
-				"path":   "/test/webhook",
-				"method": "POST",
+				"path":         "/test/webhook",
+				"methods":      []string{"POST"},
+				"content_type": "application/json",
 			},
 			Status:    "active",
 			CreatedAt: time.Now(),
@@ -112,6 +219,7 @@ func TestManager_Integration(t *testing.T) {
 				"url":      "http://example.com/api",
 				"method":   "GET",
 				"interval": "30s",
+				"timeout":  "10s",
 			},
 			Status:    "inactive",
 			CreatedAt: time.Now(),
@@ -151,34 +259,35 @@ func TestManager_Integration(t *testing.T) {
 
 		// Create test trigger in database
 		triggerData := &storage.Trigger{
-			Name:        "test-schedule-trigger",
-			Type:        "schedule",
-			Description: "Test schedule trigger",
-			Active:      true,
-			Settings: map[string]interface{}{
-				"schedule": "*/5 * * * *", // Every 5 minutes
+			Name:   "test-schedule-trigger",
+			Type:   "schedule",
+			Active: true,
+			Config: map[string]interface{}{
+				"schedule":  "*/5 * * * *", // Every 5 minutes
+				"timezone":  "UTC",
+				"immediate": false,
 			},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
 
-		triggerID, err := store.CreateTrigger(triggerData)
+		err = store.CreateTrigger(triggerData)
 		require.NoError(t, err)
 
 		// Load trigger
-		err = manager.LoadTrigger(triggerID)
+		err = manager.LoadTrigger(triggerData.ID)
 		require.NoError(t, err)
 
 		// Verify trigger exists
-		_, err = manager.GetTrigger(triggerID)
+		_, err = manager.GetTrigger(triggerData.ID)
 		require.NoError(t, err)
 
 		// Unload trigger
-		err = manager.UnloadTrigger(triggerID)
+		err = manager.UnloadTrigger(triggerData.ID)
 		require.NoError(t, err)
 
 		// Verify trigger is removed
-		_, err = manager.GetTrigger(triggerID)
+		_, err = manager.GetTrigger(triggerData.ID)
 		assert.Error(t, err)
 	})
 
@@ -190,11 +299,11 @@ func TestManager_Integration(t *testing.T) {
 
 		// Create multiple test triggers
 		triggerTypes := []string{"http", "polling", "schedule"}
-		triggerIDs := make([]int, len(triggerTypes))
+		triggerIDs := make([]string, len(triggerTypes))
 
 		for i, triggerType := range triggerTypes {
 			triggerData := &storage.Trigger{
-				Name:   "test-" + triggerType + "-trigger",
+				Name:   fmt.Sprintf("test-%s-trigger-getall-%d", triggerType, time.Now().UnixNano()),
 				Type:   triggerType,
 				Active: true,
 				Config: map[string]interface{}{
@@ -205,12 +314,12 @@ func TestManager_Integration(t *testing.T) {
 				UpdatedAt: time.Now(),
 			}
 
-			err := store.CreateTrigger(triggerData)
+			err = store.CreateTrigger(triggerData)
 			require.NoError(t, err)
 			triggerIDs[i] = triggerData.ID
 
 			// Load trigger
-			err = manager.LoadTrigger(triggerID)
+			err = manager.LoadTrigger(triggerData.ID)
 			require.NoError(t, err)
 		}
 
@@ -233,31 +342,31 @@ func TestManager_Integration(t *testing.T) {
 
 		// Create test trigger
 		triggerData := &storage.Trigger{
-			Name:        "test-status-trigger",
-			Type:        "http",
-			Description: "Test status trigger",
-			Active:      true,
-			Settings: map[string]interface{}{
-				"path":   "/status/test",
-				"method": "POST",
+			Name:   fmt.Sprintf("test-status-trigger-%d", time.Now().UnixNano()),
+			Type:   "http",
+			Active: true,
+			Config: map[string]interface{}{
+				"path":         "/status/test",
+				"methods":      []string{"POST"},
+				"content_type": "application/json",
 			},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
 
-		triggerID, err := store.CreateTrigger(triggerData)
+		err = store.CreateTrigger(triggerData)
 		require.NoError(t, err)
 
 		// Load trigger
-		err = manager.LoadTrigger(triggerID)
+		err = manager.LoadTrigger(triggerData.ID)
 		require.NoError(t, err)
 
 		// Get trigger status
-		status, err := manager.GetTriggerStatus(triggerID)
+		status, err := manager.GetTriggerStatus(triggerData.ID)
 		require.NoError(t, err)
 		assert.NotNil(t, status)
-		assert.Equal(t, triggerID, status.ID)
-		assert.Equal(t, "test-status-trigger", status.Name)
+		assert.Equal(t, triggerData.ID, status.ID)
+		assert.Contains(t, status.Name, "test-status-trigger")
 		assert.Equal(t, "http", status.Type)
 		assert.True(t, status.IsRunning)
 		assert.Equal(t, "healthy", status.Health) // Or whatever the expected health status is
@@ -272,24 +381,24 @@ func TestManager_Integration(t *testing.T) {
 
 		// Create test trigger
 		triggerData := &storage.Trigger{
-			Name:        "test-health-trigger",
-			Type:        "polling",
-			Description: "Test health trigger",
-			Active:      true,
-			Settings: map[string]interface{}{
+			Name:   fmt.Sprintf("test-health-trigger-%d", time.Now().UnixNano()),
+			Type:   "polling",
+			Active: true,
+			Config: map[string]interface{}{
 				"url":      "http://example.com/health",
 				"method":   "GET",
 				"interval": "10s",
+				"timeout":  "5s",
 			},
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
 
-		triggerID, err := store.CreateTrigger(triggerData)
+		err = store.CreateTrigger(triggerData)
 		require.NoError(t, err)
 
 		// Load trigger
-		err = manager.LoadTrigger(triggerID)
+		err = manager.LoadTrigger(triggerData.ID)
 		require.NoError(t, err)
 
 		// Wait for at least one health check cycle
@@ -300,7 +409,7 @@ func TestManager_Integration(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Individual trigger health
-		trigger, err := manager.GetTrigger(triggerID)
+		trigger, err := manager.GetTrigger(triggerData.ID)
 		require.NoError(t, err)
 
 		// Health check may pass or fail depending on trigger implementation
@@ -344,6 +453,11 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Register storage factory for testing
+	storage.Register("sqlite", &sqlc.Factory{})
+
+	// Initialize storage
 	cfg := &config.Config{
 		DatabaseType: "sqlite",
 		DatabasePath: dbPath,
@@ -353,9 +467,9 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 
 	// Initialize components
 	brokerRegistry := brokers.NewRegistry()
-	mockBroker := &MockBroker{}
-	mockBroker.On("Name").Return("mock")
-	mockBroker.On("Health").Return(nil)
+	mockBroker := testutil.NewMockBroker("mock")
+	err = mockBroker.Connect(&testBrokerConfig{})
+	require.NoError(t, err)
 
 	config := &triggers.ManagerConfig{
 		HealthCheckInterval: 200 * time.Millisecond,
@@ -364,6 +478,11 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 	}
 	manager := triggers.NewManager(store, brokerRegistry, mockBroker, config)
 
+	// Register test trigger factories that work with BaseTriggerConfig
+	manager.GetRegistry().Register("http", &testTriggerFactory{triggerType: "http"})
+	manager.GetRegistry().Register("polling", &testTriggerFactory{triggerType: "polling"})
+	manager.GetRegistry().Register("schedule", &testTriggerFactory{triggerType: "schedule"})
+
 	// Start manager
 	err = manager.Start()
 	require.NoError(t, err)
@@ -371,7 +490,7 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 
 	// Create multiple triggers concurrently
 	numTriggers := 5
-	triggerIDs := make([]int, numTriggers)
+	triggerIDs := make([]string, numTriggers)
 
 	// Create triggers in database first
 	for i := 0; i < numTriggers; i++ {
@@ -388,7 +507,7 @@ func TestManager_ConcurrentOperations(t *testing.T) {
 			UpdatedAt: time.Now(),
 		}
 
-		err := store.CreateTrigger(triggerData)
+		err = store.CreateTrigger(triggerData)
 		require.NoError(t, err)
 		triggerIDs[i] = triggerData.ID
 	}

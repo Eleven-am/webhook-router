@@ -3,3 +3,23 @@
 *.db
 */**.test
 */**.out
+*/node_modules
+/.vscode
+/sdk
+
+# Log files
+*.log
+to_be_deleted/webhook-router.log
+
+# Temporary directories and files
+tmp/
+to_be_deleted/
+*.bak
+*.tmp
+*.temp
+*.old
+*.orig
+*~
+*.swp
+*.swo
+.DS_Store

@@ -9,7 +9,7 @@ import (
 )
 
 type BrokerConfig struct {
-	ID              int32            `json:"id"`
+	ID              string           `json:"id"`
 	Name            string           `json:"name"`
 	Type            string           `json:"type"`
 	Config          []byte           `json:"config"`
@@ -19,17 +19,17 @@ type BrokerConfig struct {
 	CreatedAt       pgtype.Timestamp `json:"created_at"`
 	UpdatedAt       pgtype.Timestamp `json:"updated_at"`
 	DlqEnabled      *bool            `json:"dlq_enabled"`
-	DlqBrokerID     *int32           `json:"dlq_broker_id"`
+	DlqBrokerID     *string          `json:"dlq_broker_id"`
+	UserID          *string          `json:"user_id"`
 }
 
 type DlqMessage struct {
-	ID             int32            `json:"id"`
+	ID             string           `json:"id"`
 	MessageID      string           `json:"message_id"`
-	RouteID        int32            `json:"route_id"`
-	TriggerID      *int32           `json:"trigger_id"`
-	PipelineID     *int32           `json:"pipeline_id"`
-	SourceBrokerID int32            `json:"source_broker_id"`
-	DlqBrokerID    int32            `json:"dlq_broker_id"`
+	TriggerID      *string          `json:"trigger_id"`
+	PipelineID     *string          `json:"pipeline_id"`
+	SourceBrokerID string           `json:"source_broker_id"`
+	DlqBrokerID    string           `json:"dlq_broker_id"`
 	BrokerName     string           `json:"broker_name"`
 	Queue          string           `json:"queue"`
 	Exchange       *string          `json:"exchange"`
@@ -47,36 +47,60 @@ type DlqMessage struct {
 	UpdatedAt      pgtype.Timestamp `json:"updated_at"`
 }
 
+type ExecutionLog struct {
+	ID                   string           `json:"id"`
+	TriggerID            *string          `json:"trigger_id"`
+	TriggerType          string           `json:"trigger_type"`
+	TriggerConfig        []byte           `json:"trigger_config"`
+	InputMethod          *string          `json:"input_method"`
+	InputEndpoint        *string          `json:"input_endpoint"`
+	InputHeaders         []byte           `json:"input_headers"`
+	InputBody            *string          `json:"input_body"`
+	PipelineID           *string          `json:"pipeline_id"`
+	PipelineStages       []byte           `json:"pipeline_stages"`
+	TransformationData   []byte           `json:"transformation_data"`
+	TransformationTimeMs *int32           `json:"transformation_time_ms"`
+	BrokerID             *string          `json:"broker_id"`
+	BrokerType           *string          `json:"broker_type"`
+	BrokerQueue          *string          `json:"broker_queue"`
+	BrokerExchange       *string          `json:"broker_exchange"`
+	BrokerRoutingKey     *string          `json:"broker_routing_key"`
+	BrokerPublishTimeMs  *int32           `json:"broker_publish_time_ms"`
+	BrokerResponse       *string          `json:"broker_response"`
+	Status               *string          `json:"status"`
+	StatusCode           *int32           `json:"status_code"`
+	ErrorMessage         *string          `json:"error_message"`
+	OutputData           *string          `json:"output_data"`
+	TotalLatencyMs       *int32           `json:"total_latency_ms"`
+	StartedAt            pgtype.Timestamp `json:"started_at"`
+	CompletedAt          pgtype.Timestamp `json:"completed_at"`
+	UserID               string           `json:"user_id"`
+}
+
+type Oauth2Service struct {
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	ClientID     string             `json:"client_id"`
+	ClientSecret string             `json:"client_secret"`
+	TokenUrl     string             `json:"token_url"`
+	AuthUrl      *string            `json:"auth_url"`
+	RedirectUrl  *string            `json:"redirect_url"`
+	Scopes       *string            `json:"scopes"`
+	UserID       string             `json:"user_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	GrantType    string             `json:"grant_type"`
+}
+
 type Pipeline struct {
-	ID          int32            `json:"id"`
+	ID          string           `json:"id"`
 	Name        string           `json:"name"`
 	Description *string          `json:"description"`
 	Stages      []byte           `json:"stages"`
 	Active      *bool            `json:"active"`
 	CreatedAt   pgtype.Timestamp `json:"created_at"`
 	UpdatedAt   pgtype.Timestamp `json:"updated_at"`
-}
-
-type Route struct {
-	ID                  int32            `json:"id"`
-	Name                string           `json:"name"`
-	Endpoint            string           `json:"endpoint"`
-	Method              string           `json:"method"`
-	Queue               string           `json:"queue"`
-	Exchange            *string          `json:"exchange"`
-	RoutingKey          string           `json:"routing_key"`
-	Filters             []byte           `json:"filters"`
-	Headers             []byte           `json:"headers"`
-	Active              *bool            `json:"active"`
-	CreatedAt           pgtype.Timestamp `json:"created_at"`
-	UpdatedAt           pgtype.Timestamp `json:"updated_at"`
-	PipelineID          *int32           `json:"pipeline_id"`
-	TriggerID           *int32           `json:"trigger_id"`
-	DestinationBrokerID *int32           `json:"destination_broker_id"`
-	Priority            *int32           `json:"priority"`
-	ConditionExpression *string          `json:"condition_expression"`
-	SignatureConfig     []byte           `json:"signature_config"`
-	SignatureSecret     *string          `json:"signature_secret"`
+	UserID      *string          `json:"user_id"`
 }
 
 type Setting struct {
@@ -86,40 +110,31 @@ type Setting struct {
 }
 
 type Trigger struct {
-	ID            int32            `json:"id"`
-	Name          string           `json:"name"`
-	Type          string           `json:"type"`
-	Config        []byte           `json:"config"`
-	Status        *string          `json:"status"`
-	Active        *bool            `json:"active"`
-	ErrorMessage  *string          `json:"error_message"`
-	LastExecution pgtype.Timestamp `json:"last_execution"`
-	NextExecution pgtype.Timestamp `json:"next_execution"`
-	CreatedAt     pgtype.Timestamp `json:"created_at"`
-	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+	ID                  string           `json:"id"`
+	Name                string           `json:"name"`
+	Type                string           `json:"type"`
+	Config              []byte           `json:"config"`
+	Status              *string          `json:"status"`
+	Active              *bool            `json:"active"`
+	ErrorMessage        *string          `json:"error_message"`
+	LastExecution       pgtype.Timestamp `json:"last_execution"`
+	NextExecution       pgtype.Timestamp `json:"next_execution"`
+	PipelineID          *string          `json:"pipeline_id"`
+	DestinationBrokerID *string          `json:"destination_broker_id"`
+	DlqBrokerID         *string          `json:"dlq_broker_id"`
+	DlqEnabled          *bool            `json:"dlq_enabled"`
+	DlqRetryMax         *int32           `json:"dlq_retry_max"`
+	CreatedAt           pgtype.Timestamp `json:"created_at"`
+	UpdatedAt           pgtype.Timestamp `json:"updated_at"`
+	UserID              string           `json:"user_id"`
+	DeletedAt           pgtype.Timestamp `json:"deleted_at"`
 }
 
 type User struct {
-	ID           int32            `json:"id"`
+	ID           string           `json:"id"`
 	Username     string           `json:"username"`
 	PasswordHash string           `json:"password_hash"`
 	IsDefault    *bool            `json:"is_default"`
 	CreatedAt    pgtype.Timestamp `json:"created_at"`
 	UpdatedAt    pgtype.Timestamp `json:"updated_at"`
-}
-
-type WebhookLog struct {
-	ID                   int32            `json:"id"`
-	RouteID              *int32           `json:"route_id"`
-	Method               string           `json:"method"`
-	Endpoint             string           `json:"endpoint"`
-	Headers              []byte           `json:"headers"`
-	Body                 *string          `json:"body"`
-	StatusCode           *int32           `json:"status_code"`
-	Error                *string          `json:"error"`
-	ProcessedAt          pgtype.Timestamp `json:"processed_at"`
-	TriggerID            *int32           `json:"trigger_id"`
-	PipelineID           *int32           `json:"pipeline_id"`
-	TransformationTimeMs *int32           `json:"transformation_time_ms"`
-	BrokerPublishTimeMs  *int32           `json:"broker_publish_time_ms"`
 }

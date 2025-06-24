@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	
+
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
 	"github.com/emersion/go-message/mail"
@@ -24,33 +24,32 @@ import (
 // Trigger implements the IMAP polling trigger using BaseTrigger
 type Trigger struct {
 	*base.BaseTrigger
-	config        *Config
-	client        *client.Client
-	messageCount  int64
-	errorCount    int64
-	oauthManager  *oauth2.Manager
-	mu            sync.RWMutex
-	builder       *triggers.TriggerBuilder
+	config       *Config
+	client       *client.Client
+	messageCount int64
+	errorCount   int64
+	oauthManager *oauth2.Manager
+	mu           sync.RWMutex
+	builder      *triggers.TriggerBuilder
 }
-
 
 func NewTrigger(config *Config) (*Trigger, error) {
 	if err := config.Validate(); err != nil {
 		return nil, errors.ConfigError(fmt.Sprintf("invalid IMAP config: %v", err))
 	}
-	
+
 	builder := triggers.NewTriggerBuilder("imap", config)
-	
+
 	trigger := &Trigger{
 		config:       config,
 		messageCount: 0,
 		errorCount:   0,
 		builder:      builder,
 	}
-	
+
 	// Initialize BaseTrigger
 	trigger.BaseTrigger = base.NewBaseTrigger("imap", config, nil)
-	
+
 	return trigger, nil
 }
 
@@ -58,7 +57,7 @@ func NewTrigger(config *Config) (*Trigger, error) {
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
 	// Update BaseTrigger with the adapted handler
 	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
-	
+
 	// Use the BaseTrigger's Start method with our run function
 	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
 		return t.run(ctx, handler)
@@ -71,7 +70,7 @@ func (t *Trigger) Stop() error {
 	if err := t.BaseTrigger.Stop(); err != nil {
 		return err
 	}
-	
+
 	// Then close IMAP connection
 	if t.client != nil {
 		if err := t.client.Logout(); err != nil {
@@ -79,7 +78,7 @@ func (t *Trigger) Stop() error {
 		}
 		t.client = nil
 	}
-	
+
 	t.builder.Logger().Info("IMAP trigger stopped",
 		logging.Field{"host", t.config.Host},
 		logging.Field{"username", t.config.Username},
@@ -94,7 +93,7 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 		logging.Field{"folder", t.config.Folder},
 		logging.Field{"poll_interval", t.config.PollInterval},
 	)
-	
+
 	// Start polling loop
 	return t.pollLoop(ctx, handler)
 }
@@ -103,10 +102,10 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 func (t *Trigger) pollLoop(ctx context.Context, handler triggers.TriggerHandler) error {
 	ticker := time.NewTicker(t.config.PollInterval)
 	defer ticker.Stop()
-	
+
 	// Initial poll
 	t.poll(handler)
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -120,13 +119,13 @@ func (t *Trigger) pollLoop(ctx context.Context, handler triggers.TriggerHandler)
 
 // poll performs a single poll operation
 func (t *Trigger) poll(handler triggers.TriggerHandler) {
-	
+
 	if err := t.connect(); err != nil {
 		t.builder.Logger().Error("IMAP connection error", err)
 		t.errorCount++
 		return
 	}
-	
+
 	if err := t.checkEmails(handler); err != nil {
 		t.builder.Logger().Error("IMAP check error", err)
 		t.errorCount++
@@ -145,22 +144,22 @@ func (t *Trigger) connect() error {
 		t.client.Logout()
 		t.client = nil
 	}
-	
+
 	// Connect to server
 	var c *client.Client
 	var err error
-	
+
 	addr := fmt.Sprintf("%s:%d", t.config.Host, t.config.Port)
 	if t.config.UseTLS {
 		c, err = client.DialTLS(addr, nil)
 	} else {
 		c, err = client.Dial(addr)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
-	
+
 	// Login
 	if t.config.UseOAuth2 {
 		// Use OAuth2 authentication
@@ -175,7 +174,7 @@ func (t *Trigger) connect() error {
 			return fmt.Errorf("login failed: %w", err)
 		}
 	}
-	
+
 	t.client = c
 	return nil
 }
@@ -187,23 +186,23 @@ func (t *Trigger) checkEmails(handler triggers.TriggerHandler) error {
 	if err != nil {
 		return fmt.Errorf("failed to select folder: %w", err)
 	}
-	
+
 	// Build search criteria
 	criteria := imap.NewSearchCriteria()
 	if t.config.UnseenOnly {
 		criteria.WithoutFlags = []string{imap.SeenFlag}
 	}
-	
+
 	// Search for messages
 	ids, err := t.client.Search(criteria)
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}
-	
+
 	if len(ids) == 0 {
 		return nil // No new messages
 	}
-	
+
 	// Create sequence set
 	seqset := new(imap.SeqSet)
 	for _, id := range ids {
@@ -213,19 +212,19 @@ func (t *Trigger) checkEmails(handler triggers.TriggerHandler) error {
 		}
 		seqset.AddNum(id)
 	}
-	
+
 	if seqset.Empty() {
 		return nil // No new messages to process
 	}
-	
+
 	// Fetch messages
 	messages := make(chan *imap.Message, 10)
 	done := make(chan error, 1)
-	
+
 	go func() {
 		done <- t.client.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope, imap.FetchBody, imap.FetchUid, imap.FetchFlags, imap.FetchInternalDate, imap.FetchRFC822Size}, messages)
 	}()
-	
+
 	// Process messages
 	for msg := range messages {
 		if err := t.processMessage(msg, handler); err != nil {
@@ -239,16 +238,16 @@ func (t *Trigger) checkEmails(handler triggers.TriggerHandler) error {
 			}
 		}
 	}
-	
+
 	if err := <-done; err != nil {
 		return fmt.Errorf("fetch failed: %w", err)
 	}
-	
+
 	// Update last UID in mbox
 	if mbox.UidNext > 0 {
 		t.config.LastUID = mbox.UidNext - 1
 	}
-	
+
 	return nil
 }
 
@@ -256,24 +255,24 @@ func (t *Trigger) checkEmails(handler triggers.TriggerHandler) error {
 func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHandler) error {
 	// Parse email
 	emailData := map[string]interface{}{
-		"id":       fmt.Sprintf("%d", msg.Uid),
-		"uid":      msg.Uid,
-		"date":     msg.Envelope.Date,
-		"subject":  msg.Envelope.Subject,
-		"size":     msg.Size,
+		"id":            fmt.Sprintf("%d", msg.Uid),
+		"uid":           msg.Uid,
+		"date":          msg.Envelope.Date,
+		"subject":       msg.Envelope.Subject,
+		"size":          msg.Size,
 		"internal_date": msg.InternalDate,
 	}
-	
+
 	// Process flags
 	flags := map[string]bool{
-		"seen":      false,
-		"answered":  false,
-		"flagged":   false,
-		"deleted":   false,
-		"draft":     false,
-		"recent":    false,
+		"seen":     false,
+		"answered": false,
+		"flagged":  false,
+		"deleted":  false,
+		"draft":    false,
+		"recent":   false,
 	}
-	
+
 	// Check standard flags
 	for _, flag := range msg.Flags {
 		switch flag {
@@ -282,7 +281,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 		case imap.AnsweredFlag:
 			flags["answered"] = true
 		case imap.FlaggedFlag:
-			flags["flagged"] = true  // This is "starred" in many clients
+			flags["flagged"] = true // This is "starred" in many clients
 		case imap.DeletedFlag:
 			flags["deleted"] = true
 		case imap.DraftFlag:
@@ -291,7 +290,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			flags["recent"] = true
 		}
 	}
-	
+
 	// Gmail specific flags (labels) and other providers
 	var labels []string
 	var isImportant bool
@@ -304,17 +303,17 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			labels = append(labels, flag)
 		}
 	}
-	
+
 	// Add important flag if found
 	if isImportant {
 		flags["important"] = true
 	}
-	
+
 	emailData["flags"] = flags
 	if len(labels) > 0 {
 		emailData["labels"] = labels
 	}
-	
+
 	// From addresses
 	if len(msg.Envelope.From) > 0 {
 		from := msg.Envelope.From[0]
@@ -323,7 +322,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			"email": fromEmail,
 			"name":  from.PersonalName,
 		}
-		
+
 		// Check from filter
 		if len(t.config.FromFilter) > 0 {
 			matched := false
@@ -338,7 +337,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			}
 		}
 	}
-	
+
 	// Subject filter
 	if len(t.config.SubjectFilter) > 0 {
 		matched := false
@@ -352,7 +351,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			return nil // Skip this email
 		}
 	}
-	
+
 	// To addresses
 	to := make([]map[string]string, 0)
 	for _, addr := range msg.Envelope.To {
@@ -362,7 +361,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 		})
 	}
 	emailData["to"] = to
-	
+
 	// CC addresses
 	if len(msg.Envelope.Cc) > 0 {
 		cc := make([]map[string]string, 0)
@@ -374,7 +373,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 		}
 		emailData["cc"] = cc
 	}
-	
+
 	// BCC addresses (usually not available in received emails)
 	if len(msg.Envelope.Bcc) > 0 {
 		bcc := make([]map[string]string, 0)
@@ -386,7 +385,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 		}
 		emailData["bcc"] = bcc
 	}
-	
+
 	// Get body if requested
 	if t.config.IncludeBody {
 		bodySection, _ := imap.ParseBodySectionName("BODY[]")
@@ -420,11 +419,11 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 					}
 					emailData["headers"] = headers
 				}
-				
+
 				// Read body parts
 				var textBody, htmlBody string
 				attachments := make([]map[string]interface{}, 0)
-				
+
 				for {
 					p, err := mr.NextPart()
 					if err == io.EOF {
@@ -433,41 +432,41 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 					if err != nil {
 						continue
 					}
-					
+
 					switch h := p.Header.(type) {
 					case *mail.InlineHeader:
 						// This is the message body
 						b, _ := io.ReadAll(p.Body)
 						contentType, _, _ := h.ContentType()
-						
+
 						if strings.Contains(contentType, "text/plain") {
 							textBody = string(b)
 						} else if strings.Contains(contentType, "text/html") {
 							htmlBody = string(b)
 						}
-						
+
 					case *mail.AttachmentHeader:
 						// This is an attachment
 						if t.config.AttachmentMode != "none" {
 							filename, _ := h.Filename()
 							contentType, _, _ := h.ContentType()
-							
+
 							attachment := map[string]interface{}{
 								"filename":     filename,
 								"content_type": contentType,
 							}
-							
+
 							if t.config.AttachmentMode == "base64" {
 								b, _ := io.ReadAll(p.Body)
 								attachment["content"] = base64.StdEncoding.EncodeToString(b)
 								attachment["size"] = len(b)
 							}
-							
+
 							attachments = append(attachments, attachment)
 						}
 					}
 				}
-				
+
 				if textBody != "" {
 					emailData["body_text"] = textBody
 				}
@@ -480,7 +479,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			}
 		}
 	}
-	
+
 	// Create trigger event
 	event := &triggers.TriggerEvent{
 		ID:          utils.GenerateEventID("imap", t.config.ID),
@@ -489,7 +488,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 		Type:        "email",
 		Timestamp:   time.Now(),
 		Data:        emailData,
-		Headers:     map[string]string{
+		Headers: map[string]string{
 			"X-Trigger-Type": "imap",
 			"X-Email-UID":    fmt.Sprintf("%d", msg.Uid),
 		},
@@ -499,14 +498,14 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			URL:  fmt.Sprintf("imap://%s@%s/%s", t.config.Username, t.config.Host, t.config.Folder),
 		},
 	}
-	
+
 	// Call handler
 	if err := handler(event); err != nil {
 		return errors.InternalError("handler error", err)
 	}
-	
+
 	t.messageCount++
-	
+
 	// Mark as read if configured
 	if t.config.MarkAsRead {
 		seqSet := new(imap.SeqSet)
@@ -519,7 +518,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			)
 		}
 	}
-	
+
 	// Move to folder if configured
 	if t.config.MoveToFolder != "" {
 		seqSet := new(imap.SeqSet)
@@ -531,7 +530,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			)
 		}
 	}
-	
+
 	// Delete if configured
 	if t.config.DeleteAfter {
 		seqSet := new(imap.SeqSet)
@@ -548,7 +547,7 @@ func (t *Trigger) processMessage(msg *imap.Message, handler triggers.TriggerHand
 			t.builder.Logger().Error("Failed to expunge", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -557,7 +556,7 @@ func (t *Trigger) NextExecution() *time.Time {
 	if !t.IsRunning() || t.LastExecution() == nil {
 		return nil
 	}
-	
+
 	next := t.LastExecution().Add(t.config.PollInterval)
 	return &next
 }
@@ -567,11 +566,11 @@ func (t *Trigger) Health() error {
 	if !t.IsRunning() {
 		return errors.InternalError("trigger is not running", nil)
 	}
-	
+
 	if t.client == nil {
 		return errors.ConnectionError("not connected to IMAP server", nil)
 	}
-	
+
 	return nil
 }
 
@@ -580,17 +579,15 @@ func (t *Trigger) Config() triggers.TriggerConfig {
 	return t.config
 }
 
-
-
 // loginWithOAuth2 performs OAuth2 authentication
 func (t *Trigger) loginWithOAuth2(c *client.Client) error {
 	if t.oauthManager == nil {
 		return fmt.Errorf("OAuth2 manager not initialized")
 	}
-	
+
 	// Register OAuth2 service if not already registered
-	serviceID := fmt.Sprintf("imap_%d_%d", t.config.ID, t.config.ID)
-	
+	serviceID := fmt.Sprintf("imap_%s_%s", t.config.ID, t.config.ID)
+
 	// Configure OAuth2 based on provider
 	var oauthConfig *oauth2.Config
 	switch t.config.OAuth2Provider {
@@ -620,12 +617,12 @@ func (t *Trigger) loginWithOAuth2(c *client.Client) error {
 			Scopes:       t.config.OAuth2Config.Scopes,
 		}
 	}
-	
+
 	// Register the service
 	if err := t.oauthManager.RegisterService(serviceID, oauthConfig); err != nil {
 		return fmt.Errorf("failed to register OAuth2 service: %w", err)
 	}
-	
+
 	// If we have a refresh token, save it
 	if t.config.OAuth2Config.RefreshToken != "" {
 		// Create a token with just the refresh token
@@ -633,34 +630,40 @@ func (t *Trigger) loginWithOAuth2(c *client.Client) error {
 			RefreshToken: t.config.OAuth2Config.RefreshToken,
 			Expiry:       time.Now().Add(-1 * time.Hour), // Mark as expired to force refresh
 		}
-		if t.oauthManager != nil {
+		oauth2Manager := t.BaseTrigger.GetOAuth2Manager()
+		if oauth2Manager != nil {
 			// Save the refresh token
 			tokenStorage := oauth2.NewMemoryTokenStorage()
-			tokenStorage.SaveToken(serviceID, token)
+			tokenStorage.SaveToken(context.Background(), serviceID, token)
 		}
 	}
-	
+
 	// Get access token (will use refresh token if available)
-	token, err := t.oauthManager.GetToken(context.Background(), serviceID)
+	oauth2Manager := t.BaseTrigger.GetOAuth2Manager()
+	if oauth2Manager == nil {
+		return fmt.Errorf("OAuth2 manager not initialized")
+	}
+	token, err := oauth2Manager.GetToken(t.GetContext(), serviceID)
 	if err != nil {
 		return fmt.Errorf("failed to get OAuth2 token: %w", err)
 	}
-	
+
 	// Create SASL OAuth bearer client
 	saslClient := sasl.NewOAuthBearerClient(&sasl.OAuthBearerOptions{
 		Username: t.config.Username,
 		Token:    token.AccessToken,
 	})
-	
+
 	// Authenticate using SASL
 	if err := c.Authenticate(saslClient); err != nil {
 		return fmt.Errorf("SASL authentication failed: %w", err)
 	}
-	
+
 	return nil
 }
 
 // SetOAuthManager sets the OAuth2 manager for the trigger
 func (t *Trigger) SetOAuthManager(manager *oauth2.Manager) {
-	t.oauthManager = manager
+	// Delegate to BaseTrigger
+	t.BaseTrigger.SetOAuth2Manager(manager)
 }

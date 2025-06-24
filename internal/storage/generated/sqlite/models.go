@@ -9,28 +9,27 @@ import (
 )
 
 type BrokerConfig struct {
-	ID              int64       `json:"id"`
-	Name            string      `json:"name"`
-	Type            string      `json:"type"`
-	Config          string      `json:"config"`
-	Active          *bool       `json:"active"`
-	HealthStatus    *string     `json:"health_status"`
-	LastHealthCheck *time.Time  `json:"last_health_check"`
-	CreatedAt       *time.Time  `json:"created_at"`
-	UpdatedAt       *time.Time  `json:"updated_at"`
-	DlqEnabled      *bool       `json:"dlq_enabled"`
-	DlqBrokerID     *int64      `json:"dlq_broker_id"`
-	CONSTRAINT      interface{} `json:"CONSTRAINT"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	Type            string     `json:"type"`
+	Config          string     `json:"config"`
+	Active          *bool      `json:"active"`
+	HealthStatus    *string    `json:"health_status"`
+	LastHealthCheck *time.Time `json:"last_health_check"`
+	CreatedAt       *time.Time `json:"created_at"`
+	UpdatedAt       *time.Time `json:"updated_at"`
+	DlqEnabled      *bool      `json:"dlq_enabled"`
+	DlqBrokerID     *string    `json:"dlq_broker_id"`
+	UserID          *string    `json:"user_id"`
 }
 
 type DlqMessage struct {
-	ID             int64      `json:"id"`
+	ID             string     `json:"id"`
 	MessageID      string     `json:"message_id"`
-	RouteID        int64      `json:"route_id"`
-	TriggerID      *int64     `json:"trigger_id"`
-	PipelineID     *int64     `json:"pipeline_id"`
-	SourceBrokerID int64      `json:"source_broker_id"`
-	DlqBrokerID    int64      `json:"dlq_broker_id"`
+	TriggerID      *string    `json:"trigger_id"`
+	PipelineID     *string    `json:"pipeline_id"`
+	SourceBrokerID string     `json:"source_broker_id"`
+	DlqBrokerID    string     `json:"dlq_broker_id"`
 	BrokerName     string     `json:"broker_name"`
 	Queue          string     `json:"queue"`
 	Exchange       *string    `json:"exchange"`
@@ -48,36 +47,60 @@ type DlqMessage struct {
 	UpdatedAt      *time.Time `json:"updated_at"`
 }
 
+type ExecutionLog struct {
+	ID                   string     `json:"id"`
+	TriggerID            *string    `json:"trigger_id"`
+	TriggerType          string     `json:"trigger_type"`
+	TriggerConfig        *string    `json:"trigger_config"`
+	InputMethod          *string    `json:"input_method"`
+	InputEndpoint        *string    `json:"input_endpoint"`
+	InputHeaders         *string    `json:"input_headers"`
+	InputBody            *string    `json:"input_body"`
+	PipelineID           *string    `json:"pipeline_id"`
+	PipelineStages       *string    `json:"pipeline_stages"`
+	TransformationData   *string    `json:"transformation_data"`
+	TransformationTimeMs *int64     `json:"transformation_time_ms"`
+	BrokerID             *string    `json:"broker_id"`
+	BrokerType           *string    `json:"broker_type"`
+	BrokerQueue          *string    `json:"broker_queue"`
+	BrokerExchange       *string    `json:"broker_exchange"`
+	BrokerRoutingKey     *string    `json:"broker_routing_key"`
+	BrokerPublishTimeMs  *int64     `json:"broker_publish_time_ms"`
+	BrokerResponse       *string    `json:"broker_response"`
+	Status               *string    `json:"status"`
+	StatusCode           *int64     `json:"status_code"`
+	ErrorMessage         *string    `json:"error_message"`
+	OutputData           *string    `json:"output_data"`
+	TotalLatencyMs       *int64     `json:"total_latency_ms"`
+	StartedAt            *time.Time `json:"started_at"`
+	CompletedAt          *time.Time `json:"completed_at"`
+	UserID               string     `json:"user_id"`
+}
+
+type Oauth2Service struct {
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	ClientID     string     `json:"client_id"`
+	ClientSecret string     `json:"client_secret"`
+	TokenUrl     string     `json:"token_url"`
+	AuthUrl      *string    `json:"auth_url"`
+	RedirectUrl  *string    `json:"redirect_url"`
+	Scopes       *string    `json:"scopes"`
+	UserID       string     `json:"user_id"`
+	CreatedAt    *time.Time `json:"created_at"`
+	UpdatedAt    *time.Time `json:"updated_at"`
+	GrantType    string     `json:"grant_type"`
+}
+
 type Pipeline struct {
-	ID          int64      `json:"id"`
+	ID          string     `json:"id"`
 	Name        string     `json:"name"`
 	Description *string    `json:"description"`
 	Stages      string     `json:"stages"`
 	Active      *bool      `json:"active"`
 	CreatedAt   *time.Time `json:"created_at"`
 	UpdatedAt   *time.Time `json:"updated_at"`
-}
-
-type Route struct {
-	ID                  int64      `json:"id"`
-	Name                string     `json:"name"`
-	Endpoint            string     `json:"endpoint"`
-	Method              string     `json:"method"`
-	Queue               string     `json:"queue"`
-	Exchange            *string    `json:"exchange"`
-	RoutingKey          string     `json:"routing_key"`
-	Filters             *string    `json:"filters"`
-	Headers             *string    `json:"headers"`
-	Active              *bool      `json:"active"`
-	CreatedAt           *time.Time `json:"created_at"`
-	UpdatedAt           *time.Time `json:"updated_at"`
-	PipelineID          *int64     `json:"pipeline_id"`
-	TriggerID           *int64     `json:"trigger_id"`
-	DestinationBrokerID *int64     `json:"destination_broker_id"`
-	Priority            *int64     `json:"priority"`
-	ConditionExpression *string    `json:"condition_expression"`
-	SignatureConfig     *string    `json:"signature_config"`
-	SignatureSecret     *string    `json:"signature_secret"`
+	UserID      *string    `json:"user_id"`
 }
 
 type Setting struct {
@@ -87,40 +110,31 @@ type Setting struct {
 }
 
 type Trigger struct {
-	ID            int64      `json:"id"`
-	Name          string     `json:"name"`
-	Type          string     `json:"type"`
-	Config        string     `json:"config"`
-	Status        *string    `json:"status"`
-	Active        *bool      `json:"active"`
-	ErrorMessage  *string    `json:"error_message"`
-	LastExecution *time.Time `json:"last_execution"`
-	NextExecution *time.Time `json:"next_execution"`
-	CreatedAt     *time.Time `json:"created_at"`
-	UpdatedAt     *time.Time `json:"updated_at"`
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	Type                string     `json:"type"`
+	Config              string     `json:"config"`
+	Status              *string    `json:"status"`
+	Active              *bool      `json:"active"`
+	ErrorMessage        *string    `json:"error_message"`
+	LastExecution       *time.Time `json:"last_execution"`
+	NextExecution       *time.Time `json:"next_execution"`
+	PipelineID          *string    `json:"pipeline_id"`
+	DestinationBrokerID *string    `json:"destination_broker_id"`
+	DlqBrokerID         *string    `json:"dlq_broker_id"`
+	DlqEnabled          *bool      `json:"dlq_enabled"`
+	DlqRetryMax         *int64     `json:"dlq_retry_max"`
+	CreatedAt           *time.Time `json:"created_at"`
+	UpdatedAt           *time.Time `json:"updated_at"`
+	UserID              string     `json:"user_id"`
+	DeletedAt           *time.Time `json:"deleted_at"`
 }
 
 type User struct {
-	ID           int64      `json:"id"`
+	ID           string     `json:"id"`
 	Username     string     `json:"username"`
 	PasswordHash string     `json:"password_hash"`
 	IsDefault    *bool      `json:"is_default"`
 	CreatedAt    *time.Time `json:"created_at"`
 	UpdatedAt    *time.Time `json:"updated_at"`
-}
-
-type WebhookLog struct {
-	ID                   int64      `json:"id"`
-	RouteID              *int64     `json:"route_id"`
-	Method               string     `json:"method"`
-	Endpoint             string     `json:"endpoint"`
-	Headers              *string    `json:"headers"`
-	Body                 *string    `json:"body"`
-	StatusCode           *int64     `json:"status_code"`
-	Error                *string    `json:"error"`
-	ProcessedAt          *time.Time `json:"processed_at"`
-	TriggerID            *int64     `json:"trigger_id"`
-	PipelineID           *int64     `json:"pipeline_id"`
-	TransformationTimeMs *int64     `json:"transformation_time_ms"`
-	BrokerPublishTimeMs  *int64     `json:"broker_publish_time_ms"`
 }

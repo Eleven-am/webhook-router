@@ -1,7 +1,9 @@
 package factory
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +56,7 @@ func (m *MockBroker) Publish(message *brokers.Message) error {
 	return nil
 }
 
-func (m *MockBroker) Subscribe(topic string, handler brokers.MessageHandler) error {
+func (m *MockBroker) Subscribe(ctx context.Context, topic string, handler brokers.MessageHandler) error {
 	return nil
 }
 
@@ -68,6 +70,7 @@ func (m *MockBroker) Close() error {
 
 // MockTriggerConfig implements triggers.TriggerConfig
 type MockTriggerConfig struct {
+	ID       int
 	Name     string
 	Interval int
 }
@@ -86,26 +89,65 @@ func (m *MockTriggerConfig) GetType() string {
 	return "mock-trigger"
 }
 
-// MockTrigger implements triggers.Trigger
-type MockTrigger struct {
-	name     string
-	interval int
+func (m *MockTriggerConfig) GetID() int {
+	return m.ID
 }
 
-func (m *MockTrigger) Start() error {
+func (m *MockTriggerConfig) GetName() string {
+	return m.Name
+}
+
+// MockTrigger implements triggers.Trigger
+type MockTrigger struct {
+	id       int
+	name     string
+	interval int
+	running  bool
+}
+
+func (m *MockTrigger) Name() string {
+	return m.name
+}
+
+func (m *MockTrigger) Type() string {
+	return "mock-trigger"
+}
+
+func (m *MockTrigger) ID() int {
+	return m.id
+}
+
+func (m *MockTrigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
+	m.running = true
 	return nil
 }
 
 func (m *MockTrigger) Stop() error {
+	m.running = false
 	return nil
 }
 
-func (m *MockTrigger) ID() string {
-	return m.name
+func (m *MockTrigger) IsRunning() bool {
+	return m.running
 }
 
-func (m *MockTrigger) GetConfig() triggers.TriggerConfig {
-	return &MockTriggerConfig{Name: m.name, Interval: m.interval}
+func (m *MockTrigger) Config() triggers.TriggerConfig {
+	return &MockTriggerConfig{ID: m.id, Name: m.name, Interval: m.interval}
+}
+
+func (m *MockTrigger) Health() error {
+	if !m.running {
+		return errors.InternalError("trigger not running", nil)
+	}
+	return nil
+}
+
+func (m *MockTrigger) LastExecution() *time.Time {
+	return nil
+}
+
+func (m *MockTrigger) NextExecution() *time.Time {
+	return nil
 }
 
 // Creator functions for testing
@@ -120,7 +162,7 @@ func createMockTrigger(config *MockTriggerConfig) (triggers.Trigger, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	return &MockTrigger{name: config.Name, interval: config.Interval}, nil
+	return &MockTrigger{id: config.ID, name: config.Name, interval: config.Interval}, nil
 }
 
 func TestBrokerFactoryAdapter(t *testing.T) {
@@ -155,7 +197,7 @@ func TestBrokerFactoryAdapter(t *testing.T) {
 		broker, err := factory.Create(config)
 		require.Error(t, err)
 		assert.Nil(t, broker)
-		assert.True(t, errors.IsConfigError(err))
+		assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 		assert.Contains(t, err.Error(), "type is required")
 	})
 
@@ -167,7 +209,7 @@ func TestBrokerFactoryAdapter(t *testing.T) {
 		broker, err := factory.Create(invalidConfig)
 		require.Error(t, err)
 		assert.Nil(t, broker)
-		assert.True(t, errors.IsConfigError(err))
+		assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 		assert.Contains(t, err.Error(), "invalid config type")
 	})
 
@@ -175,7 +217,7 @@ func TestBrokerFactoryAdapter(t *testing.T) {
 		broker, err := factory.Create(nil)
 		require.Error(t, err)
 		assert.Nil(t, broker)
-		assert.True(t, errors.IsConfigError(err))
+		assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 	})
 }
 
@@ -192,6 +234,7 @@ func TestTriggerFactoryAdapter(t *testing.T) {
 
 	t.Run("successful trigger creation", func(t *testing.T) {
 		config := &MockTriggerConfig{
+			ID:       1,
 			Name:     "test-trigger",
 			Interval: 60,
 		}
@@ -199,11 +242,12 @@ func TestTriggerFactoryAdapter(t *testing.T) {
 		trigger, err := factory.Create(config)
 		require.NoError(t, err)
 		assert.NotNil(t, trigger)
-		assert.Equal(t, "test-trigger", trigger.ID())
+		assert.Equal(t, 1, trigger.ID())
 	})
 
 	t.Run("trigger creation with validation error", func(t *testing.T) {
 		config := &MockTriggerConfig{
+			ID:       2,
 			Name:     "test-trigger",
 			Interval: 0, // Invalid zero interval
 		}
@@ -211,7 +255,7 @@ func TestTriggerFactoryAdapter(t *testing.T) {
 		trigger, err := factory.Create(config)
 		require.Error(t, err)
 		assert.Nil(t, trigger)
-		assert.True(t, errors.IsConfigError(err))
+		assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 		assert.Contains(t, err.Error(), "interval must be positive")
 	})
 
@@ -223,7 +267,7 @@ func TestTriggerFactoryAdapter(t *testing.T) {
 		trigger, err := factory.Create(invalidConfig)
 		require.Error(t, err)
 		assert.Nil(t, trigger)
-		assert.True(t, errors.IsConfigError(err))
+		assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 		assert.Contains(t, err.Error(), "invalid config type")
 	})
 
@@ -231,13 +275,13 @@ func TestTriggerFactoryAdapter(t *testing.T) {
 		trigger, err := factory.Create(nil)
 		require.Error(t, err)
 		assert.Nil(t, trigger)
-		assert.True(t, errors.IsConfigError(err))
+		assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 	})
 }
 
 func TestBrokerFactoryAdapter_TypeSafety(t *testing.T) {
 	// Test that the adapter properly handles type constraints
-	
+
 	// This should compile - MockBrokerConfig implements BrokerConfig
 	factory := NewBrokerFactory[*MockBrokerConfig]("type-safe-broker", createMockBroker)
 	assert.NotNil(t, factory)
@@ -251,13 +295,13 @@ func TestBrokerFactoryAdapter_TypeSafety(t *testing.T) {
 
 func TestTriggerFactoryAdapter_TypeSafety(t *testing.T) {
 	// Test that the adapter properly handles type constraints
-	
+
 	// This should compile - MockTriggerConfig implements TriggerConfig
 	factory := NewTriggerFactory[*MockTriggerConfig]("type-safe-trigger", createMockTrigger)
 	assert.NotNil(t, factory)
 
 	// Test with concrete config
-	config := &MockTriggerConfig{Name: "safe", Interval: 30}
+	config := &MockTriggerConfig{ID: 3, Name: "safe", Interval: 30}
 	trigger, err := factory.Create(config)
 	assert.NoError(t, err)
 	assert.NotNil(t, trigger)
@@ -265,48 +309,64 @@ func TestTriggerFactoryAdapter_TypeSafety(t *testing.T) {
 
 func TestAdapter_ErrorPropagation(t *testing.T) {
 	// Test that errors from the creator function are properly propagated
-	
+
 	failingBrokerCreator := func(config *MockBrokerConfig) (brokers.Broker, error) {
 		return nil, errors.InternalError("creation failed", nil)
 	}
-	
+
 	factory := NewBrokerFactory[*MockBrokerConfig]("failing-broker", failingBrokerCreator)
-	
+
 	config := &MockBrokerConfig{Type: "test", Port: 8080}
 	broker, err := factory.Create(config)
-	
+
 	require.Error(t, err)
 	assert.Nil(t, broker)
-	assert.True(t, errors.IsInternalError(err))
+	assert.True(t, errors.IsType(err, errors.ErrTypeInternal))
 	assert.Contains(t, err.Error(), "creation failed")
 }
 
 func TestAdapter_Integration(t *testing.T) {
 	// Test that adapters work with registries
-	
-	brokerRegistry := NewRegistry[brokers.Broker]()
-	triggerRegistry := NewRegistry[triggers.Trigger]()
-	
-	// Register factories
+
+	// Note: Registry types are for the integration test
+
+	// Register factories (adapters handle registry compatibility)
 	brokerFactory := NewBrokerFactory[*MockBrokerConfig]("mock-broker", createMockBroker)
 	triggerFactory := NewTriggerFactory[*MockTriggerConfig]("mock-trigger", createMockTrigger)
-	
-	err := brokerRegistry.Register(brokerFactory)
+
+	// For this test, we'll use the generic registry instead
+	genericBrokerRegistry := NewRegistry[brokers.Broker]()
+	genericTriggerRegistry := NewRegistry[triggers.Trigger]()
+
+	// Create generic factories directly for registry compatibility
+	genericBrokerFactory := NewFactory[*MockBrokerConfig, brokers.Broker]("mock-broker", createMockBroker)
+	genericTriggerFactory := NewFactory[*MockTriggerConfig, triggers.Trigger]("mock-trigger", createMockTrigger)
+
+	err := genericBrokerRegistry.Register(genericBrokerFactory)
 	require.NoError(t, err)
-	
-	err = triggerRegistry.Register(triggerFactory)
+
+	err = genericTriggerRegistry.Register(genericTriggerFactory)
 	require.NoError(t, err)
-	
+
 	// Create instances through registry
 	brokerConfig := &MockBrokerConfig{Type: "registry-broker", Port: 8080}
-	broker, err := brokerRegistry.Create("mock-broker", brokerConfig)
+	broker, err := genericBrokerRegistry.Create("mock-broker", brokerConfig)
 	require.NoError(t, err)
 	assert.Equal(t, "registry-broker", broker.Name())
-	
-	triggerConfig := &MockTriggerConfig{Name: "registry-trigger", Interval: 60}
-	trigger, err := triggerRegistry.Create("mock-trigger", triggerConfig)
+
+	triggerConfig := &MockTriggerConfig{ID: 4, Name: "registry-trigger", Interval: 60}
+	trigger, err := genericTriggerRegistry.Create("mock-trigger", triggerConfig)
 	require.NoError(t, err)
-	assert.Equal(t, "registry-trigger", trigger.ID())
+	assert.Equal(t, 4, trigger.ID())
+
+	// Also test the adapter factories work correctly
+	broker2, err := brokerFactory.Create(brokerConfig)
+	require.NoError(t, err)
+	assert.Equal(t, "registry-broker", broker2.Name())
+
+	trigger2, err := triggerFactory.Create(triggerConfig)
+	require.NoError(t, err)
+	assert.Equal(t, 4, trigger2.ID())
 }
 
 func BenchmarkBrokerFactoryAdapter_Create(b *testing.B) {
@@ -324,7 +384,7 @@ func BenchmarkBrokerFactoryAdapter_Create(b *testing.B) {
 
 func BenchmarkTriggerFactoryAdapter_Create(b *testing.B) {
 	factory := NewTriggerFactory[*MockTriggerConfig]("benchmark-trigger", createMockTrigger)
-	config := &MockTriggerConfig{Name: "benchmark", Interval: 60}
+	config := &MockTriggerConfig{ID: 5, Name: "benchmark", Interval: 60}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

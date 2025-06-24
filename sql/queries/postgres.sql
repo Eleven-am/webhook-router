@@ -2,8 +2,8 @@
 
 -- Users queries
 -- name: CreateUser :one
-INSERT INTO users (username, password_hash, is_default)
-VALUES ($1, $2, $3)
+INSERT INTO users (id, username, password_hash, is_default)
+VALUES ($1, $2, $3, $4)
 RETURNING *;
 
 -- name: GetUser :one
@@ -14,6 +14,13 @@ SELECT * FROM users WHERE username = $1;
 
 -- name: ListUsers :many
 SELECT * FROM users ORDER BY created_at DESC;
+
+-- name: ListUsersPaginated :many
+SELECT * FROM users ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountUsers :one
+SELECT COUNT(*) as count FROM users;
 
 -- name: UpdateUser :one
 UPDATE users 
@@ -42,63 +49,50 @@ SELECT * FROM settings WHERE key = $1;
 -- name: ListSettings :many
 SELECT * FROM settings ORDER BY key;
 
+-- name: ListSettingsPaginated :many
+SELECT * FROM settings ORDER BY key
+LIMIT $1 OFFSET $2;
+
+-- name: CountSettings :one
+SELECT COUNT(*) as count FROM settings;
+
 -- name: DeleteSetting :exec
 DELETE FROM settings WHERE key = $1;
 
--- Routes queries
--- name: CreateRoute :one
-INSERT INTO routes (
-    name, endpoint, method, queue, exchange, routing_key,
-    filters, headers, active, pipeline_id, trigger_id,
-    destination_broker_id, priority, condition_expression,
-    signature_config, signature_secret
-)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-RETURNING *;
-
--- name: GetRoute :one
-SELECT * FROM routes WHERE id = $1;
-
--- name: GetRouteByName :one
-SELECT * FROM routes WHERE name = $1;
-
--- name: GetRouteByEndpoint :one
-SELECT * FROM routes WHERE endpoint = $1 AND method = $2;
-
--- name: ListRoutes :many
-SELECT * FROM routes ORDER BY priority ASC, created_at DESC;
-
--- name: ListActiveRoutes :many
-SELECT * FROM routes WHERE active = true ORDER BY priority ASC, created_at DESC;
-
--- name: UpdateRoute :one
-UPDATE routes
-SET name = $2, endpoint = $3, method = $4, queue = $5, exchange = $6,
-    routing_key = $7, filters = $8, headers = $9, active = $10,
-    pipeline_id = $11, trigger_id = $12, destination_broker_id = $13,
-    priority = $14, condition_expression = $15, signature_config = $16,
-    signature_secret = $17, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1
-RETURNING *;
-
--- name: DeleteRoute :exec
-DELETE FROM routes WHERE id = $1;
-
 -- Triggers queries
 -- name: CreateTrigger :one
-INSERT INTO triggers (name, type, config, status, active)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO triggers (id, name, type, config, status, active, dlq_broker_id, dlq_enabled, dlq_retry_max)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetTrigger :one
 SELECT * FROM triggers WHERE id = $1;
 
+-- name: GetHTTPTriggerByUserPathMethod :one
+SELECT * FROM triggers
+WHERE user_id = $1
+AND config->>'path' = $2
+AND config->>'method' = $3
+AND type = 'http'
+AND active = true;
+
 -- name: ListTriggers :many
 SELECT * FROM triggers ORDER BY created_at DESC;
+
+-- name: ListTriggersByUser :many
+SELECT * FROM triggers WHERE user_id = $1 ORDER BY created_at DESC;
+
+-- name: ListTriggersPaginated :many
+SELECT * FROM triggers ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountTriggers :one
+SELECT COUNT(*) as count FROM triggers;
 
 -- name: UpdateTrigger :one
 UPDATE triggers
 SET name = $2, type = $3, config = $4, status = $5, active = $6,
+    dlq_broker_id = $7, dlq_enabled = $8, dlq_retry_max = $9,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
 RETURNING *;
@@ -108,8 +102,8 @@ DELETE FROM triggers WHERE id = $1;
 
 -- Pipelines queries
 -- name: CreatePipeline :one
-INSERT INTO pipelines (name, description, stages, active)
-VALUES ($1, $2, $3, $4)
+INSERT INTO pipelines (id, name, description, stages, active)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: GetPipeline :one
@@ -117,6 +111,13 @@ SELECT * FROM pipelines WHERE id = $1;
 
 -- name: ListPipelines :many
 SELECT * FROM pipelines ORDER BY created_at DESC;
+
+-- name: ListPipelinesPaginated :many
+SELECT * FROM pipelines ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountPipelines :one
+SELECT COUNT(*) as count FROM pipelines;
 
 -- name: UpdatePipeline :one
 UPDATE pipelines
@@ -130,8 +131,8 @@ DELETE FROM pipelines WHERE id = $1;
 
 -- Broker configs queries
 -- name: CreateBrokerConfig :one
-INSERT INTO broker_configs (name, type, config, active, health_status, dlq_enabled, dlq_broker_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO broker_configs (id, name, type, config, active, health_status, dlq_enabled, dlq_broker_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: GetBrokerConfig :one
@@ -151,6 +152,13 @@ WHERE bc.id = $1;
 -- name: ListBrokerConfigs :many
 SELECT * FROM broker_configs ORDER BY created_at DESC;
 
+-- name: ListBrokerConfigsPaginated :many
+SELECT * FROM broker_configs ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountBrokerConfigs :one
+SELECT COUNT(*) as count FROM broker_configs;
+
 -- name: UpdateBrokerConfig :one
 UPDATE broker_configs
 SET name = $2, type = $3, config = $4, active = $5, dlq_enabled = $6, dlq_broker_id = $7,
@@ -161,74 +169,11 @@ RETURNING *;
 -- name: DeleteBrokerConfig :exec
 DELETE FROM broker_configs WHERE id = $1;
 
--- Webhook logs queries
--- name: CreateWebhookLog :one
-INSERT INTO webhook_logs (
-    route_id, method, endpoint, headers, body, status_code,
-    error, trigger_id, pipeline_id, transformation_time_ms,
-    broker_publish_time_ms
-)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING *;
-
--- name: GetWebhookLog :one
-SELECT * FROM webhook_logs WHERE id = $1;
-
--- name: ListWebhookLogs :many
-SELECT * FROM webhook_logs ORDER BY processed_at DESC LIMIT $1 OFFSET $2;
-
--- name: DeleteOldWebhookLogs :exec
-DELETE FROM webhook_logs WHERE processed_at < $1;
-
--- name: GetWebhookLogsByRouteID :many
-SELECT * FROM webhook_logs 
-WHERE route_id = $1
-ORDER BY processed_at DESC 
-LIMIT $2 OFFSET $3;
-
--- name: GetWebhookLogStats :one
-SELECT 
-    COUNT(*) as total_count,
-    COUNT(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 END) as success_count,
-    COUNT(CASE WHEN status_code >= 400 THEN 1 END) as error_count,
-    AVG(transformation_time_ms) as avg_transformation_time,
-    AVG(broker_publish_time_ms) as avg_publish_time,
-    MAX(transformation_time_ms) as max_transformation_time,
-    MAX(broker_publish_time_ms) as max_publish_time
-FROM webhook_logs
-WHERE processed_at >= $1;
-
--- name: GetWebhookLogStatsByRoute :one
-SELECT 
-    COUNT(*) as total_count,
-    COUNT(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 END) as success_count,
-    COUNT(CASE WHEN status_code >= 400 THEN 1 END) as error_count,
-    AVG(transformation_time_ms) as avg_transformation_time,
-    AVG(broker_publish_time_ms) as avg_publish_time,
-    MAX(transformation_time_ms) as max_transformation_time,
-    MAX(broker_publish_time_ms) as max_publish_time
-FROM webhook_logs
-WHERE route_id = $1 AND processed_at >= $2;
-
--- name: GetRouteStatistics :one
-SELECT 
-    r.id,
-    r.name,
-    COUNT(w.id) as total_requests,
-    COUNT(CASE WHEN w.status_code >= 200 AND w.status_code < 300 THEN 1 END) as successful_requests,
-    COUNT(CASE WHEN w.status_code >= 400 THEN 1 END) as failed_requests,
-    AVG(w.transformation_time_ms) as avg_transformation_time,
-    AVG(w.broker_publish_time_ms) as avg_publish_time,
-    MAX(w.processed_at) as last_processed
-FROM routes r
-LEFT JOIN webhook_logs w ON r.id = w.route_id
-WHERE r.id = $1
-GROUP BY r.id, r.name;
 
 -- DLQ queries
 -- name: CreateDLQMessage :one
 INSERT INTO dlq_messages (
-    message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id,
+    id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id,
     broker_name, queue, exchange, routing_key, headers, body, error_message,
     failure_count, first_failure, last_failure, next_retry, status, metadata
 )
@@ -252,11 +197,12 @@ SELECT * FROM dlq_messages
 ORDER BY last_failure DESC
 LIMIT $1 OFFSET $2;
 
--- name: ListDLQMessagesByRoute :many
-SELECT * FROM dlq_messages
-WHERE route_id = $1
-ORDER BY last_failure DESC
-LIMIT $2 OFFSET $3;
+-- name: CountDLQMessages :one
+SELECT COUNT(*) as count FROM dlq_messages;
+
+
+-- name: CountDLQMessagesBySourceBroker :one
+SELECT COUNT(*) as count FROM dlq_messages WHERE source_broker_id = $1;
 
 -- name: ListDLQMessagesBySourceBroker :many
 SELECT * FROM dlq_messages
@@ -314,3 +260,199 @@ SELECT
 FROM dlq_messages
 GROUP BY dlq_broker_id
 ORDER BY message_count DESC;
+
+-- Dashboard time series and stats queries
+
+-- name: CountDLQMessagesAddedSince :one
+SELECT COUNT(*) as count
+FROM dlq_messages
+WHERE created_at >= $1;
+
+-- name: CountDLQMessagesAddedSinceForUser :one
+SELECT COUNT(*) as count
+FROM dlq_messages dm
+INNER JOIN triggers t ON dm.trigger_id = t.id
+WHERE dm.created_at >= $1 AND t.user_id = $2;
+
+-- name: CountDLQMessagesResolvedSince :one
+SELECT COUNT(*) as count
+FROM dlq_messages
+WHERE updated_at >= $1 AND status != 'pending';
+
+-- name: CountDLQMessagesResolvedSinceForUser :one
+SELECT COUNT(*) as count
+FROM dlq_messages dm
+INNER JOIN triggers t ON dm.trigger_id = t.id
+WHERE dm.updated_at >= $1 AND dm.status != 'pending' AND t.user_id = $2;
+
+
+
+
+
+-- PostgreSQL versions
+-- name: GetExecutionLogStatsForUserPG :one
+SELECT 
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2;
+
+-- name: GetAverageLatencyForUserPG :one
+SELECT AVG(total_latency_ms)::FLOAT as avg_latency
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2 AND started_at <= $3 AND status = 'success';
+
+-- name: GetRecentExecutionLogsForUserPG :many
+SELECT *
+FROM execution_logs
+WHERE user_id = $1
+ORDER BY started_at DESC
+LIMIT $2;
+
+-- name: GetExecutionLogStatsForUserAndTriggerPG :one
+SELECT 
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2 AND trigger_id = $3;
+
+-- name: GetAverageLatencyForUserAndTriggerPG :one
+SELECT AVG(total_latency_ms)::FLOAT as avg_latency
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2 AND started_at <= $3 AND status = 'success' AND trigger_id = $4;
+
+-- name: GetRecentExecutionLogsForUserAndTriggerPG :many
+SELECT *
+FROM execution_logs
+WHERE user_id = $1 AND trigger_id = $2
+ORDER BY started_at DESC
+LIMIT $3;
+
+-- name: GetExecutionLogTimeSeriesHourlyForUserPG :many
+SELECT 
+    date_trunc('hour', started_at)::TIMESTAMP as time_bucket,
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 
+    AND started_at >= $2 
+    AND started_at <= $3
+    AND ($4 = 'all' OR trigger_id = $5)
+GROUP BY time_bucket
+ORDER BY time_bucket;
+
+-- name: GetExecutionLogTimeSeriesDailyForUserPG :many
+SELECT 
+    date_trunc('day', started_at)::TIMESTAMP as time_bucket,
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 
+    AND started_at >= $2 
+    AND started_at <= $3
+    AND ($4 = 'all' OR trigger_id = $5)
+GROUP BY time_bucket
+ORDER BY time_bucket;
+
+-- name: GetExecutionLogTimeSeriesWeeklyForUserPG :many
+SELECT 
+    date_trunc('week', started_at)::TIMESTAMP as time_bucket,
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 
+    AND started_at >= $2 
+    AND started_at <= $3
+    AND ($4 = 'all' OR trigger_id = $5)
+GROUP BY time_bucket
+ORDER BY time_bucket;
+
+-- name: GetTopTriggersByRequestsForUserPG :many
+SELECT 
+    t.id,
+    t.name,
+    t.type,
+    t.active,
+    COUNT(el.id) as total_requests,
+    COUNT(CASE WHEN el.status = 'success' THEN 1 END) as successful_requests,
+    AVG(CASE WHEN el.status = 'success' THEN el.total_latency_ms END)::FLOAT as avg_latency,
+    MAX(el.started_at) as last_processed
+FROM triggers t
+LEFT JOIN execution_logs el ON t.id = el.trigger_id AND el.started_at >= $1
+WHERE t.user_id = $2 AND t.deleted_at IS NULL
+GROUP BY t.id, t.name, t.type, t.active
+ORDER BY total_requests DESC
+LIMIT $3;
+
+-- Stats queries for backward compatibility
+-- name: GetWebhookLogStats :one
+SELECT 
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE started_at >= $1;
+
+-- name: GetTriggerStatistics :one
+SELECT 
+    COUNT(*) as total_requests,
+    COUNT(CASE WHEN el.status = 'success' THEN 1 END) as successful_requests,
+    COUNT(CASE WHEN el.status = 'error' THEN 1 END) as failed_requests,
+    AVG(CASE WHEN el.status = 'success' THEN el.total_latency_ms END)::FLOAT as avg_transformation_time,
+    AVG(el.total_latency_ms)::FLOAT as avg_total_time,
+    MAX(el.started_at) as last_processed,
+    t.name as name
+FROM execution_logs el
+JOIN triggers t ON el.trigger_id = t.id
+WHERE el.trigger_id = $1
+GROUP BY t.name;
+
+-- name: ListDLQMessagesByTrigger :many
+SELECT * FROM dlq_messages
+WHERE trigger_id = $1
+ORDER BY last_failure DESC
+LIMIT $2 OFFSET $3;
+
+-- name: CountDLQMessagesByTrigger :one
+SELECT COUNT(*) as count FROM dlq_messages WHERE trigger_id = $1;
+
+-- name: GetDLQStatsByTrigger :many
+SELECT 
+    trigger_id,
+    COUNT(*) as message_count,
+    COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+    COUNT(CASE WHEN status = 'abandoned' THEN 1 END) as abandoned_count
+FROM dlq_messages
+WHERE trigger_id IS NOT NULL
+GROUP BY trigger_id
+ORDER BY message_count DESC;
+
+-- OAuth2 Services queries
+-- name: CreateOAuth2Service :one
+INSERT INTO oauth2_services (
+    id, name, client_id, client_secret, token_url, 
+    auth_url, redirect_url, scopes, grant_type, user_id
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING *;
+
+-- name: GetOAuth2Service :one
+SELECT * FROM oauth2_services WHERE id = $1;
+
+-- name: GetOAuth2ServiceByName :one
+SELECT * FROM oauth2_services WHERE name = $1 AND user_id = $2;
+
+-- name: ListOAuth2Services :many
+SELECT * FROM oauth2_services WHERE user_id = $1 ORDER BY created_at DESC;
+
+-- name: UpdateOAuth2Service :one
+UPDATE oauth2_services
+SET name = $2, client_id = $3, client_secret = $4, token_url = $5,
+    auth_url = $6, redirect_url = $7, scopes = $8, grant_type = $9, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteOAuth2Service :exec
+DELETE FROM oauth2_services WHERE id = $1;

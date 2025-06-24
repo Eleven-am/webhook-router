@@ -13,6 +13,7 @@ import (
 	"webhook-router/internal/brokers/kafka"
 	"webhook-router/internal/brokers/rabbitmq"
 	"webhook-router/internal/brokers/redis"
+	"webhook-router/internal/common/errors"
 )
 
 // TestBrokerInterface tests the common broker interface implementation
@@ -108,10 +109,10 @@ func TestBrokerInterface(t *testing.T) {
 
 		// Simulate receiving a message
 		testMsg := &brokers.Message{
-			Queue:      "test-topic",
-			Body:       []byte(`{"test": "data"}`),
-			MessageID:  "sub-msg-1",
-			Timestamp:  time.Now(),
+			Queue:     "test-topic",
+			Body:      []byte(`{"test": "data"}`),
+			MessageID: "sub-msg-1",
+			Timestamp: time.Now(),
 		}
 
 		// Trigger the handler
@@ -210,10 +211,10 @@ func TestMessageValidation(t *testing.T) {
 		{
 			name: "ValidMessage",
 			message: &brokers.Message{
-				Queue:      "test-queue",
-				Body:       []byte(`{"test": "data"}`),
-				MessageID:  "msg-1",
-				Timestamp:  time.Now(),
+				Queue:     "test-queue",
+				Body:      []byte(`{"test": "data"}`),
+				MessageID: "msg-1",
+				Timestamp: time.Now(),
 			},
 			valid: true,
 		},
@@ -281,7 +282,7 @@ func TestBrokerResilience(t *testing.T) {
 	t.Run("ConnectionRecovery", func(t *testing.T) {
 		// Simulate connection loss
 		broker.connected = false
-		
+
 		// Publishing should fail
 		msg := &brokers.Message{
 			Queue:     "test",
@@ -294,7 +295,7 @@ func TestBrokerResilience(t *testing.T) {
 
 		// Simulate reconnection
 		broker.connected = true
-		
+
 		// Publishing should succeed now
 		err = broker.Publish(msg)
 		assert.NoError(t, err)
@@ -357,14 +358,14 @@ func (m *MockBroker) Connect(config brokers.BrokerConfig) error {
 
 func (m *MockBroker) Publish(message *brokers.Message) error {
 	if !m.connected {
-		return context.DeadlineExceeded
+		return errors.ConnectionError("not connected", nil)
 	}
-	
+
 	// Validate message
 	if err := m.ValidateMessage(message); err != nil {
 		return err
 	}
-	
+
 	// Store message
 	msgCopy := &brokers.Message{
 		Queue:      message.Queue,
@@ -379,7 +380,7 @@ func (m *MockBroker) Publish(message *brokers.Message) error {
 	for k, v := range message.Headers {
 		msgCopy.Headers[k] = v
 	}
-	
+
 	m.messages = append(m.messages, msgCopy)
 	return nil
 }
@@ -388,11 +389,11 @@ func (m *MockBroker) Subscribe(ctx context.Context, topic string, handler broker
 	if !m.connected {
 		return context.DeadlineExceeded
 	}
-	
+
 	if m.handlers == nil {
 		m.handlers = make(map[string]brokers.MessageHandler)
 	}
-	
+
 	m.handlers[topic] = handler
 	return nil
 }
@@ -414,13 +415,13 @@ func (m *MockBroker) Close() error {
 // Helper methods for testing
 func (m *MockBroker) ValidateMessage(msg *brokers.Message) error {
 	if msg.Queue == "" {
-		return context.Canceled
+		return errors.ValidationError("queue required")
 	}
 	if len(msg.Body) == 0 {
-		return context.Canceled
+		return errors.ValidationError("body required")
 	}
 	if msg.MessageID == "" {
-		return context.Canceled
+		return errors.ValidationError("message ID required")
 	}
 	return nil
 }

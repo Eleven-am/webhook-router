@@ -13,8 +13,11 @@ import (
 
 func TestNewManager(t *testing.T) {
 	storage := NewMemoryTokenStorage()
-	manager := NewManager(storage)
+	manager, err := NewManager(storage, "test-encryption-key-32-bytes-long!")
 
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
 	if manager == nil {
 		t.Fatal("expected non-nil manager")
 	}
@@ -87,7 +90,7 @@ func TestToken_IsExpired(t *testing.T) {
 }
 
 func TestManager_RegisterService(t *testing.T) {
-	manager := NewManager(NewMemoryTokenStorage())
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
 
 	tests := []struct {
 		name        string
@@ -228,8 +231,8 @@ func TestManager_GetToken_ClientCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	config := &Config{
 		ClientID:     "client123",
 		ClientSecret: "secret123",
@@ -300,8 +303,8 @@ func TestManager_GetToken_PasswordGrant(t *testing.T) {
 	}))
 	defer server.Close()
 
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	config := &Config{
 		ClientID:     "client123",
 		ClientSecret: "secret123",
@@ -337,7 +340,7 @@ func TestManager_RefreshToken(t *testing.T) {
 		}
 
 		grantType := r.Form.Get("grant_type")
-		
+
 		var tokenResponse TokenResponse
 		if grantType == "client_credentials" {
 			// Initial token with refresh token
@@ -369,8 +372,8 @@ func TestManager_RefreshToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	config := &Config{
 		ClientID:     "client123",
 		ClientSecret: "secret123",
@@ -384,7 +387,7 @@ func TestManager_RefreshToken(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	
+
 	// Get initial token
 	token1, err := manager.GetToken(ctx, "refresh-service")
 	if err != nil {
@@ -414,23 +417,23 @@ func TestManager_RefreshToken(t *testing.T) {
 }
 
 func TestManager_GetToken_UnregisteredService(t *testing.T) {
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	ctx := context.Background()
 	_, err := manager.GetToken(ctx, "non-existent")
-	
+
 	if err == nil {
 		t.Error("expected error for unregistered service")
 	}
-	
+
 	if !strings.Contains(err.Error(), "not registered") {
 		t.Errorf("expected 'not registered' error, got %q", err.Error())
 	}
 }
 
 func TestManager_GetToken_UnsupportedGrantType(t *testing.T) {
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	config := &Config{
 		ClientID:     "client123",
 		ClientSecret: "secret123",
@@ -445,11 +448,11 @@ func TestManager_GetToken_UnsupportedGrantType(t *testing.T) {
 
 	ctx := context.Background()
 	_, err = manager.GetToken(ctx, "unsupported-service")
-	
+
 	if err == nil {
 		t.Error("expected error for unsupported grant type")
 	}
-	
+
 	if !strings.Contains(err.Error(), "unsupported grant type") {
 		t.Errorf("expected 'unsupported grant type' error, got %q", err.Error())
 	}
@@ -467,8 +470,8 @@ func TestManager_GetAuthorizationHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	config := &Config{
 		ClientID:     "client123",
 		ClientSecret: "secret123",
@@ -494,15 +497,15 @@ func TestManager_GetAuthorizationHeader(t *testing.T) {
 }
 
 func TestManager_GetAuthorizationHeader_CustomTokenType(t *testing.T) {
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	// Manually insert a token with custom token type
 	token := &Token{
 		AccessToken: "custom-token",
 		TokenType:   "MAC",
 		Expiry:      time.Now().Add(time.Hour),
 	}
-	
+
 	manager.mu.Lock()
 	manager.tokens["custom-service"] = token
 	manager.configs["custom-service"] = &Config{
@@ -526,18 +529,18 @@ func TestManager_GetAuthorizationHeader_CustomTokenType(t *testing.T) {
 
 func TestManager_RevokeToken(t *testing.T) {
 	storage := NewMemoryTokenStorage()
-	manager := NewManager(storage)
-	
+	manager, _ := NewManager(storage, "test-encryption-key-32-bytes-long!")
+
 	// Add a token
 	token := &Token{
 		AccessToken: "revoke-token",
 		TokenType:   "Bearer",
 		Expiry:      time.Now().Add(time.Hour),
 	}
-	
+
 	serviceID := "revoke-service"
-	storage.SaveToken(serviceID, token)
-	
+	storage.SaveToken(context.Background(), serviceID, token)
+
 	manager.mu.Lock()
 	manager.tokens[serviceID] = token
 	manager.mu.Unlock()
@@ -557,7 +560,7 @@ func TestManager_RevokeToken(t *testing.T) {
 	}
 
 	// Verify token was removed from storage
-	storedToken, err := storage.LoadToken(serviceID)
+	storedToken, err := storage.LoadToken(context.Background(), serviceID)
 	if err != nil {
 		t.Errorf("unexpected error loading token: %v", err)
 	}
@@ -579,8 +582,8 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	manager := NewManager(NewMemoryTokenStorage())
-	
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 	config := &Config{
 		ClientID:     "client123",
 		ClientSecret: "secret123",
@@ -684,8 +687,8 @@ func TestManager_ErrorHandling(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(tt.serverResponse))
 			defer server.Close()
 
-			manager := NewManager(NewMemoryTokenStorage())
-			
+			manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
+
 			config := &Config{
 				ClientID:     "client123",
 				ClientSecret: "secret123",
@@ -717,7 +720,7 @@ func TestManager_ErrorHandling(t *testing.T) {
 }
 
 func TestManager_Close(t *testing.T) {
-	manager := NewManager(NewMemoryTokenStorage())
+	manager, _ := NewManager(NewMemoryTokenStorage(), "test-encryption-key-32-bytes-long!")
 	err := manager.Close()
 	if err != nil {
 		t.Errorf("Close() should not return error, got: %v", err)
@@ -727,17 +730,17 @@ func TestManager_Close(t *testing.T) {
 func TestManager_TokenPersistence(t *testing.T) {
 	// Test that tokens are loaded from storage on service registration
 	storage := NewMemoryTokenStorage()
-	
+
 	// Pre-populate storage with a token
 	existingToken := &Token{
 		AccessToken: "existing-token",
 		TokenType:   "Bearer",
 		Expiry:      time.Now().Add(time.Hour),
 	}
-	storage.SaveToken("existing-service", existingToken)
+	storage.SaveToken(context.Background(), "existing-service", existingToken)
 
-	manager := NewManager(storage)
-	
+	manager, _ := NewManager(storage, "test-encryption-key-32-bytes-long!")
+
 	config := &Config{
 		ClientID:     "client123",
 		ClientSecret: "secret123",

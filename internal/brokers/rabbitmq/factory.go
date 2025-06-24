@@ -14,7 +14,3 @@ func GetFactory() brokers.BrokerFactory {
 		},
 	)
 }
-
-func init() {
-	brokers.Register("rabbitmq", GetFactory())
-}

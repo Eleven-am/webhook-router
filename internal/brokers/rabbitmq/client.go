@@ -29,7 +29,7 @@ func NewConnectionPool(url string, maxSize int) (*ConnectionPool, error) {
 		logging.Field{"component", "rabbitmq_pool"},
 		logging.Field{"url", url},
 	)
-	
+
 	pool := &ConnectionPool{
 		url:         url,
 		maxSize:     maxSize,

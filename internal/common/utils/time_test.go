@@ -24,17 +24,17 @@ func TestParseDuration(t *testing.T) {
 		{"nanoseconds", "1000ns", 1000 * time.Nanosecond, false},
 		{"compound", "1h30m", time.Hour + 30*time.Minute, false},
 		{"decimal", "1.5h", time.Hour + 30*time.Minute, false},
-		
+
 		// Extended formats - days
 		{"single day", "1d", 24 * time.Hour, false},
 		{"multiple days", "7d", 7 * 24 * time.Hour, false},
 		{"zero days", "0d", 0, false},
-		
+
 		// Extended formats - weeks
 		{"single week", "1w", 7 * 24 * time.Hour, false},
 		{"multiple weeks", "4w", 4 * 7 * 24 * time.Hour, false},
 		{"zero weeks", "0w", 0, false},
-		
+
 		// Error cases
 		{"invalid format", "invalid", 0, true},
 		{"empty string", "", 0, true},
@@ -48,7 +48,7 @@ func TestParseDuration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := ParseDuration(tt.input)
-			
+
 			if tt.hasError {
 				assert.Error(t, err)
 				if err != nil {
@@ -93,23 +93,23 @@ func TestFormatDuration(t *testing.T) {
 		{"0 seconds", 0, "0s"},
 		{"30 seconds", 30 * time.Second, "30s"},
 		{"59 seconds", 59 * time.Second, "59s"},
-		
+
 		// Minutes
 		{"1 minute", 1 * time.Minute, "1m"},
 		{"30 minutes", 30 * time.Minute, "30m"},
 		{"59 minutes", 59 * time.Minute, "59m"},
-		
+
 		// Hours
 		{"1 hour", 1 * time.Hour, "1.0h"},
 		{"2.5 hours", 2*time.Hour + 30*time.Minute, "2.5h"},
 		{"23 hours", 23 * time.Hour, "23.0h"},
-		
+
 		// Days
 		{"1 day", 24 * time.Hour, "1.0d"},
 		{"1.5 days", 36 * time.Hour, "1.5d"},
 		{"7 days", 7 * 24 * time.Hour, "7.0d"},
 		{"365 days", 365 * 24 * time.Hour, "365.0d"},
-		
+
 		// Sub-second
 		{"milliseconds", 500 * time.Millisecond, "1s"}, // Rounds up
 		{"microseconds", 500 * time.Microsecond, "0s"},
@@ -126,8 +126,8 @@ func TestFormatDuration(t *testing.T) {
 func TestFormatDuration_Precision(t *testing.T) {
 	// Test precision for different ranges
 	tests := []struct {
-		name     string
-		duration time.Duration
+		name      string
+		duration  time.Duration
 		checkFunc func(string) bool
 	}{
 		{
@@ -156,12 +156,12 @@ func TestFormatDuration_Precision(t *testing.T) {
 
 func TestNextExecutionTime(t *testing.T) {
 	baseTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
-	
+
 	tests := []struct {
-		name         string
+		name          string
 		lastExecution time.Time
-		interval     time.Duration
-		expected     time.Time
+		interval      time.Duration
+		expected      time.Time
 	}{
 		{
 			"add minutes",
@@ -199,7 +199,7 @@ func TestNextExecutionTime(t *testing.T) {
 
 func TestTimeUntilNext(t *testing.T) {
 	now := time.Now()
-	
+
 	tests := []struct {
 		name          string
 		nextExecution time.Time
@@ -225,14 +225,14 @@ func TestTimeUntilNext(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := TimeUntilNext(tt.nextExecution)
-			
+
 			switch tt.expectedSign {
 			case 1:
 				assert.True(t, result > 0, "Expected positive duration, got: %v", result)
 			case -1:
 				assert.True(t, result < 0, "Expected negative duration, got: %v", result)
 			case 0:
-				assert.True(t, result >= -1*time.Second && result <= 1*time.Second, 
+				assert.True(t, result >= -1*time.Second && result <= 1*time.Second,
 					"Expected near zero duration, got: %v", result)
 			}
 		})
@@ -240,9 +240,9 @@ func TestTimeUntilNext(t *testing.T) {
 }
 
 func TestIsTimeInWindow(t *testing.T) {
-	windowStart := time.Date(2023, 1, 1, 9, 0, 0, 0, time.UTC)  // 9 AM
-	windowEnd := time.Date(2023, 1, 1, 17, 0, 0, 0, time.UTC)   // 5 PM
-	
+	windowStart := time.Date(2023, 1, 1, 9, 0, 0, 0, time.UTC) // 9 AM
+	windowEnd := time.Date(2023, 1, 1, 17, 0, 0, 0, time.UTC)  // 5 PM
+
 	tests := []struct {
 		name     string
 		testTime time.Time
@@ -296,19 +296,19 @@ func TestIsTimeInWindow(t *testing.T) {
 func TestIsTimeInWindow_EdgeCases(t *testing.T) {
 	// Test edge cases
 	baseTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
-	
+
 	t.Run("zero duration window", func(t *testing.T) {
 		// Window start and end are the same
 		result := IsTimeInWindow(baseTime, baseTime, baseTime)
 		assert.True(t, result, "Time should be in zero-duration window when it matches exactly")
 	})
-	
+
 	t.Run("negative window", func(t *testing.T) {
 		// Window end is before window start (invalid window)
 		windowStart := baseTime
 		windowEnd := baseTime.Add(-1 * time.Hour)
 		testTime := baseTime.Add(-30 * time.Minute)
-		
+
 		result := IsTimeInWindow(testTime, windowStart, windowEnd)
 		assert.False(t, result, "Time should not be in invalid (negative) window")
 	})
@@ -388,7 +388,7 @@ func TestTruncateToHour(t *testing.T) {
 
 func TestTruncateToDay(t *testing.T) {
 	location, _ := time.LoadLocation("America/New_York")
-	
+
 	tests := []struct {
 		name     string
 		input    time.Time
@@ -428,7 +428,7 @@ func TestTruncateToDay_TimezoneHandling(t *testing.T) {
 	// Test that timezone is preserved
 	est, _ := time.LoadLocation("America/New_York")
 	pst, _ := time.LoadLocation("America/Los_Angeles")
-	
+
 	tests := []struct {
 		name     string
 		input    time.Time
@@ -457,13 +457,13 @@ func TestTruncateToDay_TimezoneHandling(t *testing.T) {
 
 func TestParseDuration_ParsesStandardFirst(t *testing.T) {
 	// Test that standard Go duration parsing is tried first
-	// This means if Go adds support for "d" or "w" in the future, 
+	// This means if Go adds support for "d" or "w" in the future,
 	// the standard parsing would take precedence
-	
+
 	// Test a complex duration that Go can parse
 	input := "1h30m45s"
 	expected := time.Hour + 30*time.Minute + 45*time.Second
-	
+
 	result, err := ParseDuration(input)
 	require.NoError(t, err)
 	assert.Equal(t, expected, result)
@@ -505,10 +505,10 @@ func BenchmarkTruncateToDay(b *testing.B) {
 
 func TestParseDuration_InvalidDayFormats(t *testing.T) {
 	invalidInputs := []string{
-		"1.5d",    // Decimal days not supported
-		"d",       // Missing number
-		"1D",      // Wrong case
-		"1 d",     // Space
+		"1.5d", // Decimal days not supported
+		"d",    // Missing number
+		"1D",   // Wrong case
+		"1 d",  // Space
 		// "1dd" - This actually parses as 1 day (fmt.Sscanf stops at first 'd')
 		// "-5d" - This actually parses as -5 days (negative durations are valid)
 	}
@@ -529,7 +529,7 @@ func TestFormatDuration_ZeroAndNegative(t *testing.T) {
 	}{
 		{"zero", 0, "0s"},
 		{"negative seconds", -30 * time.Second, "-30s"},
-		{"negative hours", -2 * time.Hour, "-7200s"}, // Negative durations < minute show as seconds
+		{"negative hours", -2 * time.Hour, "-7200s"},  // Negative durations < minute show as seconds
 		{"negative days", -24 * time.Hour, "-86400s"}, // Negative durations < minute show as seconds
 	}
 

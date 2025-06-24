@@ -9,12 +9,12 @@ import (
 
 type Config struct {
 	config.BaseConnConfig
-	
-	Address    string
-	Password   string
-	DB         int
-	PoolSize   int
-	StreamMaxLen int64 // Maximum length of streams (0 = no limit)
+
+	Address       string
+	Password      string
+	DB            int
+	PoolSize      int
+	StreamMaxLen  int64 // Maximum length of streams (0 = no limit)
 	ConsumerGroup string
 	ConsumerName  string
 }
@@ -52,8 +52,9 @@ func (c *Config) GetType() string {
 }
 
 func (c *Config) GetConnectionString() string {
+	// Sanitize connection string to prevent password exposure in logs
 	if c.Password != "" {
-		return fmt.Sprintf("redis://:%s@%s/%d", c.Password, c.Address, c.DB)
+		return fmt.Sprintf("redis://***@%s/%d", c.Address, c.DB)
 	}
 	return fmt.Sprintf("redis://%s/%d", c.Address, c.DB)
 }

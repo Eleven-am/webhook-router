@@ -4,13 +4,14 @@ import (
 	"context"
 	"sync"
 	"time"
+	"webhook-router/internal/oauth2"
 )
 
 // TriggerConfig interface for trigger configurations
 type TriggerConfig interface {
 	GetType() string
 	Validate() error
-	GetID() int
+	GetID() string
 	GetName() string
 }
 
@@ -29,6 +30,7 @@ type BaseTrigger struct {
 	lastExecution *time.Time
 	ctx           context.Context
 	cancel        context.CancelFunc
+	oauth2Manager *oauth2.Manager
 }
 
 // NewBaseTrigger creates a new base trigger instance
@@ -52,7 +54,7 @@ func (b *BaseTrigger) Type() string {
 }
 
 // ID returns the trigger ID
-func (b *BaseTrigger) ID() int {
+func (b *BaseTrigger) ID() string {
 	return b.config.GetID()
 }
 
@@ -150,4 +152,18 @@ func (b *BaseTrigger) HandleEvent(event interface{}) error {
 
 	b.UpdateLastExecution(time.Now())
 	return b.handler.HandleTriggerEvent(b.ctx, event)
+}
+
+// SetOAuth2Manager sets the OAuth2 manager for authentication
+func (b *BaseTrigger) SetOAuth2Manager(manager *oauth2.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.oauth2Manager = manager
+}
+
+// GetOAuth2Manager returns the OAuth2 manager
+func (b *BaseTrigger) GetOAuth2Manager() *oauth2.Manager {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.oauth2Manager
 }

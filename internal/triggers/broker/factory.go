@@ -24,11 +24,11 @@ func (f *Factory) Create(config triggers.TriggerConfig) (triggers.Trigger, error
 	if !ok {
 		return nil, errors.ConfigError("invalid config type for broker trigger")
 	}
-	
+
 	if f.brokerRegistry == nil {
 		return nil, errors.InternalError("broker registry not initialized", nil)
 	}
-	
+
 	return NewTrigger(brokerConfig, f.brokerRegistry)
 }
 

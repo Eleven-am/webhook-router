@@ -12,27 +12,30 @@ import (
 type Config struct {
 	// BaseURL is the base URL for server mode (when using Listen)
 	BaseURL string
-	
+
 	// Timeout specifies the maximum duration for HTTP requests
 	Timeout time.Duration
-	
+
 	// MaxRetries defines the maximum number of retry attempts for failed requests
 	MaxRetries int
-	
+
 	// RetryDelay specifies the delay between retry attempts
 	RetryDelay time.Duration
-	
+
 	// MaxConnections limits the number of concurrent connections
 	MaxConnections int
-	
+
 	// KeepAlive specifies how long to keep idle connections alive
 	KeepAlive time.Duration
-	
+
 	// TLSInsecure allows insecure TLS connections (skip certificate verification)
 	TLSInsecure bool
-	
+
 	// FollowRedirects determines whether to automatically follow HTTP redirects
 	FollowRedirects bool
+
+	// OAuth2ServiceID references an OAuth2 service for authentication
+	OAuth2ServiceID string
 }
 
 // Validate checks the configuration and applies sensible defaults for zero values.
@@ -42,7 +45,7 @@ func (c *Config) Validate() error {
 		c.Timeout = 30 * time.Second
 	}
 
-	if c.MaxRetries < 0 {
+	if c.MaxRetries <= 0 {
 		c.MaxRetries = 3
 	}
 

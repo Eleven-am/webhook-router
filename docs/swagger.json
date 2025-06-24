@@ -1,42 +1,73 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "Enterprise-grade webhook routing and data transformation platform",
-        "title": "Webhook Router API",
-        "termsOfService": "http://swagger.io/terms/",
-        "contact": {
-            "name": "API Support",
-            "url": "http://www.swagger.io/support",
-            "email": "support@swagger.io"
-        },
-        "license": {
-            "name": "MIT",
-            "url": "https://opensource.org/licenses/MIT"
-        },
-        "version": "1.0"
+        "contact": {}
     },
-    "host": "localhost:8080",
-    "basePath": "/api",
     "paths": {
-        "/": {
-            "get": {
-                "description": "Serves the main HTML frontend page",
+        "/api/auth/change-password": {
+            "post": {
+                "description": "Updates user password and invalidates current session",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
-                    "text/html"
+                    "application/json"
                 ],
                 "tags": [
-                    "frontend"
+                    "auth"
                 ],
-                "summary": "Serve main frontend",
+                "summary": "Process password change",
+                "parameters": [
+                    {
+                        "description": "Password change credentials",
+                        "name": "credentials",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "confirm_password": {
+                                    "type": "string"
+                                },
+                                "password": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
-                        "description": "Frontend page HTML",
+                        "description": "Password changed successfully",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid password or passwords do not match",
                         "schema": {
                             "type": "string"
                         }
                     },
-                    "404": {
-                        "description": "Frontend not found",
+                    "401": {
+                        "description": "Invalid session",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "405": {
+                        "description": "Method not allowed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to change password",
                         "schema": {
                             "type": "string"
                         }
@@ -44,14 +75,371 @@
                 }
             }
         },
-        "/brokers": {
+        "/api/auth/create": {
+            "post": {
+                "description": "Creates a new user account with username and password",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Create new account",
+                "parameters": [
+                    {
+                        "description": "Account creation credentials",
+                        "name": "credentials",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "confirm_password": {
+                                    "type": "string"
+                                },
+                                "password": {
+                                    "type": "string"
+                                },
+                                "username": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Account created successfully",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "token": {
+                                    "type": "string"
+                                },
+                                "user": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string"
+                                        },
+                                        "is_default": {
+                                            "type": "boolean"
+                                        },
+                                        "username": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request or username already exists",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "405": {
+                        "description": "Method not allowed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/forgot-password": {
+            "post": {
+                "description": "Sends a password reset email to the user",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Request password reset",
+                "parameters": [
+                    {
+                        "description": "Email address",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "email": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Reset email sent",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to send email",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/login": {
+            "post": {
+                "description": "Authenticates user credentials and creates a session",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Process login",
+                "parameters": [
+                    {
+                        "description": "Login credentials",
+                        "name": "credentials",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "password": {
+                                    "type": "string"
+                                },
+                                "username": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Login successful",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "token": {
+                                    "type": "string"
+                                },
+                                "user": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "type": "string"
+                                        },
+                                        "is_default": {
+                                            "type": "boolean"
+                                        },
+                                        "username": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid credentials",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "405": {
+                        "description": "Method not allowed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/logout": {
+            "post": {
+                "description": "Invalidates the current session and redirects to login",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Process logout",
+                "responses": {
+                    "302": {
+                        "description": "Redirect to login page",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/me": {
             "get": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Returns a list of all configured message broker connections",
+                "description": "Returns the current authenticated user's profile information with statistics",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Get current user",
+                "responses": {
+                    "200": {
+                        "description": "Current user info with stats",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "stats": {
+                                    "type": "object",
+                                    "properties": {
+                                        "recent_activity": {
+                                            "type": "string"
+                                        },
+                                        "routes_count": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                },
+                                "user": {
+                                    "type": "object",
+                                    "properties": {
+                                        "created_at": {
+                                            "type": "string"
+                                        },
+                                        "id": {
+                                            "type": "string"
+                                        },
+                                        "is_default": {
+                                            "type": "boolean"
+                                        },
+                                        "updated_at": {
+                                            "type": "string"
+                                        },
+                                        "username": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to fetch user details",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/auth/reset-password": {
+            "post": {
+                "description": "Resets user password using a valid reset token",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Reset password",
+                "parameters": [
+                    {
+                        "description": "Reset token and new password",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "password": {
+                                    "type": "string"
+                                },
+                                "token": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Password reset successful",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid token or password",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to reset password",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/brokers": {
+            "get": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Returns a paginated list of all configured message broker connections (sensitive credentials filtered)",
                 "produces": [
                     "application/json"
                 ],
@@ -59,14 +447,25 @@
                     "brokers"
                 ],
                 "summary": "Get all message brokers",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 20, max: 100)",
+                        "name": "per_page",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
-                        "description": "List of broker configurations",
+                        "description": "Paginated list of broker configurations (credentials filtered)",
                         "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/storage.BrokerConfig"
-                            }
+                            "$ref": "#/definitions/pagination.Response-storage_BrokerConfig"
                         }
                     },
                     "500": {
@@ -127,7 +526,59 @@
                 }
             }
         },
-        "/brokers/types": {
+        "/api/brokers/test": {
+            "post": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Tests connectivity to a message broker using provided configuration without saving",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "brokers"
+                ],
+                "summary": "Test broker configuration",
+                "parameters": [
+                    {
+                        "description": "Broker configuration to test",
+                        "name": "config",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/storage.BrokerConfig"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Test result",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "503": {
+                        "description": "Connection test failed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/brokers/types": {
             "get": {
                 "security": [
                     {
@@ -153,14 +604,14 @@
                 }
             }
         },
-        "/brokers/{id}": {
+        "/api/brokers/{id}": {
             "get": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Returns a specific message broker configuration by ID",
+                "description": "Returns a specific message broker configuration by ID (sensitive credentials filtered)",
                 "produces": [
                     "application/json"
                 ],
@@ -170,7 +621,7 @@
                 "summary": "Get message broker",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Broker ID",
                         "name": "id",
                         "in": "path",
@@ -179,7 +630,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "Broker configuration",
+                        "description": "Broker configuration (credentials filtered)",
                         "schema": {
                             "$ref": "#/definitions/storage.BrokerConfig"
                         }
@@ -217,7 +668,7 @@
                 "summary": "Update message broker",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Broker ID",
                         "name": "id",
                         "in": "path",
@@ -267,7 +718,7 @@
                 "summary": "Delete message broker",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Broker ID",
                         "name": "id",
                         "in": "path",
@@ -293,7 +744,7 @@
                 }
             }
         },
-        "/brokers/{id}/test": {
+        "/api/brokers/{id}/test": {
             "post": {
                 "security": [
                     {
@@ -307,7 +758,7 @@
                 "summary": "Test broker connection",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Broker ID",
                         "name": "id",
                         "in": "path",
@@ -343,92 +794,56 @@
                 }
             }
         },
-        "/change-password": {
+        "/api/dlq/messages": {
             "get": {
-                "description": "Serves the HTML change password page for users with default credentials",
-                "produces": [
-                    "text/html"
-                ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Serve change password page",
-                "responses": {
-                    "200": {
-                        "description": "Change password page HTML",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "302": {
-                        "description": "Redirect to login or admin page",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "404": {
-                        "description": "Change password page not found",
-                        "schema": {
-                            "type": "string"
-                        }
+                "security": [
+                    {
+                        "SessionAuth": []
                     }
-                }
-            },
-            "post": {
-                "description": "Updates user password and invalidates current session",
-                "consumes": [
-                    "application/x-www-form-urlencoded"
                 ],
+                "description": "Returns a paginated list of messages currently in the Dead Letter Queue",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "auth"
+                    "dlq"
                 ],
-                "summary": "Process password change",
+                "summary": "List DLQ messages",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "New password",
-                        "name": "password",
-                        "in": "formData",
-                        "required": true
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 20, max: 100)",
+                        "name": "per_page",
+                        "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Password confirmation",
-                        "name": "confirm_password",
-                        "in": "formData",
-                        "required": true
+                        "description": "Filter by trigger ID",
+                        "name": "trigger_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status (pending, abandoned)",
+                        "name": "status",
+                        "in": "query"
                     }
                 ],
                 "responses": {
-                    "302": {
-                        "description": "Redirect to login page with success message",
+                    "200": {
+                        "description": "Paginated DLQ messages",
                         "schema": {
-                            "type": "string"
+                            "$ref": "#/definitions/pagination.Response-storage_DLQMessage"
                         }
                     },
-                    "400": {
-                        "description": "Invalid password or passwords do not match",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "401": {
-                        "description": "Invalid session",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "405": {
-                        "description": "Method not allowed",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "500": {
-                        "description": "Failed to change password",
+                    "503": {
+                        "description": "DLQ not configured",
                         "schema": {
                             "type": "string"
                         }
@@ -436,95 +851,242 @@
                 }
             }
         },
-        "/health": {
-            "get": {
-                "description": "Returns the health status of the application and its dependencies",
+        "/api/dlq/messages/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Removes a specific message from the Dead Letter Queue",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "system"
+                    "dlq"
                 ],
-                "summary": "Health check",
+                "summary": "Delete DLQ message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Message ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
-                        "description": "Health status",
+                        "description": "Message deleted",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "503": {
+                        "description": "DLQ not configured",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/dlq/policy": {
+            "put": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Updates the retry policy for the Dead Letter Queue",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "dlq"
+                ],
+                "summary": "Configure DLQ retry policy",
+                "parameters": [
+                    {
+                        "description": "Retry policy configuration",
+                        "name": "policy",
+                        "in": "body",
+                        "required": true,
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
                         }
                     }
-                }
-            }
-        },
-        "/login": {
-            "get": {
-                "description": "Serves the HTML login page",
-                "produces": [
-                    "text/html"
                 ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Serve login page",
                 "responses": {
                     "200": {
-                        "description": "Login page HTML",
+                        "description": "Updated policy",
                         "schema": {
-                            "type": "string"
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
-                    "404": {
-                        "description": "Login page not found",
+                    "503": {
+                        "description": "DLQ not configured",
                         "schema": {
                             "type": "string"
                         }
                     }
                 }
-            },
+            }
+        },
+        "/api/dlq/retry": {
             "post": {
-                "description": "Authenticates user credentials and creates a session",
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Attempts to retry messages in the Dead Letter Queue",
                 "consumes": [
-                    "application/x-www-form-urlencoded"
+                    "application/json"
                 ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "auth"
+                    "dlq"
                 ],
-                "summary": "Process login",
+                "summary": "Retry DLQ messages",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Username",
-                        "name": "username",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Password",
-                        "name": "password",
-                        "in": "formData",
-                        "required": true
+                        "description": "Retry options",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "integer"
+                            }
+                        }
                     }
                 ],
                 "responses": {
-                    "302": {
-                        "description": "Redirect to admin or change password page",
+                    "200": {
+                        "description": "Retry results",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "DLQ not configured",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/dlq/stats": {
+            "get": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Returns statistics about messages in the Dead Letter Queue",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "dlq"
+                ],
+                "summary": "Get DLQ statistics",
+                "responses": {
+                    "200": {
+                        "description": "DLQ statistics",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "DLQ not configured",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/logs": {
+            "get": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Returns paginated execution logs with optional filtering",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "logs"
+                ],
+                "summary": "Get execution logs",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 50, max: 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by trigger type",
+                        "name": "trigger_type",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status (success/error/processing)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Time range filter (1h/24h/7d/30d)",
+                        "name": "time_range",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Paginated execution logs",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid parameters",
                         "schema": {
                             "type": "string"
                         }
                     },
                     "401": {
-                        "description": "Invalid credentials",
+                        "description": "Unauthorized",
                         "schema": {
                             "type": "string"
                         }
                     },
-                    "405": {
-                        "description": "Method not allowed",
+                    "500": {
+                        "description": "Internal server error",
                         "schema": {
                             "type": "string"
                         }
@@ -532,16 +1094,52 @@
                 }
             }
         },
-        "/logout": {
-            "post": {
-                "description": "Invalidates the current session and redirects to login",
-                "tags": [
-                    "auth"
+        "/api/logs/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
                 ],
-                "summary": "Process logout",
+                "description": "Returns detailed information about a specific execution log",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "logs"
+                ],
+                "summary": "Get execution log by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Log ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
-                    "302": {
-                        "description": "Redirect to login page",
+                    "200": {
+                        "description": "Execution log details",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Log not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
                         "schema": {
                             "type": "string"
                         }
@@ -549,7 +1147,7 @@
                 }
             }
         },
-        "/pipelines": {
+        "/api/pipelines": {
             "get": {
                 "security": [
                     {
@@ -568,8 +1166,10 @@
                     "200": {
                         "description": "List of pipelines",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.PipelineConfig"
+                            }
                         }
                     },
                     "503": {
@@ -586,7 +1186,7 @@
                         "SessionAuth": []
                     }
                 ],
-                "description": "Creates a new data transformation pipeline with stages",
+                "description": "Creates a new data transformation pipeline",
                 "consumes": [
                     "application/json"
                 ],
@@ -596,7 +1196,7 @@
                 "tags": [
                     "pipelines"
                 ],
-                "summary": "Create data pipeline",
+                "summary": "Create a new pipeline",
                 "parameters": [
                     {
                         "description": "Pipeline configuration",
@@ -604,7 +1204,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/pipeline.PipelineConfig"
+                            "$ref": "#/definitions/models.PipelineConfig"
                         }
                     }
                 ],
@@ -612,18 +1212,11 @@
                     "201": {
                         "description": "Created pipeline",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/models.PipelineConfig"
                         }
                     },
                     "400": {
-                        "description": "Invalid JSON or pipeline validation failed",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "500": {
-                        "description": "Failed to register pipeline",
+                        "description": "Invalid pipeline configuration",
                         "schema": {
                             "type": "string"
                         }
@@ -637,163 +1230,14 @@
                 }
             }
         },
-        "/pipelines/metrics": {
-            "get": {
-                "security": [
-                    {
-                        "SessionAuth": []
-                    }
-                ],
-                "description": "Returns performance metrics for pipeline executions",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "pipelines"
-                ],
-                "summary": "Get pipeline metrics",
-                "responses": {
-                    "200": {
-                        "description": "Pipeline metrics",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "500": {
-                        "description": "Failed to get metrics",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "503": {
-                        "description": "Pipeline engine not initialized",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
-        "/pipelines/stages/types": {
-            "get": {
-                "security": [
-                    {
-                        "SessionAuth": []
-                    }
-                ],
-                "description": "Returns a list of supported pipeline stage types",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "pipelines"
-                ],
-                "summary": "Get stage types",
-                "responses": {
-                    "200": {
-                        "description": "List of stage types",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
-        "/pipelines/{id}": {
-            "get": {
-                "security": [
-                    {
-                        "SessionAuth": []
-                    }
-                ],
-                "description": "Returns a specific data transformation pipeline by ID",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "pipelines"
-                ],
-                "summary": "Get data pipeline",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Pipeline ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Pipeline details",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "404": {
-                        "description": "Pipeline not found",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "503": {
-                        "description": "Pipeline engine not initialized",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "security": [
-                    {
-                        "SessionAuth": []
-                    }
-                ],
-                "description": "Removes a data transformation pipeline",
-                "tags": [
-                    "pipelines"
-                ],
-                "summary": "Delete data pipeline",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Pipeline ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content"
-                    },
-                    "404": {
-                        "description": "Pipeline not found",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "503": {
-                        "description": "Pipeline engine not initialized",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
-        "/pipelines/{id}/execute": {
+        "/api/pipelines/execute": {
             "post": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Executes a data transformation pipeline with test data",
+                "description": "Executes a pipeline with the provided data",
                 "consumes": [
                     "application/json"
                 ],
@@ -803,47 +1247,27 @@
                 "tags": [
                     "pipelines"
                 ],
-                "summary": "Execute pipeline",
+                "summary": "Execute a pipeline",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Pipeline ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Test data for pipeline execution",
-                        "name": "testData",
+                        "description": "Execution request",
+                        "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "type": "object"
+                            "$ref": "#/definitions/models.PipelineExecutionRequest"
                         }
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "Pipeline execution result",
+                        "description": "Execution result",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/models.PipelineExecutionResponse"
                         }
                     },
                     "400": {
-                        "description": "Invalid JSON",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "404": {
-                        "description": "Pipeline not found",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "500": {
-                        "description": "Pipeline execution failed",
+                        "description": "Invalid request",
                         "schema": {
                             "type": "string"
                         }
@@ -857,114 +1281,25 @@
                 }
             }
         },
-        "/routes": {
+        "/api/pipelines/{id}": {
             "get": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Returns a list of all configured webhook routes",
+                "description": "Returns the configuration of a specific pipeline",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "routes"
+                    "pipelines"
                 ],
-                "summary": "Get all webhook routes",
-                "responses": {
-                    "200": {
-                        "description": "List of routes",
-                        "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/storage.Route"
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "security": [
-                    {
-                        "SessionAuth": []
-                    }
-                ],
-                "description": "Creates a new webhook route configuration",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "routes"
-                ],
-                "summary": "Create webhook route",
+                "summary": "Get a specific pipeline",
                 "parameters": [
                     {
-                        "description": "Route configuration",
-                        "name": "route",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/storage.Route"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created route",
-                        "schema": {
-                            "$ref": "#/definitions/storage.Route"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid JSON",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "409": {
-                        "description": "Route name already exists",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
-        "/routes/{id}": {
-            "get": {
-                "security": [
-                    {
-                        "SessionAuth": []
-                    }
-                ],
-                "description": "Returns a specific webhook route by ID",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "routes"
-                ],
-                "summary": "Get webhook route",
-                "parameters": [
-                    {
-                        "type": "integer",
-                        "description": "Route ID",
+                        "type": "string",
+                        "description": "Pipeline ID",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -972,19 +1307,19 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "Route details",
+                        "description": "Pipeline configuration",
                         "schema": {
-                            "$ref": "#/definitions/storage.Route"
+                            "$ref": "#/definitions/models.PipelineConfig"
                         }
                     },
-                    "400": {
-                        "description": "Invalid route ID",
+                    "404": {
+                        "description": "Pipeline not found",
                         "schema": {
                             "type": "string"
                         }
                     },
-                    "404": {
-                        "description": "Route not found",
+                    "503": {
+                        "description": "Pipeline engine not initialized",
                         "schema": {
                             "type": "string"
                         }
@@ -997,7 +1332,7 @@
                         "SessionAuth": []
                     }
                 ],
-                "description": "Updates an existing webhook route configuration",
+                "description": "Updates an existing pipeline configuration",
                 "consumes": [
                     "application/json"
                 ],
@@ -1005,42 +1340,48 @@
                     "application/json"
                 ],
                 "tags": [
-                    "routes"
+                    "pipelines"
                 ],
-                "summary": "Update webhook route",
+                "summary": "Update a pipeline",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "description": "Route ID",
+                        "type": "string",
+                        "description": "Pipeline ID",
                         "name": "id",
                         "in": "path",
                         "required": true
                     },
                     {
-                        "description": "Route configuration",
-                        "name": "route",
+                        "description": "Pipeline configuration",
+                        "name": "pipeline",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/storage.Route"
+                            "$ref": "#/definitions/models.PipelineConfig"
                         }
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "Updated route",
+                        "description": "Updated pipeline",
                         "schema": {
-                            "$ref": "#/definitions/storage.Route"
+                            "$ref": "#/definitions/models.PipelineConfig"
                         }
                     },
                     "400": {
-                        "description": "Invalid JSON or route ID",
+                        "description": "Invalid pipeline configuration",
                         "schema": {
                             "type": "string"
                         }
                     },
-                    "500": {
-                        "description": "Failed to update route",
+                    "404": {
+                        "description": "Pipeline not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "503": {
+                        "description": "Pipeline engine not initialized",
                         "schema": {
                             "type": "string"
                         }
@@ -1053,15 +1394,15 @@
                         "SessionAuth": []
                     }
                 ],
-                "description": "Removes a webhook route configuration",
+                "description": "Deletes an existing pipeline",
                 "tags": [
-                    "routes"
+                    "pipelines"
                 ],
-                "summary": "Delete webhook route",
+                "summary": "Delete a pipeline",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "description": "Route ID",
+                        "type": "string",
+                        "description": "Pipeline ID",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -1069,16 +1410,16 @@
                 ],
                 "responses": {
                     "204": {
-                        "description": "No Content"
+                        "description": "Pipeline deleted"
                     },
-                    "400": {
-                        "description": "Invalid route ID",
+                    "404": {
+                        "description": "Pipeline not found",
                         "schema": {
                             "type": "string"
                         }
                     },
-                    "500": {
-                        "description": "Failed to delete route",
+                    "503": {
+                        "description": "Pipeline engine not initialized",
                         "schema": {
                             "type": "string"
                         }
@@ -1086,25 +1427,40 @@
                 }
             }
         },
-        "/routes/{id}/test": {
+        "/api/pipelines/{id}/test": {
             "post": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Tests a webhook route by sending a sample payload",
-                "tags": [
-                    "routes"
+                "description": "Tests a pipeline with sample data",
+                "consumes": [
+                    "application/json"
                 ],
-                "summary": "Test webhook route",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "Test a pipeline",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "description": "Route ID",
+                        "type": "string",
+                        "description": "Pipeline ID",
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Test data",
+                        "name": "data",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
                     }
                 ],
                 "responses": {
@@ -1116,19 +1472,19 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid route ID",
+                        "description": "Invalid test data",
                         "schema": {
                             "type": "string"
                         }
                     },
                     "404": {
-                        "description": "Route not found",
+                        "description": "Pipeline not found",
                         "schema": {
                             "type": "string"
                         }
                     },
                     "503": {
-                        "description": "No broker configured",
+                        "description": "Pipeline engine not initialized",
                         "schema": {
                             "type": "string"
                         }
@@ -1136,7 +1492,7 @@
                 }
             }
         },
-        "/routing/metrics": {
+        "/api/routing/metrics": {
             "get": {
                 "security": [
                     {
@@ -1174,7 +1530,7 @@
                 }
             }
         },
-        "/routing/rules": {
+        "/api/routing/rules": {
             "get": {
                 "security": [
                     {
@@ -1263,7 +1619,7 @@
                 }
             }
         },
-        "/routing/rules/{id}": {
+        "/api/routing/rules/{id}": {
             "get": {
                 "security": [
                     {
@@ -1403,7 +1759,7 @@
                 }
             }
         },
-        "/routing/rules/{id}/test": {
+        "/api/routing/rules/{id}/test": {
             "post": {
                 "security": [
                     {
@@ -1474,14 +1830,14 @@
                 }
             }
         },
-        "/settings": {
+        "/api/settings": {
             "get": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Returns all application configuration settings",
+                "description": "Returns non-sensitive application configuration settings (sensitive fields are filtered)",
                 "produces": [
                     "application/json"
                 ],
@@ -1491,7 +1847,7 @@
                 "summary": "Get application settings",
                 "responses": {
                     "200": {
-                        "description": "Application settings",
+                        "description": "Application settings (sensitive fields filtered)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -1563,7 +1919,7 @@
                 }
             }
         },
-        "/stats": {
+        "/api/stats": {
             "get": {
                 "security": [
                     {
@@ -1595,7 +1951,59 @@
                 }
             }
         },
-        "/stats/routes/{id}": {
+        "/api/stats/dashboard": {
+            "get": {
+                "security": [
+                    {
+                        "SessionAuth": []
+                    }
+                ],
+                "description": "Returns comprehensive statistics for the dashboard including metrics with changes, time series data, and top routes",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "statistics"
+                ],
+                "summary": "Get dashboard statistics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Time period: 1h, 24h, 7d, 30d (default: 24h)",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Include comparison with previous period (default: true)",
+                        "name": "compare_previous",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by specific route ID",
+                        "name": "route_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Dashboard statistics",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to get dashboard statistics",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/stats/routes/{id}": {
             "get": {
                 "security": [
                     {
@@ -1612,7 +2020,7 @@
                 "summary": "Get route statistics",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Route ID",
                         "name": "id",
                         "in": "path",
@@ -1642,14 +2050,14 @@
                 }
             }
         },
-        "/triggers": {
+        "/api/triggers": {
             "get": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Returns a list of all configured triggers with optional filtering",
+                "description": "Returns a paginated list of all configured triggers with optional filtering (sensitive credentials filtered)",
                 "produces": [
                     "application/json"
                 ],
@@ -1658,6 +2066,18 @@
                 ],
                 "summary": "Get all triggers",
                 "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 20, max: 100)",
+                        "name": "per_page",
+                        "in": "query"
+                    },
                     {
                         "type": "string",
                         "description": "Filter by trigger type",
@@ -1679,12 +2099,9 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "List of triggers",
+                        "description": "Paginated list of triggers (credentials filtered)",
                         "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/storage.Trigger"
-                            }
+                            "$ref": "#/definitions/pagination.Response-storage_Trigger"
                         }
                     },
                     "500": {
@@ -1745,7 +2162,7 @@
                 }
             }
         },
-        "/triggers/types": {
+        "/api/triggers/types": {
             "get": {
                 "security": [
                     {
@@ -1771,14 +2188,14 @@
                 }
             }
         },
-        "/triggers/{id}": {
+        "/api/triggers/{id}": {
             "get": {
                 "security": [
                     {
                         "SessionAuth": []
                     }
                 ],
-                "description": "Returns a specific trigger configuration by ID",
+                "description": "Returns a specific trigger configuration by ID (sensitive credentials filtered)",
                 "produces": [
                     "application/json"
                 ],
@@ -1788,7 +2205,7 @@
                 "summary": "Get trigger",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Trigger ID",
                         "name": "id",
                         "in": "path",
@@ -1797,7 +2214,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "Trigger configuration",
+                        "description": "Trigger configuration (credentials filtered)",
                         "schema": {
                             "$ref": "#/definitions/storage.Trigger"
                         }
@@ -1835,7 +2252,7 @@
                 "summary": "Update trigger",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Trigger ID",
                         "name": "id",
                         "in": "path",
@@ -1885,7 +2302,7 @@
                 "summary": "Delete trigger",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Trigger ID",
                         "name": "id",
                         "in": "path",
@@ -1911,7 +2328,7 @@
                 }
             }
         },
-        "/triggers/{id}/start": {
+        "/api/triggers/{id}/start": {
             "post": {
                 "security": [
                     {
@@ -1925,7 +2342,7 @@
                 "summary": "Start trigger",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Trigger ID",
                         "name": "id",
                         "in": "path",
@@ -1961,7 +2378,7 @@
                 }
             }
         },
-        "/triggers/{id}/stop": {
+        "/api/triggers/{id}/stop": {
             "post": {
                 "security": [
                     {
@@ -1975,7 +2392,7 @@
                 "summary": "Stop trigger",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Trigger ID",
                         "name": "id",
                         "in": "path",
@@ -2011,7 +2428,7 @@
                 }
             }
         },
-        "/triggers/{id}/test": {
+        "/api/triggers/{id}/test": {
             "post": {
                 "security": [
                     {
@@ -2025,7 +2442,7 @@
                 "summary": "Test trigger",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
                         "description": "Trigger ID",
                         "name": "id",
                         "in": "path",
@@ -2055,181 +2472,30 @@
                 }
             }
         },
-        "/webhook": {
+        "/health": {
             "get": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
-                "consumes": [
-                    "application/json",
-                    "text/xml",
-                    "text/plain"
-                ],
+                "description": "Returns the health status of the application and its dependencies",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "webhooks"
+                    "system"
                 ],
-                "summary": "Process incoming webhook",
-                "parameters": [
-                    {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                ],
+                "summary": "Health check",
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Health status",
                         "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            },
-            "put": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
-                "consumes": [
-                    "application/json",
-                    "text/xml",
-                    "text/plain"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "webhooks"
-                ],
-                "summary": "Process incoming webhook",
-                "parameters": [
-                    {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
-                "consumes": [
-                    "application/json",
-                    "text/xml",
-                    "text/plain"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "webhooks"
-                ],
-                "summary": "Process incoming webhook",
-                "parameters": [
-                    {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
-                "consumes": [
-                    "application/json",
-                    "text/xml",
-                    "text/plain"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "webhooks"
-                ],
-                "summary": "Process incoming webhook",
-                "parameters": [
-                    {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            },
-            "patch": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
-                "consumes": [
-                    "application/json",
-                    "text/xml",
-                    "text/plain"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "webhooks"
-                ],
-                "summary": "Process incoming webhook",
-                "parameters": [
-                    {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
             }
         },
-        "/webhook/{endpoint}": {
+        "/{username}/{path}": {
             "get": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
+                "description": "Processes incoming requests to user-defined HTTP trigger endpoints",
                 "consumes": [
                     "application/json",
                     "text/xml",
@@ -2239,29 +2505,28 @@
                     "application/json"
                 ],
                 "tags": [
-                    "webhooks"
+                    "triggers"
                 ],
-                "summary": "Process incoming webhook",
+                "summary": "Process HTTP trigger request",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Webhook endpoint name",
-                        "name": "endpoint",
-                        "in": "path"
+                        "description": "Username",
+                        "name": "username",
+                        "in": "path",
+                        "required": true
                     },
                     {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
+                        "type": "string",
+                        "description": "Trigger path",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Success response based on trigger configuration",
                         "schema": {
                             "type": "string"
                         }
@@ -2269,7 +2534,7 @@
                 }
             },
             "put": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
+                "description": "Processes incoming requests to user-defined HTTP trigger endpoints",
                 "consumes": [
                     "application/json",
                     "text/xml",
@@ -2279,29 +2544,28 @@
                     "application/json"
                 ],
                 "tags": [
-                    "webhooks"
+                    "triggers"
                 ],
-                "summary": "Process incoming webhook",
+                "summary": "Process HTTP trigger request",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Webhook endpoint name",
-                        "name": "endpoint",
-                        "in": "path"
+                        "description": "Username",
+                        "name": "username",
+                        "in": "path",
+                        "required": true
                     },
                     {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
+                        "type": "string",
+                        "description": "Trigger path",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Success response based on trigger configuration",
                         "schema": {
                             "type": "string"
                         }
@@ -2309,7 +2573,7 @@
                 }
             },
             "post": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
+                "description": "Processes incoming requests to user-defined HTTP trigger endpoints",
                 "consumes": [
                     "application/json",
                     "text/xml",
@@ -2319,29 +2583,28 @@
                     "application/json"
                 ],
                 "tags": [
-                    "webhooks"
+                    "triggers"
                 ],
-                "summary": "Process incoming webhook",
+                "summary": "Process HTTP trigger request",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Webhook endpoint name",
-                        "name": "endpoint",
-                        "in": "path"
+                        "description": "Username",
+                        "name": "username",
+                        "in": "path",
+                        "required": true
                     },
                     {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
+                        "type": "string",
+                        "description": "Trigger path",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Success response based on trigger configuration",
                         "schema": {
                             "type": "string"
                         }
@@ -2349,7 +2612,7 @@
                 }
             },
             "delete": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
+                "description": "Processes incoming requests to user-defined HTTP trigger endpoints",
                 "consumes": [
                     "application/json",
                     "text/xml",
@@ -2359,29 +2622,28 @@
                     "application/json"
                 ],
                 "tags": [
-                    "webhooks"
+                    "triggers"
                 ],
-                "summary": "Process incoming webhook",
+                "summary": "Process HTTP trigger request",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Webhook endpoint name",
-                        "name": "endpoint",
-                        "in": "path"
+                        "description": "Username",
+                        "name": "username",
+                        "in": "path",
+                        "required": true
                     },
                     {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
+                        "type": "string",
+                        "description": "Trigger path",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Success response based on trigger configuration",
                         "schema": {
                             "type": "string"
                         }
@@ -2389,7 +2651,7 @@
                 }
             },
             "patch": {
-                "description": "Processes incoming webhook requests and routes them to configured destinations",
+                "description": "Processes incoming requests to user-defined HTTP trigger endpoints",
                 "consumes": [
                     "application/json",
                     "text/xml",
@@ -2399,29 +2661,28 @@
                     "application/json"
                 ],
                 "tags": [
-                    "webhooks"
+                    "triggers"
                 ],
-                "summary": "Process incoming webhook",
+                "summary": "Process HTTP trigger request",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Webhook endpoint name",
-                        "name": "endpoint",
-                        "in": "path"
+                        "description": "Username",
+                        "name": "username",
+                        "in": "path",
+                        "required": true
                     },
                     {
-                        "description": "Webhook payload",
-                        "name": "payload",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
+                        "type": "string",
+                        "description": "Trigger path",
+                        "name": "path",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Success response based on trigger configuration",
                         "schema": {
                             "type": "string"
                         }
@@ -2431,6 +2692,227 @@
         }
     },
     "definitions": {
+        "models.AuthConfig": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "example": "X-API-Key"
+                },
+                "oauth2": {
+                    "$ref": "#/definitions/models.OAuth2Config"
+                },
+                "password": {
+                    "type": "string",
+                    "example": "pass123"
+                },
+                "token": {
+                    "type": "string",
+                    "example": "${env.API_TOKEN}"
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "none",
+                        "basic",
+                        "bearer",
+                        "api_key",
+                        "oauth2"
+                    ],
+                    "example": "bearer"
+                },
+                "username": {
+                    "type": "string",
+                    "example": "user123"
+                },
+                "value": {
+                    "type": "string",
+                    "example": "${secrets.api_key}"
+                }
+            }
+        },
+        "models.BranchAction": {
+            "type": "object",
+            "properties": {
+                "conditions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BranchCondition"
+                    }
+                },
+                "default": {
+                    "type": "string",
+                    "example": "fallback_stage"
+                }
+            }
+        },
+        "models.BranchCondition": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "example": "data.type == 'order'"
+                },
+                "target": {
+                    "type": "string",
+                    "example": "process_order"
+                }
+            }
+        },
+        "models.CacheConfig": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "example": "user_${data.user_id}"
+                },
+                "ttl": {
+                    "type": "string",
+                    "example": "5m"
+                }
+            }
+        },
+        "models.ErrorHandling": {
+            "type": "object",
+            "properties": {
+                "delay": {
+                    "type": "string",
+                    "example": "1s"
+                },
+                "fallback": {
+                    "type": "string",
+                    "example": "default_value"
+                },
+                "retries": {
+                    "type": "integer",
+                    "example": 3
+                },
+                "strategy": {
+                    "type": "string",
+                    "enum": [
+                        "continue",
+                        "retry",
+                        "fail",
+                        "fallback"
+                    ],
+                    "example": "continue"
+                }
+            }
+        },
+        "models.FilterAction": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "example": "data.status == 'active'"
+                },
+                "jq": {
+                    "type": "string",
+                    "example": ".[] | select(.status == \"active\")"
+                },
+                "keep": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "script": {
+                    "type": "string",
+                    "example": "return data.filter(d =\u003e d.active);"
+                },
+                "target": {
+                    "type": "string",
+                    "example": "items"
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "expression",
+                        "javascript",
+                        "jq"
+                    ],
+                    "example": "expression"
+                }
+            }
+        },
+        "models.ForeachAction": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "string",
+                    "example": "idx"
+                },
+                "items": {
+                    "type": "string",
+                    "example": "data.orders"
+                },
+                "max_items": {
+                    "type": "integer",
+                    "example": 100
+                },
+                "parallel": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "stages": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "['process_item'",
+                        "'save_item']"
+                    ]
+                },
+                "variable": {
+                    "type": "string",
+                    "example": "order"
+                }
+            }
+        },
+        "models.HTTPAction": {
+            "type": "object",
+            "properties": {
+                "auth": {
+                    "$ref": "#/definitions/models.AuthConfig"
+                },
+                "body": {
+                    "type": "object"
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "method": {
+                    "type": "string",
+                    "enum": [
+                        "GET",
+                        "POST",
+                        "PUT",
+                        "PATCH",
+                        "DELETE"
+                    ],
+                    "example": "POST"
+                },
+                "query_params": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "retry": {
+                    "$ref": "#/definitions/models.RetryConfig"
+                },
+                "timeout": {
+                    "type": "string",
+                    "example": "30s"
+                },
+                "url": {
+                    "type": "string",
+                    "example": "https://api.example.com/webhook"
+                }
+            }
+        },
         "models.HealthCheckConfigAPI": {
             "type": "object",
             "properties": {
@@ -2470,6 +2952,264 @@
                 },
                 "strategy": {
                     "type": "string"
+                }
+            }
+        },
+        "models.OAuth2Config": {
+            "type": "object",
+            "properties": {
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "['read'",
+                        "'write']"
+                    ]
+                },
+                "service_id": {
+                    "type": "string",
+                    "example": "google_calendar"
+                }
+            }
+        },
+        "models.ParallelAction": {
+            "type": "object",
+            "properties": {
+                "merge_results": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "stages": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "['fetch_user'",
+                        "'fetch_orders'",
+                        "'fetch_profile']"
+                    ]
+                },
+                "target_field": {
+                    "type": "string",
+                    "example": "results"
+                },
+                "wait_all": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "models.PipelineAPI": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "default_timeout": {
+                    "type": "string",
+                    "example": "30s"
+                },
+                "description": {
+                    "type": "string",
+                    "example": "Processes incoming webhook data"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "pipe_123"
+                },
+                "name": {
+                    "type": "string",
+                    "example": "Data Processing Pipeline"
+                },
+                "resources": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "stages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.StageAPI"
+                    }
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string",
+                    "example": "1.0.0"
+                }
+            }
+        },
+        "models.PipelineConfig": {
+            "description": "Pipeline configuration for data transformation",
+            "type": "object",
+            "properties": {
+                "defaultTimeout": {
+                    "type": "string",
+                    "example": "30s"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "pipe_123"
+                },
+                "name": {
+                    "type": "string",
+                    "example": "Data Processing Pipeline"
+                },
+                "resources": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "stages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.PipelineStageConfig"
+                    }
+                },
+                "version": {
+                    "type": "string",
+                    "example": "1.0.0"
+                }
+            }
+        },
+        "models.PipelineExecutionRequest": {
+            "type": "object"
+        },
+        "models.PipelineExecutionResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "execution_time": {
+                    "type": "string",
+                    "example": "125ms"
+                },
+                "result": {
+                    "type": "object"
+                },
+                "stage_results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.StageExecutionResult"
+                    }
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "models.PipelineStageConfig": {
+            "description": "Individual stage configuration within a pipeline",
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "object"
+                },
+                "dependsOn": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "[\"input\"",
+                        " \"validate\"]"
+                    ]
+                },
+                "filter": {
+                    "type": "object"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "transform_1"
+                },
+                "items": {
+                    "type": "string",
+                    "example": "data.items"
+                },
+                "onError": {
+                    "type": "object"
+                },
+                "target": {
+                    "type": "string",
+                    "example": "data.result"
+                },
+                "timeout": {
+                    "type": "string",
+                    "example": "30s"
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "input",
+                        "output",
+                        "transform",
+                        "http",
+                        "validate",
+                        "filter",
+                        "branch",
+                        "choice",
+                        "cache",
+                        "publish",
+                        "foreach",
+                        "metadata"
+                    ],
+                    "example": "transform"
+                }
+            }
+        },
+        "models.PublishAction": {
+            "type": "object",
+            "properties": {
+                "broker": {
+                    "type": "string",
+                    "example": "main_broker"
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "key": {
+                    "type": "string",
+                    "example": "${data.user_id}"
+                },
+                "topic": {
+                    "type": "string",
+                    "example": "processed_events"
+                }
+            }
+        },
+        "models.RetryConfig": {
+            "type": "object",
+            "properties": {
+                "backoff": {
+                    "type": "string",
+                    "enum": [
+                        "constant",
+                        "linear",
+                        "exponential"
+                    ],
+                    "example": "exponential"
+                },
+                "delay": {
+                    "type": "string",
+                    "example": "1s"
+                },
+                "max_attempts": {
+                    "type": "integer",
+                    "example": 3
+                },
+                "max_delay": {
+                    "type": "string",
+                    "example": "30s"
                 }
             }
         },
@@ -2575,8 +3315,275 @@
                 "value": {}
             }
         },
-        "pipeline.PipelineConfig": {
-            "type": "object"
+        "models.StageAPI": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "$ref": "#/definitions/models.BranchAction"
+                },
+                "cache": {
+                    "$ref": "#/definitions/models.CacheConfig"
+                },
+                "depends_on": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "['validate_1']"
+                    ]
+                },
+                "filter": {
+                    "$ref": "#/definitions/models.FilterAction"
+                },
+                "foreach": {
+                    "$ref": "#/definitions/models.ForeachAction"
+                },
+                "http": {
+                    "$ref": "#/definitions/models.HTTPAction"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "transform_1"
+                },
+                "on_error": {
+                    "$ref": "#/definitions/models.ErrorHandling"
+                },
+                "parallel": {
+                    "$ref": "#/definitions/models.ParallelAction"
+                },
+                "publish": {
+                    "$ref": "#/definitions/models.PublishAction"
+                },
+                "target": {
+                    "type": "string",
+                    "example": "data.user"
+                },
+                "timeout": {
+                    "type": "string",
+                    "example": "10s"
+                },
+                "transform": {
+                    "description": "Stage-specific configuration (only one should be set based on type)",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.TransformAction"
+                        }
+                    ]
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "transform",
+                        "http",
+                        "validate",
+                        "filter",
+                        "branch",
+                        "cache",
+                        "publish",
+                        "foreach",
+                        "parallel"
+                    ],
+                    "example": "transform"
+                },
+                "validate": {
+                    "$ref": "#/definitions/models.ValidateAction"
+                }
+            }
+        },
+        "models.StageExecutionResult": {
+            "type": "object",
+            "properties": {
+                "cached": {
+                    "type": "boolean",
+                    "example": false
+                },
+                "duration": {
+                    "type": "string",
+                    "example": "25ms"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "input": {
+                    "type": "object"
+                },
+                "output": {
+                    "type": "object"
+                },
+                "stage_id": {
+                    "type": "string",
+                    "example": "transform_1"
+                },
+                "success": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "models.TransformAction": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "example": ".data | map(select(.active))"
+                },
+                "fields": {
+                    "type": "object"
+                },
+                "from": {
+                    "type": "string",
+                    "example": "data.source"
+                },
+                "script": {
+                    "type": "string",
+                    "example": "return data.map(d =\u003e d.value * 2);"
+                },
+                "template": {
+                    "type": "string",
+                    "example": "Hello ${data.name}"
+                },
+                "to": {
+                    "type": "string",
+                    "example": "data.destination"
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "set",
+                        "delete",
+                        "copy",
+                        "move",
+                        "merge",
+                        "template",
+                        "jq",
+                        "javascript"
+                    ],
+                    "example": "set"
+                },
+                "value": {
+                    "type": "string",
+                    "example": "processed"
+                }
+            }
+        },
+        "models.ValidateAction": {
+            "type": "object",
+            "properties": {
+                "max": {
+                    "type": "number",
+                    "example": 100
+                },
+                "message": {
+                    "type": "string",
+                    "example": "Invalid format"
+                },
+                "min": {
+                    "type": "number",
+                    "example": 0
+                },
+                "pattern": {
+                    "type": "string",
+                    "example": "^[A-Z]{3}[0-9]{4}$"
+                },
+                "properties": {
+                    "type": "object"
+                },
+                "required": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "['user_id'",
+                        "'email']"
+                    ]
+                },
+                "schema": {
+                    "type": "object"
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "required",
+                        "type",
+                        "range",
+                        "regex",
+                        "custom",
+                        "schema"
+                    ],
+                    "example": "schema"
+                }
+            }
+        },
+        "pagination.Response-storage_BrokerConfig": {
+            "type": "object",
+            "properties": {
+                "page": {
+                    "type": "integer"
+                },
+                "per_page": {
+                    "type": "integer"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/storage.BrokerConfig"
+                    }
+                },
+                "total_pages": {
+                    "type": "integer"
+                },
+                "total_results": {
+                    "type": "integer"
+                }
+            }
+        },
+        "pagination.Response-storage_DLQMessage": {
+            "type": "object",
+            "properties": {
+                "page": {
+                    "type": "integer"
+                },
+                "per_page": {
+                    "type": "integer"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/storage.DLQMessage"
+                    }
+                },
+                "total_pages": {
+                    "type": "integer"
+                },
+                "total_results": {
+                    "type": "integer"
+                }
+            }
+        },
+        "pagination.Response-storage_Trigger": {
+            "type": "object",
+            "properties": {
+                "page": {
+                    "type": "integer"
+                },
+                "per_page": {
+                    "type": "integer"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/storage.Trigger"
+                    }
+                },
+                "total_pages": {
+                    "type": "integer"
+                },
+                "total_results": {
+                    "type": "integer"
+                }
+            }
         },
         "routing.RouteRule": {
             "type": "object"
@@ -2585,23 +3592,23 @@
             "type": "object",
             "properties": {
                 "field": {
-                    "description": "Field name (for header, query conditions)",
+                    "description": "Field name (required for header, query, body_json, context conditions)",
                     "type": "string"
                 },
                 "negate": {
-                    "description": "Negate the condition result",
+                    "description": "Whether to negate the condition result (NOT operation)",
                     "type": "boolean"
                 },
                 "operator": {
-                    "description": "eq, ne, contains, regex, exists, gt, lt, in",
+                    "description": "Comparison operator: eq, ne, contains, regex, exists, gt, lt, gte, lte, in, starts_with, ends_with, cidr",
                     "type": "string"
                 },
                 "type": {
-                    "description": "path, header, body, method, query, script",
+                    "description": "Condition type: path, header, body, method, query, body_json, remote_addr, user_agent, size, context",
                     "type": "string"
                 },
                 "value": {
-                    "description": "Expected value"
+                    "description": "Expected value to compare against"
                 }
             }
         },
@@ -2618,11 +3625,17 @@
                 "created_at": {
                     "type": "string"
                 },
+                "dlq_broker_id": {
+                    "type": "string"
+                },
+                "dlq_enabled": {
+                    "type": "boolean"
+                },
                 "health_status": {
                     "type": "string"
                 },
                 "id": {
-                    "type": "integer"
+                    "type": "string"
                 },
                 "last_health_check": {
                     "type": "string"
@@ -2638,48 +3651,54 @@
                 }
             }
         },
-        "storage.Route": {
+        "storage.DLQMessage": {
             "type": "object",
             "properties": {
-                "active": {
-                    "type": "boolean"
+                "body": {
+                    "type": "string"
                 },
-                "condition_expression": {
+                "broker_name": {
                     "type": "string"
                 },
                 "created_at": {
                     "type": "string"
                 },
-                "destination_broker_id": {
-                    "type": "integer"
-                },
-                "endpoint": {
+                "error_message": {
                     "type": "string"
                 },
                 "exchange": {
                     "type": "string"
                 },
-                "filters": {
+                "failure_count": {
+                    "type": "integer"
+                },
+                "first_failure": {
                     "type": "string"
                 },
                 "headers": {
-                    "type": "string"
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
                 },
                 "id": {
-                    "type": "integer"
-                },
-                "method": {
                     "type": "string"
                 },
-                "name": {
+                "last_failure": {
+                    "type": "string"
+                },
+                "message_id": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "next_retry": {
                     "type": "string"
                 },
                 "pipeline_id": {
-                    "description": "New fields for Phase 1",
-                    "type": "integer"
-                },
-                "priority": {
-                    "type": "integer"
+                    "type": "string"
                 },
                 "queue": {
                     "type": "string"
@@ -2687,8 +3706,12 @@
                 "routing_key": {
                     "type": "string"
                 },
+                "status": {
+                    "description": "pending, retrying, abandoned",
+                    "type": "string"
+                },
                 "trigger_id": {
-                    "type": "integer"
+                    "type": "string"
                 },
                 "updated_at": {
                     "type": "string"
@@ -2702,17 +3725,34 @@
                     "type": "boolean"
                 },
                 "config": {
+                    "description": "For HTTP triggers, includes path, method, etc.",
                     "type": "object",
                     "additionalProperties": true
                 },
                 "created_at": {
                     "type": "string"
                 },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "destination_broker_id": {
+                    "type": "string"
+                },
+                "dlq_broker_id": {
+                    "description": "DLQ configuration",
+                    "type": "string"
+                },
+                "dlq_enabled": {
+                    "type": "boolean"
+                },
+                "dlq_retry_max": {
+                    "type": "integer"
+                },
                 "error_message": {
                     "type": "string"
                 },
                 "id": {
-                    "type": "integer"
+                    "type": "string"
                 },
                 "last_execution": {
                     "type": "string"
@@ -2723,6 +3763,17 @@
                 "next_execution": {
                     "type": "string"
                 },
+                "pipeline_id": {
+                    "description": "Routing and processing configuration",
+                    "type": "string"
+                },
+                "signature_config": {
+                    "description": "Signature configuration (for HTTP triggers)",
+                    "type": "string"
+                },
+                "signature_secret": {
+                    "type": "string"
+                },
                 "status": {
                     "type": "string"
                 },
@@ -2731,15 +3782,12 @@
                 },
                 "updated_at": {
                     "type": "string"
+                },
+                "user_id": {
+                    "description": "User association",
+                    "type": "string"
                 }
             }
-        }
-    },
-    "securityDefinitions": {
-        "SessionAuth": {
-            "type": "apiKey",
-            "name": "session",
-            "in": "cookie"
         }
     }
 }

@@ -2,569 +2,374 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
-	"time"
+
+	"webhook-router/internal/pipeline/core"
+	"webhook-router/internal/pipeline/stages"
 )
 
-// BasicPipelineEngine implements the Engine interface
-type BasicPipelineEngine struct {
-	pipelines      map[string]Pipeline
-	stageFactories map[string]StageFactory
-	metrics        *Metrics
-	isRunning      bool
-	mu             sync.RWMutex
+// Engine represents the main pipeline execution engine interface
+type Engine interface {
+	// Execute runs a pipeline with the given input data
+	Execute(ctx context.Context, pipelineConfig map[string]interface{}, input map[string]interface{}) (map[string]interface{}, error)
+
+	// ExecuteJSON runs a pipeline from JSON configuration
+	ExecuteJSON(ctx context.Context, pipelineJSON []byte, input map[string]interface{}) (map[string]interface{}, error)
+
+	// ExecutePipeline runs a pipeline by ID (for trigger manager compatibility)
+	ExecutePipeline(ctx context.Context, pipelineID string, data interface{}) (interface{}, error)
+
+	// ExecutePipelineWithMetadata runs a pipeline by ID with metadata injection
+	ExecutePipelineWithMetadata(ctx context.Context, pipelineID string, data interface{}, metadata *Metadata) (interface{}, error)
+
+	// Start initializes the engine
+	Start(ctx context.Context) error
+
+	// Stop shuts down the engine
+	Stop() error
 }
 
-// BasicPipeline implements the Pipeline interface
-type BasicPipeline struct {
-	id        string
-	name      string
-	stages    []Stage
-	config    *Config
-	isRunning bool
-	metrics   *Metric
-	mu        sync.RWMutex
+// BasicEngine implements the Engine interface using the core executor
+type BasicEngine struct {
+	executor   *core.Executor
+	registry   *stages.Registry
+	started    bool
+	mu         sync.RWMutex
+	shutdownCh chan struct{}
 }
 
-func NewBasicPipelineEngine() *BasicPipelineEngine {
-	return &BasicPipelineEngine{
-		pipelines:      make(map[string]Pipeline),
-		stageFactories: make(map[string]StageFactory),
-		metrics: &Metrics{
-			PipelineMetrics: make(map[string]Metric),
-			StageMetrics:    make(map[string]StageMetric),
-		},
-		isRunning: false,
+// NewEngine creates a new pipeline engine
+func NewEngine() *BasicEngine {
+	registry := stages.NewRegistry()
+	executor := core.NewExecutor(registry)
+
+	return &BasicEngine{
+		executor:   executor,
+		registry:   registry,
+		started:    false,
+		shutdownCh: make(chan struct{}),
 	}
 }
 
-func NewBasicPipeline(id, name string) *BasicPipeline {
-	return &BasicPipeline{
-		id:     id,
-		name:   name,
-		stages: make([]Stage, 0),
-		metrics: &Metric{
-			LastExecution: time.Now(),
-		},
-		isRunning: false,
-	}
-}
-
-// BasicPipelineEngine methods
-func (e *BasicPipelineEngine) RegisterPipeline(pipeline Pipeline) error {
-	if pipeline == nil {
-		return fmt.Errorf("pipeline cannot be nil")
-	}
-
+// Start initializes the engine and registers all stage types
+func (e *BasicEngine) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if _, exists := e.pipelines[pipeline.ID()]; exists {
-		return fmt.Errorf("pipeline with ID %s already exists", pipeline.ID())
+	if e.started {
+		return nil
 	}
 
-	e.pipelines[pipeline.ID()] = pipeline
-
-	// Initialize metrics for the pipeline
-	e.metrics.PipelineMetrics[pipeline.ID()] = Metric{
-		LastExecution: time.Now(),
+	// Validate dependencies
+	if e.executor == nil {
+		return fmt.Errorf("executor is not initialized")
 	}
+	if e.registry == nil {
+		return fmt.Errorf("registry is not initialized")
+	}
+
+	// Register all stage types
+	e.registerStages()
+
+	e.started = true
+	return nil
+}
+
+// isStarted returns whether the engine is currently started (thread-safe)
+func (e *BasicEngine) isStarted() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.started
+}
+
+// Stop shuts down the engine
+func (e *BasicEngine) Stop() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if !e.started {
+		return nil
+	}
+
+	// Signal shutdown to any background processes
+	close(e.shutdownCh)
+
+	// Clean up executor resources if it has cleanup methods
+	// Note: Current executor doesn't have cleanup, but this is future-proof
+
+	// Reset state
+	e.started = false
+
+	// Create new shutdown channel for potential restart
+	e.shutdownCh = make(chan struct{})
 
 	return nil
 }
 
-func (e *BasicPipelineEngine) UnregisterPipeline(pipelineID string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if _, exists := e.pipelines[pipelineID]; !exists {
-		return fmt.Errorf("pipeline with ID %s not found", pipelineID)
+// Execute runs a pipeline with the given input data
+func (e *BasicEngine) Execute(ctx context.Context, pipelineConfig map[string]interface{}, input map[string]interface{}) (map[string]interface{}, error) {
+	if !e.isStarted() {
+		return nil, fmt.Errorf("pipeline engine is not started")
 	}
 
-	delete(e.pipelines, pipelineID)
-	delete(e.metrics.PipelineMetrics, pipelineID)
-
-	return nil
-}
-
-func (e *BasicPipelineEngine) GetPipeline(pipelineID string) (Pipeline, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	pipeline, exists := e.pipelines[pipelineID]
-	if !exists {
-		return nil, fmt.Errorf("pipeline with ID %s not found", pipelineID)
+	// Validate input
+	if pipelineConfig == nil {
+		return nil, fmt.Errorf("pipeline configuration is required")
+	}
+	if input == nil {
+		input = make(map[string]interface{})
 	}
 
-	return pipeline, nil
-}
-
-func (e *BasicPipelineEngine) GetAllPipelines() []Pipeline {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	pipelines := make([]Pipeline, 0, len(e.pipelines))
-	for _, pipeline := range e.pipelines {
-		pipelines = append(pipelines, pipeline)
-	}
-
-	return pipelines
-}
-
-func (e *BasicPipelineEngine) ExecutePipeline(ctx context.Context, pipelineID string, data *Data) (*Result, error) {
-	pipeline, err := e.GetPipeline(pipelineID)
+	// Try to convert config directly without JSON round-trip
+	pipeline, err := e.convertMapToPipelineDefinition(pipelineConfig)
 	if err != nil {
-		return nil, err
-	}
-
-	start := time.Now()
-	result, err := pipeline.Execute(ctx, data)
-	duration := time.Since(start)
-
-	// Update metrics
-	e.updateMetrics(pipelineID, duration, err == nil)
-
-	return result, err
-}
-
-func (e *BasicPipelineEngine) RegisterStageFactory(stageType string, factory StageFactory) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.stageFactories[stageType] = factory
-}
-
-func (e *BasicPipelineEngine) CreateStage(stageType string, config map[string]interface{}) (Stage, error) {
-	e.mu.RLock()
-	factory, exists := e.stageFactories[stageType]
-	e.mu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("no factory registered for stage type: %s", stageType)
-	}
-
-	return factory.Create(config)
-}
-
-func (e *BasicPipelineEngine) Start(ctx context.Context) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.isRunning {
-		return fmt.Errorf("pipeline engine is already running")
-	}
-
-	// Start all pipelines
-	for _, pipeline := range e.pipelines {
-		if err := pipeline.Health(); err != nil {
-			return fmt.Errorf("pipeline %s is not healthy: %w", pipeline.ID(), err)
+		// Fallback to JSON conversion if direct conversion fails
+		configJSON, jsonErr := json.Marshal(pipelineConfig)
+		if jsonErr != nil {
+			return nil, fmt.Errorf("failed to process pipeline config: %w", jsonErr)
 		}
+		return e.ExecuteJSON(ctx, configJSON, input)
 	}
 
-	e.isRunning = true
-	return nil
+	// Execute pipeline directly
+	return e.executor.Execute(ctx, pipeline, input)
 }
 
-func (e *BasicPipelineEngine) Stop() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if !e.isRunning {
-		return fmt.Errorf("pipeline engine is not running")
+// ExecuteJSON runs a pipeline from JSON configuration
+func (e *BasicEngine) ExecuteJSON(ctx context.Context, pipelineJSON []byte, input map[string]interface{}) (map[string]interface{}, error) {
+	if !e.isStarted() {
+		return nil, fmt.Errorf("pipeline engine is not started")
 	}
 
-	e.isRunning = false
-	return nil
+	// Validate input
+	if len(pipelineJSON) == 0 {
+		return nil, fmt.Errorf("pipeline JSON configuration is required")
+	}
+	if input == nil {
+		input = make(map[string]interface{})
+	}
+
+	// Load pipeline definition
+	pipeline, err := core.LoadPipeline(pipelineJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load pipeline: %w", err)
+	}
+
+	// Execute pipeline
+	return e.executor.Execute(ctx, pipeline, input)
 }
 
-func (e *BasicPipelineEngine) Health() error {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	if !e.isRunning {
-		return fmt.Errorf("pipeline engine is not running")
-	}
-
-	// Check health of all pipelines
-	for _, pipeline := range e.pipelines {
-		if err := pipeline.Health(); err != nil {
-			return fmt.Errorf("pipeline %s is unhealthy: %w", pipeline.ID(), err)
-		}
-	}
-
-	return nil
+// ExecutePipeline runs a pipeline by ID (for trigger manager compatibility)
+func (e *BasicEngine) ExecutePipeline(ctx context.Context, pipelineID string, data interface{}) (interface{}, error) {
+	// Delegate to ExecutePipelineWithMetadata with nil metadata for backward compatibility
+	return e.ExecutePipelineWithMetadata(ctx, pipelineID, data, nil)
 }
 
-func (e *BasicPipelineEngine) GetMetrics() (*Metrics, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	// Create a copy of metrics
-	metricsCopy := &Metrics{
-		TotalExecutions:      e.metrics.TotalExecutions,
-		SuccessfulExecutions: e.metrics.SuccessfulExecutions,
-		FailedExecutions:     e.metrics.FailedExecutions,
-		AverageLatency:       e.metrics.AverageLatency,
-		PipelineMetrics:      make(map[string]Metric),
-		StageMetrics:         make(map[string]StageMetric),
+// ExecutePipelineWithMetadata runs a pipeline by ID with metadata injection
+func (e *BasicEngine) ExecutePipelineWithMetadata(ctx context.Context, pipelineID string, data interface{}, metadata *Metadata) (interface{}, error) {
+	if !e.isStarted() {
+		return nil, fmt.Errorf("pipeline engine is not started")
 	}
 
-	for k, v := range e.metrics.PipelineMetrics {
-		metricsCopy.PipelineMetrics[k] = v
+	// Validate input
+	if pipelineID == "" {
+		return nil, fmt.Errorf("pipeline ID is required")
 	}
 
-	for k, v := range e.metrics.StageMetrics {
-		metricsCopy.StageMetrics[k] = v
+	// Convert data to map format expected by pipeline
+	inputData, err := e.convertDataToMap(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert input data: %w", err)
 	}
 
-	return metricsCopy, nil
-}
-
-func (e *BasicPipelineEngine) updateMetrics(pipelineID string, duration time.Duration, success bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Update global metrics
-	e.metrics.TotalExecutions++
-	if success {
-		e.metrics.SuccessfulExecutions++
-	} else {
-		e.metrics.FailedExecutions++
-	}
-
-	// Update average latency
-	if e.metrics.TotalExecutions == 1 {
-		e.metrics.AverageLatency = duration
-	} else {
-		// Weighted average
-		e.metrics.AverageLatency = time.Duration(
-			(int64(e.metrics.AverageLatency)*(e.metrics.TotalExecutions-1) + int64(duration)) / e.metrics.TotalExecutions,
-		)
-	}
-
-	// Update pipeline-specific metrics
-	pipelineMetric := e.metrics.PipelineMetrics[pipelineID]
-	pipelineMetric.ExecutionCount++
-	if success {
-		pipelineMetric.SuccessCount++
-	} else {
-		pipelineMetric.FailureCount++
-	}
-	pipelineMetric.LastExecution = time.Now()
-
-	// Update pipeline average latency
-	if pipelineMetric.ExecutionCount == 1 {
-		pipelineMetric.AverageLatency = duration
-	} else {
-		pipelineMetric.AverageLatency = time.Duration(
-			(int64(pipelineMetric.AverageLatency)*(pipelineMetric.ExecutionCount-1) + int64(duration)) / pipelineMetric.ExecutionCount,
-		)
-	}
-
-	e.metrics.PipelineMetrics[pipelineID] = pipelineMetric
-}
-
-// BasicPipeline methods
-func (p *BasicPipeline) ID() string {
-	return p.id
-}
-
-func (p *BasicPipeline) Name() string {
-	return p.name
-}
-
-func (p *BasicPipeline) Execute(ctx context.Context, data *Data) (*Result, error) {
-	start := time.Now()
-
-	result := &Result{
-		PipelineID:   p.id,
-		InputData:    data,
-		StageResults: make([]StageResult, 0),
-		Metadata:     make(map[string]interface{}),
-		Success:      false,
-	}
-
-	// Clone input data for processing
-	currentData := data.Clone()
-
-	p.mu.RLock()
-	stages := make([]Stage, len(p.stages))
-	copy(stages, p.stages)
-	p.mu.RUnlock()
-
-	// Execute stages sequentially
-	for i, stage := range stages {
-		stageStart := time.Now()
-
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			result.Error = "pipeline execution cancelled"
-			result.TotalDuration = time.Since(start)
-			return result, ctx.Err()
-		default:
+	// Inject metadata into input data if provided
+	if metadata != nil {
+		// Convert metadata struct to map for pipeline context
+		metadataMap := map[string]interface{}{
+			"user_id":        metadata.UserID,
+			"pipeline_id":    metadata.PipelineID,
+			"execution_id":   metadata.ExecutionID,
+			"start_time":     metadata.StartTime,
+			"trigger_id":     metadata.TriggerID,
+			"trigger_type":   metadata.TriggerType,
+			"source":         metadata.Source,
+			"environment":    metadata.Environment,
+			"region":         metadata.Region,
+			"instance":       metadata.Instance,
+			"trace_id":       metadata.TraceID,
+			"span_id":        metadata.SpanID,
+			"parent_span_id": metadata.ParentSpanID,
+			"correlation_id": metadata.CorrelationID,
+			"priority":       metadata.Priority,
+			"timeout":        metadata.Timeout,
+			"max_retries":    metadata.MaxRetries,
+			"retry_count":    metadata.RetryCount,
+			"partition":      metadata.Partition,
+			"features":       metadata.Features,
+			"tags":           metadata.Tags,
+			"labels":         metadata.Labels,
 		}
 
-		// Execute stage
-		stageResult, err := stage.Process(ctx, currentData)
-		if err != nil {
-			result.Error = fmt.Sprintf("stage %s failed: %v", stage.Name(), err)
-			result.TotalDuration = time.Since(start)
-			return result, err
-		}
+		// Store metadata in input data
+		inputData[MetadataKey] = metadataMap
 
-		// Handle stage result
-		if stageResult != nil {
-			result.StageResults = append(result.StageResults, *stageResult)
-
-			if !stageResult.Success {
-				// Handle stage failure based on configuration
-				if p.config != nil && i < len(p.config.Stages) {
-					stageConfig := p.config.Stages[i]
-
-					switch stageConfig.OnError {
-					case OnErrorStop:
-						result.Error = fmt.Sprintf("stage %s failed: %s", stage.Name(), stageResult.Error)
-						result.TotalDuration = time.Since(start)
-						return result, nil
-
-					case OnErrorContinue:
-						// Continue to next stage
-						continue
-
-					case OnErrorRetry:
-						// Implement retry logic
-						if err := p.retryStage(ctx, stage, currentData, stageConfig.RetryConfig); err != nil {
-							result.Error = fmt.Sprintf("stage %s failed after retries: %v", stage.Name(), err)
-							result.TotalDuration = time.Since(start)
-							return result, nil
-						}
-
-					case OnErrorSkip:
-						// Skip this stage and continue
-						continue
-					}
-				} else {
-					// Default behavior: stop on error
-					result.Error = fmt.Sprintf("stage %s failed: %s", stage.Name(), stageResult.Error)
-					result.TotalDuration = time.Since(start)
-					return result, nil
-				}
-			}
-
-			// Update current data for next stage
-			if stageResult.Data != nil {
-				currentData = stageResult.Data
-			}
-		}
-
-		// Update stage metrics
-		p.updateStageMetrics(stage.Name(), time.Since(stageStart), stageResult != nil && stageResult.Success)
+		// Also inject metadata into cache stages (they need user/pipeline ID)
+		stages.InjectMetadata(e.registry, metadata.PipelineID, metadata.UserID)
 	}
 
-	result.OutputData = currentData
-	result.Success = true
-	result.TotalDuration = time.Since(start)
+	// Create a simple pass-through pipeline for processing
+	// In a full implementation, this would load from storage by pipelineID
+	simplePipeline := &core.PipelineDefinition{
+		ID:      pipelineID,
+		Name:    fmt.Sprintf("Pipeline %s", pipelineID),
+		Version: "1.0.0",
+		Stages: []core.StageDefinition{
+			{
+				ID:     "input",
+				Type:   "input",
+				Target: "data",
+			},
+			{
+				ID:        "transform",
+				Type:      "transform",
+				Target:    "result",
+				Action:    json.RawMessage(`"${data}"`),
+				DependsOn: []string{"input"},
+			},
+			{
+				ID:     "output",
+				Type:   "output",
+				Action: json.RawMessage(`{"result": "${result}", "pipeline_id": "` + pipelineID + `"}`),
+			},
+		},
+	}
 
-	// Update pipeline metrics
-	p.updatePipelineMetrics(time.Since(start), true)
+	// Execute the pipeline using the core executor
+	result, err := e.executor.Execute(ctx, simplePipeline, inputData)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline execution failed for ID '%s': %w", pipelineID, err)
+	}
 
 	return result, nil
 }
 
-func (p *BasicPipeline) retryStage(ctx context.Context, stage Stage, data *Data, retryConfig RetryConfig) error {
-	if !retryConfig.Enabled {
-		return fmt.Errorf("retry not enabled")
+// convertDataToMap converts various data types to map[string]interface{}
+func (e *BasicEngine) convertDataToMap(data interface{}) (map[string]interface{}, error) {
+	if data == nil {
+		return make(map[string]interface{}), nil
 	}
 
-	maxAttempts := retryConfig.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 3 // Default
+	switch v := data.(type) {
+	case map[string]interface{}:
+		return v, nil
+	case []byte:
+		var result map[string]interface{}
+		if err := json.Unmarshal(v, &result); err != nil {
+			// If JSON parsing fails, wrap as string
+			return map[string]interface{}{"data": string(v)}, nil
+		}
+		return result, nil
+	case string:
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(v), &result); err != nil {
+			// If JSON parsing fails, wrap as string
+			return map[string]interface{}{"data": v}, nil
+		}
+		return result, nil
+	default:
+		return map[string]interface{}{"data": v}, nil
+	}
+}
+
+// convertMapToPipelineDefinition converts a map to PipelineDefinition without JSON
+func (e *BasicEngine) convertMapToPipelineDefinition(config map[string]interface{}) (*core.PipelineDefinition, error) {
+	pipeline := &core.PipelineDefinition{}
+
+	// Extract basic fields
+	if id, ok := config["id"].(string); ok {
+		pipeline.ID = id
+	} else {
+		return nil, fmt.Errorf("pipeline ID is required and must be a string")
 	}
 
-	delay := retryConfig.Delay
-	if delay <= 0 {
-		delay = time.Second // Default 1 second
+	if name, ok := config["name"].(string); ok {
+		pipeline.Name = name
 	}
 
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// Wait before retry (except for first attempt)
-		if attempt > 1 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(p.calculateRetryDelay(delay, attempt, retryConfig.BackoffType, retryConfig.MaxDelay)):
+	if version, ok := config["version"].(string); ok {
+		pipeline.Version = version
+	}
+
+	// Extract stages
+	stagesData, ok := config["stages"]
+	if !ok {
+		return nil, fmt.Errorf("pipeline stages are required")
+	}
+
+	stagesList, ok := stagesData.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("pipeline stages must be an array")
+	}
+
+	stages := make([]core.StageDefinition, len(stagesList))
+	for i, stageData := range stagesList {
+		stageMap, ok := stageData.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("stage %d must be an object", i)
+		}
+
+		stage := core.StageDefinition{}
+
+		if id, ok := stageMap["id"].(string); ok {
+			stage.ID = id
+		} else {
+			return nil, fmt.Errorf("stage %d ID is required", i)
+		}
+
+		if stageType, ok := stageMap["type"].(string); ok {
+			stage.Type = stageType
+		} else {
+			return nil, fmt.Errorf("stage %d type is required", i)
+		}
+
+		stage.Target = stageMap["target"]
+
+		// Convert action to json.RawMessage
+		if action := stageMap["action"]; action != nil {
+			actionJSON, err := json.Marshal(action)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal action for stage %d: %w", i, err)
+			}
+			stage.Action = json.RawMessage(actionJSON)
+		}
+
+		// Handle dependencies
+		if deps, ok := stageMap["dependsOn"].([]interface{}); ok {
+			stage.DependsOn = make([]string, len(deps))
+			for j, dep := range deps {
+				if depStr, ok := dep.(string); ok {
+					stage.DependsOn[j] = depStr
+				}
 			}
 		}
 
-		stageResult, err := stage.Process(ctx, data)
-		if err == nil && stageResult != nil && stageResult.Success {
-			return nil // Success
-		}
+		stages[i] = stage
 	}
 
-	return fmt.Errorf("stage failed after %d attempts", maxAttempts)
-}
+	pipeline.Stages = stages
 
-func (p *BasicPipeline) calculateRetryDelay(baseDelay time.Duration, attempt int, backoffType string, maxDelay time.Duration) time.Duration {
-	var delay time.Duration
-
-	switch backoffType {
-	case "exponential":
-		delay = baseDelay * time.Duration(1<<(attempt-1)) // 2^(attempt-1)
-	case "linear":
-		delay = baseDelay * time.Duration(attempt)
-	default: // "fixed"
-		delay = baseDelay
-	}
-
-	if maxDelay > 0 && delay > maxDelay {
-		delay = maxDelay
-	}
-
-	return delay
-}
-
-func (p *BasicPipeline) AddStage(stage Stage) error {
-	if stage == nil {
-		return fmt.Errorf("stage cannot be nil")
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Validate stage
-	if err := stage.Validate(); err != nil {
-		return fmt.Errorf("stage validation failed: %w", err)
-	}
-
-	p.stages = append(p.stages, stage)
-	return nil
-}
-
-func (p *BasicPipeline) RemoveStage(stageName string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	for i, stage := range p.stages {
-		if stage.Name() == stageName {
-			// Remove stage from slice
-			p.stages = append(p.stages[:i], p.stages[i+1:]...)
-			return nil
-		}
-	}
-
-	return fmt.Errorf("stage %s not found", stageName)
-}
-
-func (p *BasicPipeline) GetStages() []Stage {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	// Return copies to avoid external modifications
-	stages := make([]Stage, len(p.stages))
-	copy(stages, p.stages)
-
-	return stages
-}
-
-func (p *BasicPipeline) GetStage(stageName string) (Stage, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	for _, stage := range p.stages {
-		if stage.Name() == stageName {
-			return stage, nil
-		}
-	}
-
-	return nil, fmt.Errorf("stage %s not found", stageName)
-}
-
-func (p *BasicPipeline) Validate() error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if len(p.stages) == 0 {
-		return fmt.Errorf("pipeline must have at least one stage")
-	}
-
-	// Validate all stages
-	for i, stage := range p.stages {
-		if err := stage.Validate(); err != nil {
-			return fmt.Errorf("stage %d (%s) validation failed: %w", i, stage.Name(), err)
-		}
-	}
-
-	return nil
-}
-
-func (p *BasicPipeline) Health() error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	// Check health of all stages
-	for _, stage := range p.stages {
-		if err := stage.Health(); err != nil {
-			return fmt.Errorf("stage %s is unhealthy: %w", stage.Name(), err)
-		}
-	}
-
-	return nil
-}
-
-func (p *BasicPipeline) updatePipelineMetrics(duration time.Duration, success bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.metrics.ExecutionCount++
-	if success {
-		p.metrics.SuccessCount++
-	} else {
-		p.metrics.FailureCount++
-	}
-	p.metrics.LastExecution = time.Now()
-
-	// Update average latency
-	if p.metrics.ExecutionCount == 1 {
-		p.metrics.AverageLatency = duration
-	} else {
-		p.metrics.AverageLatency = time.Duration(
-			(int64(p.metrics.AverageLatency)*(p.metrics.ExecutionCount-1) + int64(duration)) / p.metrics.ExecutionCount,
-		)
-	}
-}
-
-func (p *BasicPipeline) updateStageMetrics(stageName string, duration time.Duration, success bool) {
-	// This would typically be handled by the pipeline engine
-	// For simplicity, we'll skip this implementation here
-}
-
-// CreatePipelineFromConfig creates a pipeline from configuration
-func (e *BasicPipelineEngine) CreatePipelineFromConfig(config *Config) (Pipeline, error) {
-	pipeline := NewBasicPipeline(config.ID, config.Name)
-	pipeline.config = config
-
-	// Create and add stages
-	for _, stageConfig := range config.Stages {
-		if !stageConfig.Enabled {
-			continue // Skip disabled stages
-		}
-
-		stage, err := e.CreateStage(stageConfig.Type, stageConfig.Config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create stage %s: %w", stageConfig.Name, err)
-		}
-
-		if err := pipeline.AddStage(stage); err != nil {
-			return nil, fmt.Errorf("failed to add stage %s: %w", stageConfig.Name, err)
-		}
-	}
-
-	// Validate pipeline
-	if err := pipeline.Validate(); err != nil {
-		return nil, fmt.Errorf("pipeline validation failed: %w", err)
+	// Extract resources if present
+	if resources, ok := config["resources"].(map[string]interface{}); ok {
+		pipeline.Resources = resources
 	}
 
 	return pipeline, nil
+}
+
+// registerStages registers all available stage types
+func (e *BasicEngine) registerStages() {
+	// Register stage executors (they register themselves in init())
+	// The stages package handles registration automatically
 }

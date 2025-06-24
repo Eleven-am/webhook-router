@@ -11,25 +11,181 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countBrokerConfigs = `-- name: CountBrokerConfigs :one
+SELECT COUNT(*) as count FROM broker_configs
+`
+
+func (q *Queries) CountBrokerConfigs(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countBrokerConfigs)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDLQMessages = `-- name: CountDLQMessages :one
+SELECT COUNT(*) as count FROM dlq_messages
+`
+
+func (q *Queries) CountDLQMessages(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countDLQMessages)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDLQMessagesAddedSince = `-- name: CountDLQMessagesAddedSince :one
+
+SELECT COUNT(*) as count
+FROM dlq_messages
+WHERE created_at >= $1
+`
+
+// Dashboard time series and stats queries
+func (q *Queries) CountDLQMessagesAddedSince(ctx context.Context, createdAt pgtype.Timestamp) (int64, error) {
+	row := q.db.QueryRow(ctx, countDLQMessagesAddedSince, createdAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDLQMessagesAddedSinceForUser = `-- name: CountDLQMessagesAddedSinceForUser :one
+SELECT COUNT(*) as count
+FROM dlq_messages dm
+INNER JOIN triggers t ON dm.trigger_id = t.id
+WHERE dm.created_at >= $1 AND t.user_id = $2
+`
+
+type CountDLQMessagesAddedSinceForUserParams struct {
+	CreatedAt pgtype.Timestamp `json:"created_at"`
+	UserID    string           `json:"user_id"`
+}
+
+func (q *Queries) CountDLQMessagesAddedSinceForUser(ctx context.Context, arg CountDLQMessagesAddedSinceForUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDLQMessagesAddedSinceForUser, arg.CreatedAt, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDLQMessagesBySourceBroker = `-- name: CountDLQMessagesBySourceBroker :one
+SELECT COUNT(*) as count FROM dlq_messages WHERE source_broker_id = $1
+`
+
+func (q *Queries) CountDLQMessagesBySourceBroker(ctx context.Context, sourceBrokerID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countDLQMessagesBySourceBroker, sourceBrokerID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDLQMessagesByTrigger = `-- name: CountDLQMessagesByTrigger :one
+SELECT COUNT(*) as count FROM dlq_messages WHERE trigger_id = $1
+`
+
+func (q *Queries) CountDLQMessagesByTrigger(ctx context.Context, triggerID *string) (int64, error) {
+	row := q.db.QueryRow(ctx, countDLQMessagesByTrigger, triggerID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDLQMessagesResolvedSince = `-- name: CountDLQMessagesResolvedSince :one
+SELECT COUNT(*) as count
+FROM dlq_messages
+WHERE updated_at >= $1 AND status != 'pending'
+`
+
+func (q *Queries) CountDLQMessagesResolvedSince(ctx context.Context, updatedAt pgtype.Timestamp) (int64, error) {
+	row := q.db.QueryRow(ctx, countDLQMessagesResolvedSince, updatedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDLQMessagesResolvedSinceForUser = `-- name: CountDLQMessagesResolvedSinceForUser :one
+SELECT COUNT(*) as count
+FROM dlq_messages dm
+INNER JOIN triggers t ON dm.trigger_id = t.id
+WHERE dm.updated_at >= $1 AND dm.status != 'pending' AND t.user_id = $2
+`
+
+type CountDLQMessagesResolvedSinceForUserParams struct {
+	UpdatedAt pgtype.Timestamp `json:"updated_at"`
+	UserID    string           `json:"user_id"`
+}
+
+func (q *Queries) CountDLQMessagesResolvedSinceForUser(ctx context.Context, arg CountDLQMessagesResolvedSinceForUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDLQMessagesResolvedSinceForUser, arg.UpdatedAt, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countPipelines = `-- name: CountPipelines :one
+SELECT COUNT(*) as count FROM pipelines
+`
+
+func (q *Queries) CountPipelines(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPipelines)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countSettings = `-- name: CountSettings :one
+SELECT COUNT(*) as count FROM settings
+`
+
+func (q *Queries) CountSettings(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countSettings)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTriggers = `-- name: CountTriggers :one
+SELECT COUNT(*) as count FROM triggers
+`
+
+func (q *Queries) CountTriggers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countTriggers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countUsers = `-- name: CountUsers :one
+SELECT COUNT(*) as count FROM users
+`
+
+func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createBrokerConfig = `-- name: CreateBrokerConfig :one
-INSERT INTO broker_configs (name, type, config, active, health_status, dlq_enabled, dlq_broker_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id
+INSERT INTO broker_configs (id, name, type, config, active, health_status, dlq_enabled, dlq_broker_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id, user_id
 `
 
 type CreateBrokerConfigParams struct {
+	ID           string  `json:"id"`
 	Name         string  `json:"name"`
 	Type         string  `json:"type"`
 	Config       []byte  `json:"config"`
 	Active       *bool   `json:"active"`
 	HealthStatus *string `json:"health_status"`
 	DlqEnabled   *bool   `json:"dlq_enabled"`
-	DlqBrokerID  *int32  `json:"dlq_broker_id"`
+	DlqBrokerID  *string `json:"dlq_broker_id"`
 }
 
 // Broker configs queries
 func (q *Queries) CreateBrokerConfig(ctx context.Context, arg CreateBrokerConfigParams) (BrokerConfig, error) {
 	row := q.db.QueryRow(ctx, createBrokerConfig,
+		arg.ID,
 		arg.Name,
 		arg.Type,
 		arg.Config,
@@ -51,27 +207,28 @@ func (q *Queries) CreateBrokerConfig(ctx context.Context, arg CreateBrokerConfig
 		&i.UpdatedAt,
 		&i.DlqEnabled,
 		&i.DlqBrokerID,
+		&i.UserID,
 	)
 	return i, err
 }
 
 const createDLQMessage = `-- name: CreateDLQMessage :one
 INSERT INTO dlq_messages (
-    message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id,
+    id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id,
     broker_name, queue, exchange, routing_key, headers, body, error_message,
     failure_count, first_failure, last_failure, next_retry, status, metadata
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-RETURNING id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at
+RETURNING id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at
 `
 
 type CreateDLQMessageParams struct {
+	ID             string           `json:"id"`
 	MessageID      string           `json:"message_id"`
-	RouteID        int32            `json:"route_id"`
-	TriggerID      *int32           `json:"trigger_id"`
-	PipelineID     *int32           `json:"pipeline_id"`
-	SourceBrokerID int32            `json:"source_broker_id"`
-	DlqBrokerID    int32            `json:"dlq_broker_id"`
+	TriggerID      *string          `json:"trigger_id"`
+	PipelineID     *string          `json:"pipeline_id"`
+	SourceBrokerID string           `json:"source_broker_id"`
+	DlqBrokerID    string           `json:"dlq_broker_id"`
 	BrokerName     string           `json:"broker_name"`
 	Queue          string           `json:"queue"`
 	Exchange       *string          `json:"exchange"`
@@ -90,8 +247,8 @@ type CreateDLQMessageParams struct {
 // DLQ queries
 func (q *Queries) CreateDLQMessage(ctx context.Context, arg CreateDLQMessageParams) (DlqMessage, error) {
 	row := q.db.QueryRow(ctx, createDLQMessage,
+		arg.ID,
 		arg.MessageID,
-		arg.RouteID,
 		arg.TriggerID,
 		arg.PipelineID,
 		arg.SourceBrokerID,
@@ -114,7 +271,6 @@ func (q *Queries) CreateDLQMessage(ctx context.Context, arg CreateDLQMessagePara
 	err := row.Scan(
 		&i.ID,
 		&i.MessageID,
-		&i.RouteID,
 		&i.TriggerID,
 		&i.PipelineID,
 		&i.SourceBrokerID,
@@ -138,13 +294,68 @@ func (q *Queries) CreateDLQMessage(ctx context.Context, arg CreateDLQMessagePara
 	return i, err
 }
 
+const createOAuth2Service = `-- name: CreateOAuth2Service :one
+INSERT INTO oauth2_services (
+    id, name, client_id, client_secret, token_url, 
+    auth_url, redirect_url, scopes, grant_type, user_id
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, name, client_id, client_secret, token_url, auth_url, redirect_url, scopes, user_id, created_at, updated_at, grant_type
+`
+
+type CreateOAuth2ServiceParams struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	ClientID     string  `json:"client_id"`
+	ClientSecret string  `json:"client_secret"`
+	TokenUrl     string  `json:"token_url"`
+	AuthUrl      *string `json:"auth_url"`
+	RedirectUrl  *string `json:"redirect_url"`
+	Scopes       *string `json:"scopes"`
+	GrantType    string  `json:"grant_type"`
+	UserID       string  `json:"user_id"`
+}
+
+// OAuth2 Services queries
+func (q *Queries) CreateOAuth2Service(ctx context.Context, arg CreateOAuth2ServiceParams) (Oauth2Service, error) {
+	row := q.db.QueryRow(ctx, createOAuth2Service,
+		arg.ID,
+		arg.Name,
+		arg.ClientID,
+		arg.ClientSecret,
+		arg.TokenUrl,
+		arg.AuthUrl,
+		arg.RedirectUrl,
+		arg.Scopes,
+		arg.GrantType,
+		arg.UserID,
+	)
+	var i Oauth2Service
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ClientID,
+		&i.ClientSecret,
+		&i.TokenUrl,
+		&i.AuthUrl,
+		&i.RedirectUrl,
+		&i.Scopes,
+		&i.UserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.GrantType,
+	)
+	return i, err
+}
+
 const createPipeline = `-- name: CreatePipeline :one
-INSERT INTO pipelines (name, description, stages, active)
-VALUES ($1, $2, $3, $4)
-RETURNING id, name, description, stages, active, created_at, updated_at
+INSERT INTO pipelines (id, name, description, stages, active)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, name, description, stages, active, created_at, updated_at, user_id
 `
 
 type CreatePipelineParams struct {
+	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
 	Stages      []byte  `json:"stages"`
@@ -154,6 +365,7 @@ type CreatePipelineParams struct {
 // Pipelines queries
 func (q *Queries) CreatePipeline(ctx context.Context, arg CreatePipelineParams) (Pipeline, error) {
 	row := q.db.QueryRow(ctx, createPipeline,
+		arg.ID,
 		arg.Name,
 		arg.Description,
 		arg.Stages,
@@ -168,107 +380,41 @@ func (q *Queries) CreatePipeline(ctx context.Context, arg CreatePipelineParams) 
 		&i.Active,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const createRoute = `-- name: CreateRoute :one
-INSERT INTO routes (
-    name, endpoint, method, queue, exchange, routing_key,
-    filters, headers, active, pipeline_id, trigger_id,
-    destination_broker_id, priority, condition_expression,
-    signature_config, signature_secret
-)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-RETURNING id, name, endpoint, method, queue, exchange, routing_key, filters, headers, active, created_at, updated_at, pipeline_id, trigger_id, destination_broker_id, priority, condition_expression, signature_config, signature_secret
-`
-
-type CreateRouteParams struct {
-	Name                string  `json:"name"`
-	Endpoint            string  `json:"endpoint"`
-	Method              string  `json:"method"`
-	Queue               string  `json:"queue"`
-	Exchange            *string `json:"exchange"`
-	RoutingKey          string  `json:"routing_key"`
-	Filters             []byte  `json:"filters"`
-	Headers             []byte  `json:"headers"`
-	Active              *bool   `json:"active"`
-	PipelineID          *int32  `json:"pipeline_id"`
-	TriggerID           *int32  `json:"trigger_id"`
-	DestinationBrokerID *int32  `json:"destination_broker_id"`
-	Priority            *int32  `json:"priority"`
-	ConditionExpression *string `json:"condition_expression"`
-	SignatureConfig     []byte  `json:"signature_config"`
-	SignatureSecret     *string `json:"signature_secret"`
-}
-
-// Routes queries
-func (q *Queries) CreateRoute(ctx context.Context, arg CreateRouteParams) (Route, error) {
-	row := q.db.QueryRow(ctx, createRoute,
-		arg.Name,
-		arg.Endpoint,
-		arg.Method,
-		arg.Queue,
-		arg.Exchange,
-		arg.RoutingKey,
-		arg.Filters,
-		arg.Headers,
-		arg.Active,
-		arg.PipelineID,
-		arg.TriggerID,
-		arg.DestinationBrokerID,
-		arg.Priority,
-		arg.ConditionExpression,
-		arg.SignatureConfig,
-		arg.SignatureSecret,
-	)
-	var i Route
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Endpoint,
-		&i.Method,
-		&i.Queue,
-		&i.Exchange,
-		&i.RoutingKey,
-		&i.Filters,
-		&i.Headers,
-		&i.Active,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.PipelineID,
-		&i.TriggerID,
-		&i.DestinationBrokerID,
-		&i.Priority,
-		&i.ConditionExpression,
-		&i.SignatureConfig,
-		&i.SignatureSecret,
+		&i.UserID,
 	)
 	return i, err
 }
 
 const createTrigger = `-- name: CreateTrigger :one
-INSERT INTO triggers (name, type, config, status, active)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, type, config, status, active, error_message, last_execution, next_execution, created_at, updated_at
+INSERT INTO triggers (id, name, type, config, status, active, dlq_broker_id, dlq_enabled, dlq_retry_max)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, name, type, config, status, active, error_message, last_execution, next_execution, pipeline_id, destination_broker_id, dlq_broker_id, dlq_enabled, dlq_retry_max, created_at, updated_at, user_id, deleted_at
 `
 
 type CreateTriggerParams struct {
-	Name   string  `json:"name"`
-	Type   string  `json:"type"`
-	Config []byte  `json:"config"`
-	Status *string `json:"status"`
-	Active *bool   `json:"active"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	Config      []byte  `json:"config"`
+	Status      *string `json:"status"`
+	Active      *bool   `json:"active"`
+	DlqBrokerID *string `json:"dlq_broker_id"`
+	DlqEnabled  *bool   `json:"dlq_enabled"`
+	DlqRetryMax *int32  `json:"dlq_retry_max"`
 }
 
 // Triggers queries
 func (q *Queries) CreateTrigger(ctx context.Context, arg CreateTriggerParams) (Trigger, error) {
 	row := q.db.QueryRow(ctx, createTrigger,
+		arg.ID,
 		arg.Name,
 		arg.Type,
 		arg.Config,
 		arg.Status,
 		arg.Active,
+		arg.DlqBrokerID,
+		arg.DlqEnabled,
+		arg.DlqRetryMax,
 	)
 	var i Trigger
 	err := row.Scan(
@@ -281,20 +427,28 @@ func (q *Queries) CreateTrigger(ctx context.Context, arg CreateTriggerParams) (T
 		&i.ErrorMessage,
 		&i.LastExecution,
 		&i.NextExecution,
+		&i.PipelineID,
+		&i.DestinationBrokerID,
+		&i.DlqBrokerID,
+		&i.DlqEnabled,
+		&i.DlqRetryMax,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const createUser = `-- name: CreateUser :one
 
-INSERT INTO users (username, password_hash, is_default)
-VALUES ($1, $2, $3)
+INSERT INTO users (id, username, password_hash, is_default)
+VALUES ($1, $2, $3, $4)
 RETURNING id, username, password_hash, is_default, created_at, updated_at
 `
 
 type CreateUserParams struct {
+	ID           string `json:"id"`
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
 	IsDefault    *bool  `json:"is_default"`
@@ -303,7 +457,12 @@ type CreateUserParams struct {
 // PostgreSQL-specific queries using $1, $2 syntax
 // Users queries
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
-	row := q.db.QueryRow(ctx, createUser, arg.Username, arg.PasswordHash, arg.IsDefault)
+	row := q.db.QueryRow(ctx, createUser,
+		arg.ID,
+		arg.Username,
+		arg.PasswordHash,
+		arg.IsDefault,
+	)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -316,69 +475,11 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
-const createWebhookLog = `-- name: CreateWebhookLog :one
-INSERT INTO webhook_logs (
-    route_id, method, endpoint, headers, body, status_code,
-    error, trigger_id, pipeline_id, transformation_time_ms,
-    broker_publish_time_ms
-)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, route_id, method, endpoint, headers, body, status_code, error, processed_at, trigger_id, pipeline_id, transformation_time_ms, broker_publish_time_ms
-`
-
-type CreateWebhookLogParams struct {
-	RouteID              *int32  `json:"route_id"`
-	Method               string  `json:"method"`
-	Endpoint             string  `json:"endpoint"`
-	Headers              []byte  `json:"headers"`
-	Body                 *string `json:"body"`
-	StatusCode           *int32  `json:"status_code"`
-	Error                *string `json:"error"`
-	TriggerID            *int32  `json:"trigger_id"`
-	PipelineID           *int32  `json:"pipeline_id"`
-	TransformationTimeMs *int32  `json:"transformation_time_ms"`
-	BrokerPublishTimeMs  *int32  `json:"broker_publish_time_ms"`
-}
-
-// Webhook logs queries
-func (q *Queries) CreateWebhookLog(ctx context.Context, arg CreateWebhookLogParams) (WebhookLog, error) {
-	row := q.db.QueryRow(ctx, createWebhookLog,
-		arg.RouteID,
-		arg.Method,
-		arg.Endpoint,
-		arg.Headers,
-		arg.Body,
-		arg.StatusCode,
-		arg.Error,
-		arg.TriggerID,
-		arg.PipelineID,
-		arg.TransformationTimeMs,
-		arg.BrokerPublishTimeMs,
-	)
-	var i WebhookLog
-	err := row.Scan(
-		&i.ID,
-		&i.RouteID,
-		&i.Method,
-		&i.Endpoint,
-		&i.Headers,
-		&i.Body,
-		&i.StatusCode,
-		&i.Error,
-		&i.ProcessedAt,
-		&i.TriggerID,
-		&i.PipelineID,
-		&i.TransformationTimeMs,
-		&i.BrokerPublishTimeMs,
-	)
-	return i, err
-}
-
 const deleteBrokerConfig = `-- name: DeleteBrokerConfig :exec
 DELETE FROM broker_configs WHERE id = $1
 `
 
-func (q *Queries) DeleteBrokerConfig(ctx context.Context, id int32) error {
+func (q *Queries) DeleteBrokerConfig(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, deleteBrokerConfig, id)
 	return err
 }
@@ -387,8 +488,17 @@ const deleteDLQMessage = `-- name: DeleteDLQMessage :exec
 DELETE FROM dlq_messages WHERE id = $1
 `
 
-func (q *Queries) DeleteDLQMessage(ctx context.Context, id int32) error {
+func (q *Queries) DeleteDLQMessage(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, deleteDLQMessage, id)
+	return err
+}
+
+const deleteOAuth2Service = `-- name: DeleteOAuth2Service :exec
+DELETE FROM oauth2_services WHERE id = $1
+`
+
+func (q *Queries) DeleteOAuth2Service(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, deleteOAuth2Service, id)
 	return err
 }
 
@@ -402,30 +512,12 @@ func (q *Queries) DeleteOldDLQMessages(ctx context.Context, firstFailure pgtype.
 	return err
 }
 
-const deleteOldWebhookLogs = `-- name: DeleteOldWebhookLogs :exec
-DELETE FROM webhook_logs WHERE processed_at < $1
-`
-
-func (q *Queries) DeleteOldWebhookLogs(ctx context.Context, processedAt pgtype.Timestamp) error {
-	_, err := q.db.Exec(ctx, deleteOldWebhookLogs, processedAt)
-	return err
-}
-
 const deletePipeline = `-- name: DeletePipeline :exec
 DELETE FROM pipelines WHERE id = $1
 `
 
-func (q *Queries) DeletePipeline(ctx context.Context, id int32) error {
+func (q *Queries) DeletePipeline(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, deletePipeline, id)
-	return err
-}
-
-const deleteRoute = `-- name: DeleteRoute :exec
-DELETE FROM routes WHERE id = $1
-`
-
-func (q *Queries) DeleteRoute(ctx context.Context, id int32) error {
-	_, err := q.db.Exec(ctx, deleteRoute, id)
 	return err
 }
 
@@ -442,7 +534,7 @@ const deleteTrigger = `-- name: DeleteTrigger :exec
 DELETE FROM triggers WHERE id = $1
 `
 
-func (q *Queries) DeleteTrigger(ctx context.Context, id int32) error {
+func (q *Queries) DeleteTrigger(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, deleteTrigger, id)
 	return err
 }
@@ -451,16 +543,60 @@ const deleteUser = `-- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1
 `
 
-func (q *Queries) DeleteUser(ctx context.Context, id int32) error {
+func (q *Queries) DeleteUser(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, deleteUser, id)
 	return err
 }
 
-const getBrokerConfig = `-- name: GetBrokerConfig :one
-SELECT id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id FROM broker_configs WHERE id = $1
+const getAverageLatencyForUserAndTriggerPG = `-- name: GetAverageLatencyForUserAndTriggerPG :one
+SELECT AVG(total_latency_ms)::FLOAT as avg_latency
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2 AND started_at <= $3 AND status = 'success' AND trigger_id = $4
 `
 
-func (q *Queries) GetBrokerConfig(ctx context.Context, id int32) (BrokerConfig, error) {
+type GetAverageLatencyForUserAndTriggerPGParams struct {
+	UserID      string           `json:"user_id"`
+	StartedAt   pgtype.Timestamp `json:"started_at"`
+	StartedAt_2 pgtype.Timestamp `json:"started_at_2"`
+	TriggerID   *string          `json:"trigger_id"`
+}
+
+func (q *Queries) GetAverageLatencyForUserAndTriggerPG(ctx context.Context, arg GetAverageLatencyForUserAndTriggerPGParams) (float64, error) {
+	row := q.db.QueryRow(ctx, getAverageLatencyForUserAndTriggerPG,
+		arg.UserID,
+		arg.StartedAt,
+		arg.StartedAt_2,
+		arg.TriggerID,
+	)
+	var avg_latency float64
+	err := row.Scan(&avg_latency)
+	return avg_latency, err
+}
+
+const getAverageLatencyForUserPG = `-- name: GetAverageLatencyForUserPG :one
+SELECT AVG(total_latency_ms)::FLOAT as avg_latency
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2 AND started_at <= $3 AND status = 'success'
+`
+
+type GetAverageLatencyForUserPGParams struct {
+	UserID      string           `json:"user_id"`
+	StartedAt   pgtype.Timestamp `json:"started_at"`
+	StartedAt_2 pgtype.Timestamp `json:"started_at_2"`
+}
+
+func (q *Queries) GetAverageLatencyForUserPG(ctx context.Context, arg GetAverageLatencyForUserPGParams) (float64, error) {
+	row := q.db.QueryRow(ctx, getAverageLatencyForUserPG, arg.UserID, arg.StartedAt, arg.StartedAt_2)
+	var avg_latency float64
+	err := row.Scan(&avg_latency)
+	return avg_latency, err
+}
+
+const getBrokerConfig = `-- name: GetBrokerConfig :one
+SELECT id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id, user_id FROM broker_configs WHERE id = $1
+`
+
+func (q *Queries) GetBrokerConfig(ctx context.Context, id string) (BrokerConfig, error) {
 	row := q.db.QueryRow(ctx, getBrokerConfig, id)
 	var i BrokerConfig
 	err := row.Scan(
@@ -475,13 +611,14 @@ func (q *Queries) GetBrokerConfig(ctx context.Context, id int32) (BrokerConfig, 
 		&i.UpdatedAt,
 		&i.DlqEnabled,
 		&i.DlqBrokerID,
+		&i.UserID,
 	)
 	return i, err
 }
 
 const getBrokerConfigWithDLQ = `-- name: GetBrokerConfigWithDLQ :one
 SELECT 
-    bc.id, bc.name, bc.type, bc.config, bc.active, bc.health_status, bc.last_health_check, bc.created_at, bc.updated_at, bc.dlq_enabled, bc.dlq_broker_id,
+    bc.id, bc.name, bc.type, bc.config, bc.active, bc.health_status, bc.last_health_check, bc.created_at, bc.updated_at, bc.dlq_enabled, bc.dlq_broker_id, bc.user_id,
     dlq.id as dlq_id,
     dlq.name as dlq_name,
     dlq.type as dlq_type,
@@ -492,7 +629,7 @@ WHERE bc.id = $1
 `
 
 type GetBrokerConfigWithDLQRow struct {
-	ID              int32            `json:"id"`
+	ID              string           `json:"id"`
 	Name            string           `json:"name"`
 	Type            string           `json:"type"`
 	Config          []byte           `json:"config"`
@@ -502,14 +639,15 @@ type GetBrokerConfigWithDLQRow struct {
 	CreatedAt       pgtype.Timestamp `json:"created_at"`
 	UpdatedAt       pgtype.Timestamp `json:"updated_at"`
 	DlqEnabled      *bool            `json:"dlq_enabled"`
-	DlqBrokerID     *int32           `json:"dlq_broker_id"`
-	DlqID           *int32           `json:"dlq_id"`
+	DlqBrokerID     *string          `json:"dlq_broker_id"`
+	UserID          *string          `json:"user_id"`
+	DlqID           *string          `json:"dlq_id"`
 	DlqName         *string          `json:"dlq_name"`
 	DlqType         *string          `json:"dlq_type"`
 	DlqConfig       []byte           `json:"dlq_config"`
 }
 
-func (q *Queries) GetBrokerConfigWithDLQ(ctx context.Context, id int32) (GetBrokerConfigWithDLQRow, error) {
+func (q *Queries) GetBrokerConfigWithDLQ(ctx context.Context, id string) (GetBrokerConfigWithDLQRow, error) {
 	row := q.db.QueryRow(ctx, getBrokerConfigWithDLQ, id)
 	var i GetBrokerConfigWithDLQRow
 	err := row.Scan(
@@ -524,6 +662,7 @@ func (q *Queries) GetBrokerConfigWithDLQ(ctx context.Context, id int32) (GetBrok
 		&i.UpdatedAt,
 		&i.DlqEnabled,
 		&i.DlqBrokerID,
+		&i.UserID,
 		&i.DlqID,
 		&i.DlqName,
 		&i.DlqType,
@@ -533,16 +672,15 @@ func (q *Queries) GetBrokerConfigWithDLQ(ctx context.Context, id int32) (GetBrok
 }
 
 const getDLQMessage = `-- name: GetDLQMessage :one
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages WHERE id = $1
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages WHERE id = $1
 `
 
-func (q *Queries) GetDLQMessage(ctx context.Context, id int32) (DlqMessage, error) {
+func (q *Queries) GetDLQMessage(ctx context.Context, id string) (DlqMessage, error) {
 	row := q.db.QueryRow(ctx, getDLQMessage, id)
 	var i DlqMessage
 	err := row.Scan(
 		&i.ID,
 		&i.MessageID,
-		&i.RouteID,
 		&i.TriggerID,
 		&i.PipelineID,
 		&i.SourceBrokerID,
@@ -567,7 +705,7 @@ func (q *Queries) GetDLQMessage(ctx context.Context, id int32) (DlqMessage, erro
 }
 
 const getDLQMessageByMessageID = `-- name: GetDLQMessageByMessageID :one
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages WHERE message_id = $1
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages WHERE message_id = $1
 `
 
 func (q *Queries) GetDLQMessageByMessageID(ctx context.Context, messageID string) (DlqMessage, error) {
@@ -576,7 +714,6 @@ func (q *Queries) GetDLQMessageByMessageID(ctx context.Context, messageID string
 	err := row.Scan(
 		&i.ID,
 		&i.MessageID,
-		&i.RouteID,
 		&i.TriggerID,
 		&i.PipelineID,
 		&i.SourceBrokerID,
@@ -612,10 +749,10 @@ ORDER BY message_count DESC
 `
 
 type GetDLQStatsByDLQBrokerRow struct {
-	DlqBrokerID    int32 `json:"dlq_broker_id"`
-	MessageCount   int64 `json:"message_count"`
-	PendingCount   int64 `json:"pending_count"`
-	AbandonedCount int64 `json:"abandoned_count"`
+	DlqBrokerID    string `json:"dlq_broker_id"`
+	MessageCount   int64  `json:"message_count"`
+	PendingCount   int64  `json:"pending_count"`
+	AbandonedCount int64  `json:"abandoned_count"`
 }
 
 func (q *Queries) GetDLQStatsByDLQBroker(ctx context.Context) ([]GetDLQStatsByDLQBrokerRow, error) {
@@ -655,10 +792,10 @@ ORDER BY message_count DESC
 `
 
 type GetDLQStatsBySourceBrokerRow struct {
-	SourceBrokerID int32 `json:"source_broker_id"`
-	MessageCount   int64 `json:"message_count"`
-	PendingCount   int64 `json:"pending_count"`
-	AbandonedCount int64 `json:"abandoned_count"`
+	SourceBrokerID string `json:"source_broker_id"`
+	MessageCount   int64  `json:"message_count"`
+	PendingCount   int64  `json:"pending_count"`
+	AbandonedCount int64  `json:"abandoned_count"`
 }
 
 func (q *Queries) GetDLQStatsBySourceBroker(ctx context.Context) ([]GetDLQStatsBySourceBrokerRow, error) {
@@ -686,11 +823,367 @@ func (q *Queries) GetDLQStatsBySourceBroker(ctx context.Context) ([]GetDLQStatsB
 	return items, nil
 }
 
-const getPipeline = `-- name: GetPipeline :one
-SELECT id, name, description, stages, active, created_at, updated_at FROM pipelines WHERE id = $1
+const getDLQStatsByTrigger = `-- name: GetDLQStatsByTrigger :many
+SELECT 
+    trigger_id,
+    COUNT(*) as message_count,
+    COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+    COUNT(CASE WHEN status = 'abandoned' THEN 1 END) as abandoned_count
+FROM dlq_messages
+WHERE trigger_id IS NOT NULL
+GROUP BY trigger_id
+ORDER BY message_count DESC
 `
 
-func (q *Queries) GetPipeline(ctx context.Context, id int32) (Pipeline, error) {
+type GetDLQStatsByTriggerRow struct {
+	TriggerID      *string `json:"trigger_id"`
+	MessageCount   int64   `json:"message_count"`
+	PendingCount   int64   `json:"pending_count"`
+	AbandonedCount int64   `json:"abandoned_count"`
+}
+
+func (q *Queries) GetDLQStatsByTrigger(ctx context.Context) ([]GetDLQStatsByTriggerRow, error) {
+	rows, err := q.db.Query(ctx, getDLQStatsByTrigger)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetDLQStatsByTriggerRow{}
+	for rows.Next() {
+		var i GetDLQStatsByTriggerRow
+		if err := rows.Scan(
+			&i.TriggerID,
+			&i.MessageCount,
+			&i.PendingCount,
+			&i.AbandonedCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getExecutionLogStatsForUserAndTriggerPG = `-- name: GetExecutionLogStatsForUserAndTriggerPG :one
+SELECT 
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2 AND trigger_id = $3
+`
+
+type GetExecutionLogStatsForUserAndTriggerPGParams struct {
+	UserID    string           `json:"user_id"`
+	StartedAt pgtype.Timestamp `json:"started_at"`
+	TriggerID *string          `json:"trigger_id"`
+}
+
+type GetExecutionLogStatsForUserAndTriggerPGRow struct {
+	TotalCount   int64 `json:"total_count"`
+	SuccessCount int64 `json:"success_count"`
+	ErrorCount   int64 `json:"error_count"`
+}
+
+func (q *Queries) GetExecutionLogStatsForUserAndTriggerPG(ctx context.Context, arg GetExecutionLogStatsForUserAndTriggerPGParams) (GetExecutionLogStatsForUserAndTriggerPGRow, error) {
+	row := q.db.QueryRow(ctx, getExecutionLogStatsForUserAndTriggerPG, arg.UserID, arg.StartedAt, arg.TriggerID)
+	var i GetExecutionLogStatsForUserAndTriggerPGRow
+	err := row.Scan(&i.TotalCount, &i.SuccessCount, &i.ErrorCount)
+	return i, err
+}
+
+const getExecutionLogStatsForUserPG = `-- name: GetExecutionLogStatsForUserPG :one
+SELECT 
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 AND started_at >= $2
+`
+
+type GetExecutionLogStatsForUserPGParams struct {
+	UserID    string           `json:"user_id"`
+	StartedAt pgtype.Timestamp `json:"started_at"`
+}
+
+type GetExecutionLogStatsForUserPGRow struct {
+	TotalCount   int64 `json:"total_count"`
+	SuccessCount int64 `json:"success_count"`
+	ErrorCount   int64 `json:"error_count"`
+}
+
+// PostgreSQL versions
+func (q *Queries) GetExecutionLogStatsForUserPG(ctx context.Context, arg GetExecutionLogStatsForUserPGParams) (GetExecutionLogStatsForUserPGRow, error) {
+	row := q.db.QueryRow(ctx, getExecutionLogStatsForUserPG, arg.UserID, arg.StartedAt)
+	var i GetExecutionLogStatsForUserPGRow
+	err := row.Scan(&i.TotalCount, &i.SuccessCount, &i.ErrorCount)
+	return i, err
+}
+
+const getExecutionLogTimeSeriesDailyForUserPG = `-- name: GetExecutionLogTimeSeriesDailyForUserPG :many
+SELECT 
+    date_trunc('day', started_at)::TIMESTAMP as time_bucket,
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 
+    AND started_at >= $2 
+    AND started_at <= $3
+    AND ($4 = 'all' OR trigger_id = $5)
+GROUP BY time_bucket
+ORDER BY time_bucket
+`
+
+type GetExecutionLogTimeSeriesDailyForUserPGParams struct {
+	UserID      string           `json:"user_id"`
+	StartedAt   pgtype.Timestamp `json:"started_at"`
+	StartedAt_2 pgtype.Timestamp `json:"started_at_2"`
+	Column4     interface{}      `json:"column_4"`
+	TriggerID   *string          `json:"trigger_id"`
+}
+
+type GetExecutionLogTimeSeriesDailyForUserPGRow struct {
+	TimeBucket pgtype.Timestamp `json:"time_bucket"`
+	TotalCount int64            `json:"total_count"`
+	ErrorCount int64            `json:"error_count"`
+}
+
+func (q *Queries) GetExecutionLogTimeSeriesDailyForUserPG(ctx context.Context, arg GetExecutionLogTimeSeriesDailyForUserPGParams) ([]GetExecutionLogTimeSeriesDailyForUserPGRow, error) {
+	rows, err := q.db.Query(ctx, getExecutionLogTimeSeriesDailyForUserPG,
+		arg.UserID,
+		arg.StartedAt,
+		arg.StartedAt_2,
+		arg.Column4,
+		arg.TriggerID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetExecutionLogTimeSeriesDailyForUserPGRow{}
+	for rows.Next() {
+		var i GetExecutionLogTimeSeriesDailyForUserPGRow
+		if err := rows.Scan(&i.TimeBucket, &i.TotalCount, &i.ErrorCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getExecutionLogTimeSeriesHourlyForUserPG = `-- name: GetExecutionLogTimeSeriesHourlyForUserPG :many
+SELECT 
+    date_trunc('hour', started_at)::TIMESTAMP as time_bucket,
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 
+    AND started_at >= $2 
+    AND started_at <= $3
+    AND ($4 = 'all' OR trigger_id = $5)
+GROUP BY time_bucket
+ORDER BY time_bucket
+`
+
+type GetExecutionLogTimeSeriesHourlyForUserPGParams struct {
+	UserID      string           `json:"user_id"`
+	StartedAt   pgtype.Timestamp `json:"started_at"`
+	StartedAt_2 pgtype.Timestamp `json:"started_at_2"`
+	Column4     interface{}      `json:"column_4"`
+	TriggerID   *string          `json:"trigger_id"`
+}
+
+type GetExecutionLogTimeSeriesHourlyForUserPGRow struct {
+	TimeBucket pgtype.Timestamp `json:"time_bucket"`
+	TotalCount int64            `json:"total_count"`
+	ErrorCount int64            `json:"error_count"`
+}
+
+func (q *Queries) GetExecutionLogTimeSeriesHourlyForUserPG(ctx context.Context, arg GetExecutionLogTimeSeriesHourlyForUserPGParams) ([]GetExecutionLogTimeSeriesHourlyForUserPGRow, error) {
+	rows, err := q.db.Query(ctx, getExecutionLogTimeSeriesHourlyForUserPG,
+		arg.UserID,
+		arg.StartedAt,
+		arg.StartedAt_2,
+		arg.Column4,
+		arg.TriggerID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetExecutionLogTimeSeriesHourlyForUserPGRow{}
+	for rows.Next() {
+		var i GetExecutionLogTimeSeriesHourlyForUserPGRow
+		if err := rows.Scan(&i.TimeBucket, &i.TotalCount, &i.ErrorCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getExecutionLogTimeSeriesWeeklyForUserPG = `-- name: GetExecutionLogTimeSeriesWeeklyForUserPG :many
+SELECT 
+    date_trunc('week', started_at)::TIMESTAMP as time_bucket,
+    COUNT(*) as total_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE user_id = $1 
+    AND started_at >= $2 
+    AND started_at <= $3
+    AND ($4 = 'all' OR trigger_id = $5)
+GROUP BY time_bucket
+ORDER BY time_bucket
+`
+
+type GetExecutionLogTimeSeriesWeeklyForUserPGParams struct {
+	UserID      string           `json:"user_id"`
+	StartedAt   pgtype.Timestamp `json:"started_at"`
+	StartedAt_2 pgtype.Timestamp `json:"started_at_2"`
+	Column4     interface{}      `json:"column_4"`
+	TriggerID   *string          `json:"trigger_id"`
+}
+
+type GetExecutionLogTimeSeriesWeeklyForUserPGRow struct {
+	TimeBucket pgtype.Timestamp `json:"time_bucket"`
+	TotalCount int64            `json:"total_count"`
+	ErrorCount int64            `json:"error_count"`
+}
+
+func (q *Queries) GetExecutionLogTimeSeriesWeeklyForUserPG(ctx context.Context, arg GetExecutionLogTimeSeriesWeeklyForUserPGParams) ([]GetExecutionLogTimeSeriesWeeklyForUserPGRow, error) {
+	rows, err := q.db.Query(ctx, getExecutionLogTimeSeriesWeeklyForUserPG,
+		arg.UserID,
+		arg.StartedAt,
+		arg.StartedAt_2,
+		arg.Column4,
+		arg.TriggerID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetExecutionLogTimeSeriesWeeklyForUserPGRow{}
+	for rows.Next() {
+		var i GetExecutionLogTimeSeriesWeeklyForUserPGRow
+		if err := rows.Scan(&i.TimeBucket, &i.TotalCount, &i.ErrorCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getHTTPTriggerByUserPathMethod = `-- name: GetHTTPTriggerByUserPathMethod :one
+SELECT id, name, type, config, status, active, error_message, last_execution, next_execution, pipeline_id, destination_broker_id, dlq_broker_id, dlq_enabled, dlq_retry_max, created_at, updated_at, user_id, deleted_at FROM triggers
+WHERE user_id = $1
+AND config->>'path' = $2
+AND config->>'method' = $3
+AND type = 'http'
+AND active = true
+`
+
+type GetHTTPTriggerByUserPathMethodParams struct {
+	UserID   string `json:"user_id"`
+	Config   []byte `json:"config"`
+	Config_2 []byte `json:"config_2"`
+}
+
+func (q *Queries) GetHTTPTriggerByUserPathMethod(ctx context.Context, arg GetHTTPTriggerByUserPathMethodParams) (Trigger, error) {
+	row := q.db.QueryRow(ctx, getHTTPTriggerByUserPathMethod, arg.UserID, arg.Config, arg.Config_2)
+	var i Trigger
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Type,
+		&i.Config,
+		&i.Status,
+		&i.Active,
+		&i.ErrorMessage,
+		&i.LastExecution,
+		&i.NextExecution,
+		&i.PipelineID,
+		&i.DestinationBrokerID,
+		&i.DlqBrokerID,
+		&i.DlqEnabled,
+		&i.DlqRetryMax,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UserID,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getOAuth2Service = `-- name: GetOAuth2Service :one
+SELECT id, name, client_id, client_secret, token_url, auth_url, redirect_url, scopes, user_id, created_at, updated_at, grant_type FROM oauth2_services WHERE id = $1
+`
+
+func (q *Queries) GetOAuth2Service(ctx context.Context, id string) (Oauth2Service, error) {
+	row := q.db.QueryRow(ctx, getOAuth2Service, id)
+	var i Oauth2Service
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ClientID,
+		&i.ClientSecret,
+		&i.TokenUrl,
+		&i.AuthUrl,
+		&i.RedirectUrl,
+		&i.Scopes,
+		&i.UserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.GrantType,
+	)
+	return i, err
+}
+
+const getOAuth2ServiceByName = `-- name: GetOAuth2ServiceByName :one
+SELECT id, name, client_id, client_secret, token_url, auth_url, redirect_url, scopes, user_id, created_at, updated_at, grant_type FROM oauth2_services WHERE name = $1 AND user_id = $2
+`
+
+type GetOAuth2ServiceByNameParams struct {
+	Name   string `json:"name"`
+	UserID string `json:"user_id"`
+}
+
+func (q *Queries) GetOAuth2ServiceByName(ctx context.Context, arg GetOAuth2ServiceByNameParams) (Oauth2Service, error) {
+	row := q.db.QueryRow(ctx, getOAuth2ServiceByName, arg.Name, arg.UserID)
+	var i Oauth2Service
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ClientID,
+		&i.ClientSecret,
+		&i.TokenUrl,
+		&i.AuthUrl,
+		&i.RedirectUrl,
+		&i.Scopes,
+		&i.UserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.GrantType,
+	)
+	return i, err
+}
+
+const getPipeline = `-- name: GetPipeline :one
+SELECT id, name, description, stages, active, created_at, updated_at, user_id FROM pipelines WHERE id = $1
+`
+
+func (q *Queries) GetPipeline(ctx context.Context, id string) (Pipeline, error) {
 	row := q.db.QueryRow(ctx, getPipeline, id)
 	var i Pipeline
 	err := row.Scan(
@@ -701,143 +1194,132 @@ func (q *Queries) GetPipeline(ctx context.Context, id int32) (Pipeline, error) {
 		&i.Active,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
 	)
 	return i, err
 }
 
-const getRoute = `-- name: GetRoute :one
-SELECT id, name, endpoint, method, queue, exchange, routing_key, filters, headers, active, created_at, updated_at, pipeline_id, trigger_id, destination_broker_id, priority, condition_expression FROM routes WHERE id = $1
+const getRecentExecutionLogsForUserAndTriggerPG = `-- name: GetRecentExecutionLogsForUserAndTriggerPG :many
+SELECT id, trigger_id, trigger_type, trigger_config, input_method, input_endpoint, input_headers, input_body, pipeline_id, pipeline_stages, transformation_data, transformation_time_ms, broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key, broker_publish_time_ms, broker_response, status, status_code, error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+FROM execution_logs
+WHERE user_id = $1 AND trigger_id = $2
+ORDER BY started_at DESC
+LIMIT $3
 `
 
-func (q *Queries) GetRoute(ctx context.Context, id int32) (Route, error) {
-	row := q.db.QueryRow(ctx, getRoute, id)
-	var i Route
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Endpoint,
-		&i.Method,
-		&i.Queue,
-		&i.Exchange,
-		&i.RoutingKey,
-		&i.Filters,
-		&i.Headers,
-		&i.Active,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.PipelineID,
-		&i.TriggerID,
-		&i.DestinationBrokerID,
-		&i.Priority,
-		&i.ConditionExpression,
-	)
-	return i, err
+type GetRecentExecutionLogsForUserAndTriggerPGParams struct {
+	UserID    string  `json:"user_id"`
+	TriggerID *string `json:"trigger_id"`
+	Limit     int32   `json:"limit"`
 }
 
-const getRouteByEndpoint = `-- name: GetRouteByEndpoint :one
-SELECT id, name, endpoint, method, queue, exchange, routing_key, filters, headers, active, created_at, updated_at, pipeline_id, trigger_id, destination_broker_id, priority, condition_expression FROM routes WHERE endpoint = $1 AND method = $2
+func (q *Queries) GetRecentExecutionLogsForUserAndTriggerPG(ctx context.Context, arg GetRecentExecutionLogsForUserAndTriggerPGParams) ([]ExecutionLog, error) {
+	rows, err := q.db.Query(ctx, getRecentExecutionLogsForUserAndTriggerPG, arg.UserID, arg.TriggerID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutionLog{}
+	for rows.Next() {
+		var i ExecutionLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TriggerID,
+			&i.TriggerType,
+			&i.TriggerConfig,
+			&i.InputMethod,
+			&i.InputEndpoint,
+			&i.InputHeaders,
+			&i.InputBody,
+			&i.PipelineID,
+			&i.PipelineStages,
+			&i.TransformationData,
+			&i.TransformationTimeMs,
+			&i.BrokerID,
+			&i.BrokerType,
+			&i.BrokerQueue,
+			&i.BrokerExchange,
+			&i.BrokerRoutingKey,
+			&i.BrokerPublishTimeMs,
+			&i.BrokerResponse,
+			&i.Status,
+			&i.StatusCode,
+			&i.ErrorMessage,
+			&i.OutputData,
+			&i.TotalLatencyMs,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getRecentExecutionLogsForUserPG = `-- name: GetRecentExecutionLogsForUserPG :many
+SELECT id, trigger_id, trigger_type, trigger_config, input_method, input_endpoint, input_headers, input_body, pipeline_id, pipeline_stages, transformation_data, transformation_time_ms, broker_id, broker_type, broker_queue, broker_exchange, broker_routing_key, broker_publish_time_ms, broker_response, status, status_code, error_message, output_data, total_latency_ms, started_at, completed_at, user_id
+FROM execution_logs
+WHERE user_id = $1
+ORDER BY started_at DESC
+LIMIT $2
 `
 
-type GetRouteByEndpointParams struct {
-	Endpoint string `json:"endpoint"`
-	Method   string `json:"method"`
+type GetRecentExecutionLogsForUserPGParams struct {
+	UserID string `json:"user_id"`
+	Limit  int32  `json:"limit"`
 }
 
-func (q *Queries) GetRouteByEndpoint(ctx context.Context, arg GetRouteByEndpointParams) (Route, error) {
-	row := q.db.QueryRow(ctx, getRouteByEndpoint, arg.Endpoint, arg.Method)
-	var i Route
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Endpoint,
-		&i.Method,
-		&i.Queue,
-		&i.Exchange,
-		&i.RoutingKey,
-		&i.Filters,
-		&i.Headers,
-		&i.Active,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.PipelineID,
-		&i.TriggerID,
-		&i.DestinationBrokerID,
-		&i.Priority,
-		&i.ConditionExpression,
-	)
-	return i, err
-}
-
-const getRouteByName = `-- name: GetRouteByName :one
-SELECT id, name, endpoint, method, queue, exchange, routing_key, filters, headers, active, created_at, updated_at, pipeline_id, trigger_id, destination_broker_id, priority, condition_expression FROM routes WHERE name = $1
-`
-
-func (q *Queries) GetRouteByName(ctx context.Context, name string) (Route, error) {
-	row := q.db.QueryRow(ctx, getRouteByName, name)
-	var i Route
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Endpoint,
-		&i.Method,
-		&i.Queue,
-		&i.Exchange,
-		&i.RoutingKey,
-		&i.Filters,
-		&i.Headers,
-		&i.Active,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.PipelineID,
-		&i.TriggerID,
-		&i.DestinationBrokerID,
-		&i.Priority,
-		&i.ConditionExpression,
-	)
-	return i, err
-}
-
-const getRouteStatistics = `-- name: GetRouteStatistics :one
-SELECT 
-    r.id,
-    r.name,
-    COUNT(w.id) as total_requests,
-    COUNT(CASE WHEN w.status_code >= 200 AND w.status_code < 300 THEN 1 END) as successful_requests,
-    COUNT(CASE WHEN w.status_code >= 400 THEN 1 END) as failed_requests,
-    AVG(w.transformation_time_ms) as avg_transformation_time,
-    AVG(w.broker_publish_time_ms) as avg_publish_time,
-    MAX(w.processed_at) as last_processed
-FROM routes r
-LEFT JOIN webhook_logs w ON r.id = w.route_id
-WHERE r.id = $1
-GROUP BY r.id, r.name
-`
-
-type GetRouteStatisticsRow struct {
-	ID                    int32       `json:"id"`
-	Name                  string      `json:"name"`
-	TotalRequests         int64       `json:"total_requests"`
-	SuccessfulRequests    int64       `json:"successful_requests"`
-	FailedRequests        int64       `json:"failed_requests"`
-	AvgTransformationTime float64     `json:"avg_transformation_time"`
-	AvgPublishTime        float64     `json:"avg_publish_time"`
-	LastProcessed         interface{} `json:"last_processed"`
-}
-
-func (q *Queries) GetRouteStatistics(ctx context.Context, id int32) (GetRouteStatisticsRow, error) {
-	row := q.db.QueryRow(ctx, getRouteStatistics, id)
-	var i GetRouteStatisticsRow
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.TotalRequests,
-		&i.SuccessfulRequests,
-		&i.FailedRequests,
-		&i.AvgTransformationTime,
-		&i.AvgPublishTime,
-		&i.LastProcessed,
-	)
-	return i, err
+func (q *Queries) GetRecentExecutionLogsForUserPG(ctx context.Context, arg GetRecentExecutionLogsForUserPGParams) ([]ExecutionLog, error) {
+	rows, err := q.db.Query(ctx, getRecentExecutionLogsForUserPG, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutionLog{}
+	for rows.Next() {
+		var i ExecutionLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.TriggerID,
+			&i.TriggerType,
+			&i.TriggerConfig,
+			&i.InputMethod,
+			&i.InputEndpoint,
+			&i.InputHeaders,
+			&i.InputBody,
+			&i.PipelineID,
+			&i.PipelineStages,
+			&i.TransformationData,
+			&i.TransformationTimeMs,
+			&i.BrokerID,
+			&i.BrokerType,
+			&i.BrokerQueue,
+			&i.BrokerExchange,
+			&i.BrokerRoutingKey,
+			&i.BrokerPublishTimeMs,
+			&i.BrokerResponse,
+			&i.Status,
+			&i.StatusCode,
+			&i.ErrorMessage,
+			&i.OutputData,
+			&i.TotalLatencyMs,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getSetting = `-- name: GetSetting :one
@@ -851,11 +1333,75 @@ func (q *Queries) GetSetting(ctx context.Context, key string) (Setting, error) {
 	return i, err
 }
 
-const getTrigger = `-- name: GetTrigger :one
-SELECT id, name, type, config, status, active, error_message, last_execution, next_execution, created_at, updated_at FROM triggers WHERE id = $1
+const getTopTriggersByRequestsForUserPG = `-- name: GetTopTriggersByRequestsForUserPG :many
+SELECT 
+    t.id,
+    t.name,
+    t.type,
+    t.active,
+    COUNT(el.id) as total_requests,
+    COUNT(CASE WHEN el.status = 'success' THEN 1 END) as successful_requests,
+    AVG(CASE WHEN el.status = 'success' THEN el.total_latency_ms END)::FLOAT as avg_latency,
+    MAX(el.started_at) as last_processed
+FROM triggers t
+LEFT JOIN execution_logs el ON t.id = el.trigger_id AND el.started_at >= $1
+WHERE t.user_id = $2 AND t.deleted_at IS NULL
+GROUP BY t.id, t.name, t.type, t.active
+ORDER BY total_requests DESC
+LIMIT $3
 `
 
-func (q *Queries) GetTrigger(ctx context.Context, id int32) (Trigger, error) {
+type GetTopTriggersByRequestsForUserPGParams struct {
+	StartedAt pgtype.Timestamp `json:"started_at"`
+	UserID    string           `json:"user_id"`
+	Limit     int32            `json:"limit"`
+}
+
+type GetTopTriggersByRequestsForUserPGRow struct {
+	ID                 string      `json:"id"`
+	Name               string      `json:"name"`
+	Type               string      `json:"type"`
+	Active             *bool       `json:"active"`
+	TotalRequests      int64       `json:"total_requests"`
+	SuccessfulRequests int64       `json:"successful_requests"`
+	AvgLatency         float64     `json:"avg_latency"`
+	LastProcessed      interface{} `json:"last_processed"`
+}
+
+func (q *Queries) GetTopTriggersByRequestsForUserPG(ctx context.Context, arg GetTopTriggersByRequestsForUserPGParams) ([]GetTopTriggersByRequestsForUserPGRow, error) {
+	rows, err := q.db.Query(ctx, getTopTriggersByRequestsForUserPG, arg.StartedAt, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetTopTriggersByRequestsForUserPGRow{}
+	for rows.Next() {
+		var i GetTopTriggersByRequestsForUserPGRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Type,
+			&i.Active,
+			&i.TotalRequests,
+			&i.SuccessfulRequests,
+			&i.AvgLatency,
+			&i.LastProcessed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getTrigger = `-- name: GetTrigger :one
+SELECT id, name, type, config, status, active, error_message, last_execution, next_execution, pipeline_id, destination_broker_id, dlq_broker_id, dlq_enabled, dlq_retry_max, created_at, updated_at, user_id, deleted_at FROM triggers WHERE id = $1
+`
+
+func (q *Queries) GetTrigger(ctx context.Context, id string) (Trigger, error) {
 	row := q.db.QueryRow(ctx, getTrigger, id)
 	var i Trigger
 	err := row.Scan(
@@ -868,8 +1414,55 @@ func (q *Queries) GetTrigger(ctx context.Context, id int32) (Trigger, error) {
 		&i.ErrorMessage,
 		&i.LastExecution,
 		&i.NextExecution,
+		&i.PipelineID,
+		&i.DestinationBrokerID,
+		&i.DlqBrokerID,
+		&i.DlqEnabled,
+		&i.DlqRetryMax,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getTriggerStatistics = `-- name: GetTriggerStatistics :one
+SELECT 
+    COUNT(*) as total_requests,
+    COUNT(CASE WHEN el.status = 'success' THEN 1 END) as successful_requests,
+    COUNT(CASE WHEN el.status = 'error' THEN 1 END) as failed_requests,
+    AVG(CASE WHEN el.status = 'success' THEN el.total_latency_ms END)::FLOAT as avg_transformation_time,
+    AVG(el.total_latency_ms)::FLOAT as avg_total_time,
+    MAX(el.started_at) as last_processed,
+    t.name as name
+FROM execution_logs el
+JOIN triggers t ON el.trigger_id = t.id
+WHERE el.trigger_id = $1
+GROUP BY t.name
+`
+
+type GetTriggerStatisticsRow struct {
+	TotalRequests         int64       `json:"total_requests"`
+	SuccessfulRequests    int64       `json:"successful_requests"`
+	FailedRequests        int64       `json:"failed_requests"`
+	AvgTransformationTime float64     `json:"avg_transformation_time"`
+	AvgTotalTime          float64     `json:"avg_total_time"`
+	LastProcessed         interface{} `json:"last_processed"`
+	Name                  string      `json:"name"`
+}
+
+func (q *Queries) GetTriggerStatistics(ctx context.Context, triggerID *string) (GetTriggerStatisticsRow, error) {
+	row := q.db.QueryRow(ctx, getTriggerStatistics, triggerID)
+	var i GetTriggerStatisticsRow
+	err := row.Scan(
+		&i.TotalRequests,
+		&i.SuccessfulRequests,
+		&i.FailedRequests,
+		&i.AvgTransformationTime,
+		&i.AvgTotalTime,
+		&i.LastProcessed,
+		&i.Name,
 	)
 	return i, err
 }
@@ -878,7 +1471,7 @@ const getUser = `-- name: GetUser :one
 SELECT id, username, password_hash, is_default, created_at, updated_at FROM users WHERE id = $1
 `
 
-func (q *Queries) GetUser(ctx context.Context, id int32) (User, error) {
+func (q *Queries) GetUser(ctx context.Context, id string) (User, error) {
 	row := q.db.QueryRow(ctx, getUser, id)
 	var i User
 	err := row.Scan(
@@ -910,203 +1503,31 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 	return i, err
 }
 
-const getWebhookLog = `-- name: GetWebhookLog :one
-SELECT id, route_id, method, endpoint, headers, body, status_code, error, processed_at, trigger_id, pipeline_id, transformation_time_ms, broker_publish_time_ms FROM webhook_logs WHERE id = $1
-`
-
-func (q *Queries) GetWebhookLog(ctx context.Context, id int32) (WebhookLog, error) {
-	row := q.db.QueryRow(ctx, getWebhookLog, id)
-	var i WebhookLog
-	err := row.Scan(
-		&i.ID,
-		&i.RouteID,
-		&i.Method,
-		&i.Endpoint,
-		&i.Headers,
-		&i.Body,
-		&i.StatusCode,
-		&i.Error,
-		&i.ProcessedAt,
-		&i.TriggerID,
-		&i.PipelineID,
-		&i.TransformationTimeMs,
-		&i.BrokerPublishTimeMs,
-	)
-	return i, err
-}
-
 const getWebhookLogStats = `-- name: GetWebhookLogStats :one
 SELECT 
     COUNT(*) as total_count,
-    COUNT(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 END) as success_count,
-    COUNT(CASE WHEN status_code >= 400 THEN 1 END) as error_count,
-    AVG(transformation_time_ms) as avg_transformation_time,
-    AVG(broker_publish_time_ms) as avg_publish_time,
-    MAX(transformation_time_ms) as max_transformation_time,
-    MAX(broker_publish_time_ms) as max_publish_time
-FROM webhook_logs
-WHERE processed_at >= $1
+    COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+    COUNT(CASE WHEN status = 'error' THEN 1 END) as error_count
+FROM execution_logs
+WHERE started_at >= $1
 `
 
 type GetWebhookLogStatsRow struct {
-	TotalCount            int64       `json:"total_count"`
-	SuccessCount          int64       `json:"success_count"`
-	ErrorCount            int64       `json:"error_count"`
-	AvgTransformationTime float64     `json:"avg_transformation_time"`
-	AvgPublishTime        float64     `json:"avg_publish_time"`
-	MaxTransformationTime interface{} `json:"max_transformation_time"`
-	MaxPublishTime        interface{} `json:"max_publish_time"`
+	TotalCount   int64 `json:"total_count"`
+	SuccessCount int64 `json:"success_count"`
+	ErrorCount   int64 `json:"error_count"`
 }
 
-func (q *Queries) GetWebhookLogStats(ctx context.Context, processedAt pgtype.Timestamp) (GetWebhookLogStatsRow, error) {
-	row := q.db.QueryRow(ctx, getWebhookLogStats, processedAt)
+// Stats queries for backward compatibility
+func (q *Queries) GetWebhookLogStats(ctx context.Context, startedAt pgtype.Timestamp) (GetWebhookLogStatsRow, error) {
+	row := q.db.QueryRow(ctx, getWebhookLogStats, startedAt)
 	var i GetWebhookLogStatsRow
-	err := row.Scan(
-		&i.TotalCount,
-		&i.SuccessCount,
-		&i.ErrorCount,
-		&i.AvgTransformationTime,
-		&i.AvgPublishTime,
-		&i.MaxTransformationTime,
-		&i.MaxPublishTime,
-	)
+	err := row.Scan(&i.TotalCount, &i.SuccessCount, &i.ErrorCount)
 	return i, err
-}
-
-const getWebhookLogStatsByRoute = `-- name: GetWebhookLogStatsByRoute :one
-SELECT 
-    COUNT(*) as total_count,
-    COUNT(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 END) as success_count,
-    COUNT(CASE WHEN status_code >= 400 THEN 1 END) as error_count,
-    AVG(transformation_time_ms) as avg_transformation_time,
-    AVG(broker_publish_time_ms) as avg_publish_time,
-    MAX(transformation_time_ms) as max_transformation_time,
-    MAX(broker_publish_time_ms) as max_publish_time
-FROM webhook_logs
-WHERE route_id = $1 AND processed_at >= $2
-`
-
-type GetWebhookLogStatsByRouteParams struct {
-	RouteID     *int32           `json:"route_id"`
-	ProcessedAt pgtype.Timestamp `json:"processed_at"`
-}
-
-type GetWebhookLogStatsByRouteRow struct {
-	TotalCount            int64       `json:"total_count"`
-	SuccessCount          int64       `json:"success_count"`
-	ErrorCount            int64       `json:"error_count"`
-	AvgTransformationTime float64     `json:"avg_transformation_time"`
-	AvgPublishTime        float64     `json:"avg_publish_time"`
-	MaxTransformationTime interface{} `json:"max_transformation_time"`
-	MaxPublishTime        interface{} `json:"max_publish_time"`
-}
-
-func (q *Queries) GetWebhookLogStatsByRoute(ctx context.Context, arg GetWebhookLogStatsByRouteParams) (GetWebhookLogStatsByRouteRow, error) {
-	row := q.db.QueryRow(ctx, getWebhookLogStatsByRoute, arg.RouteID, arg.ProcessedAt)
-	var i GetWebhookLogStatsByRouteRow
-	err := row.Scan(
-		&i.TotalCount,
-		&i.SuccessCount,
-		&i.ErrorCount,
-		&i.AvgTransformationTime,
-		&i.AvgPublishTime,
-		&i.MaxTransformationTime,
-		&i.MaxPublishTime,
-	)
-	return i, err
-}
-
-const getWebhookLogsByRouteID = `-- name: GetWebhookLogsByRouteID :many
-SELECT id, route_id, method, endpoint, headers, body, status_code, error, processed_at, trigger_id, pipeline_id, transformation_time_ms, broker_publish_time_ms FROM webhook_logs 
-WHERE route_id = $1
-ORDER BY processed_at DESC 
-LIMIT $2 OFFSET $3
-`
-
-type GetWebhookLogsByRouteIDParams struct {
-	RouteID *int32 `json:"route_id"`
-	Limit   int32  `json:"limit"`
-	Offset  int32  `json:"offset"`
-}
-
-func (q *Queries) GetWebhookLogsByRouteID(ctx context.Context, arg GetWebhookLogsByRouteIDParams) ([]WebhookLog, error) {
-	rows, err := q.db.Query(ctx, getWebhookLogsByRouteID, arg.RouteID, arg.Limit, arg.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []WebhookLog{}
-	for rows.Next() {
-		var i WebhookLog
-		if err := rows.Scan(
-			&i.ID,
-			&i.RouteID,
-			&i.Method,
-			&i.Endpoint,
-			&i.Headers,
-			&i.Body,
-			&i.StatusCode,
-			&i.Error,
-			&i.ProcessedAt,
-			&i.TriggerID,
-			&i.PipelineID,
-			&i.TransformationTimeMs,
-			&i.BrokerPublishTimeMs,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listActiveRoutes = `-- name: ListActiveRoutes :many
-SELECT id, name, endpoint, method, queue, exchange, routing_key, filters, headers, active, created_at, updated_at, pipeline_id, trigger_id, destination_broker_id, priority, condition_expression FROM routes WHERE active = true ORDER BY priority ASC, created_at DESC
-`
-
-func (q *Queries) ListActiveRoutes(ctx context.Context) ([]Route, error) {
-	rows, err := q.db.Query(ctx, listActiveRoutes)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Route{}
-	for rows.Next() {
-		var i Route
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.Endpoint,
-			&i.Method,
-			&i.Queue,
-			&i.Exchange,
-			&i.RoutingKey,
-			&i.Filters,
-			&i.Headers,
-			&i.Active,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.PipelineID,
-			&i.TriggerID,
-			&i.DestinationBrokerID,
-			&i.Priority,
-			&i.ConditionExpression,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const listBrokerConfigs = `-- name: ListBrokerConfigs :many
-SELECT id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id FROM broker_configs ORDER BY created_at DESC
+SELECT id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id, user_id FROM broker_configs ORDER BY created_at DESC
 `
 
 func (q *Queries) ListBrokerConfigs(ctx context.Context) ([]BrokerConfig, error) {
@@ -1130,6 +1551,50 @@ func (q *Queries) ListBrokerConfigs(ctx context.Context) ([]BrokerConfig, error)
 			&i.UpdatedAt,
 			&i.DlqEnabled,
 			&i.DlqBrokerID,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBrokerConfigsPaginated = `-- name: ListBrokerConfigsPaginated :many
+SELECT id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id, user_id FROM broker_configs ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListBrokerConfigsPaginatedParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListBrokerConfigsPaginated(ctx context.Context, arg ListBrokerConfigsPaginatedParams) ([]BrokerConfig, error) {
+	rows, err := q.db.Query(ctx, listBrokerConfigsPaginated, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrokerConfig{}
+	for rows.Next() {
+		var i BrokerConfig
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Type,
+			&i.Config,
+			&i.Active,
+			&i.HealthStatus,
+			&i.LastHealthCheck,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DlqEnabled,
+			&i.DlqBrokerID,
+			&i.UserID,
 		); err != nil {
 			return nil, err
 		}
@@ -1142,7 +1607,7 @@ func (q *Queries) ListBrokerConfigs(ctx context.Context) ([]BrokerConfig, error)
 }
 
 const listDLQMessages = `-- name: ListDLQMessages :many
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
 ORDER BY last_failure DESC
 LIMIT $1 OFFSET $2
 `
@@ -1164,7 +1629,6 @@ func (q *Queries) ListDLQMessages(ctx context.Context, arg ListDLQMessagesParams
 		if err := rows.Scan(
 			&i.ID,
 			&i.MessageID,
-			&i.RouteID,
 			&i.TriggerID,
 			&i.PipelineID,
 			&i.SourceBrokerID,
@@ -1196,16 +1660,16 @@ func (q *Queries) ListDLQMessages(ctx context.Context, arg ListDLQMessagesParams
 }
 
 const listDLQMessagesByDLQBroker = `-- name: ListDLQMessagesByDLQBroker :many
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
 WHERE dlq_broker_id = $1
 ORDER BY last_failure DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListDLQMessagesByDLQBrokerParams struct {
-	DlqBrokerID int32 `json:"dlq_broker_id"`
-	Limit       int32 `json:"limit"`
-	Offset      int32 `json:"offset"`
+	DlqBrokerID string `json:"dlq_broker_id"`
+	Limit       int32  `json:"limit"`
+	Offset      int32  `json:"offset"`
 }
 
 func (q *Queries) ListDLQMessagesByDLQBroker(ctx context.Context, arg ListDLQMessagesByDLQBrokerParams) ([]DlqMessage, error) {
@@ -1220,63 +1684,6 @@ func (q *Queries) ListDLQMessagesByDLQBroker(ctx context.Context, arg ListDLQMes
 		if err := rows.Scan(
 			&i.ID,
 			&i.MessageID,
-			&i.RouteID,
-			&i.TriggerID,
-			&i.PipelineID,
-			&i.SourceBrokerID,
-			&i.DlqBrokerID,
-			&i.BrokerName,
-			&i.Queue,
-			&i.Exchange,
-			&i.RoutingKey,
-			&i.Headers,
-			&i.Body,
-			&i.ErrorMessage,
-			&i.FailureCount,
-			&i.FirstFailure,
-			&i.LastFailure,
-			&i.NextRetry,
-			&i.Status,
-			&i.Metadata,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listDLQMessagesByRoute = `-- name: ListDLQMessagesByRoute :many
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
-WHERE route_id = $1
-ORDER BY last_failure DESC
-LIMIT $2 OFFSET $3
-`
-
-type ListDLQMessagesByRouteParams struct {
-	RouteID int32 `json:"route_id"`
-	Limit   int32 `json:"limit"`
-	Offset  int32 `json:"offset"`
-}
-
-func (q *Queries) ListDLQMessagesByRoute(ctx context.Context, arg ListDLQMessagesByRouteParams) ([]DlqMessage, error) {
-	rows, err := q.db.Query(ctx, listDLQMessagesByRoute, arg.RouteID, arg.Limit, arg.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DlqMessage{}
-	for rows.Next() {
-		var i DlqMessage
-		if err := rows.Scan(
-			&i.ID,
-			&i.MessageID,
-			&i.RouteID,
 			&i.TriggerID,
 			&i.PipelineID,
 			&i.SourceBrokerID,
@@ -1308,16 +1715,16 @@ func (q *Queries) ListDLQMessagesByRoute(ctx context.Context, arg ListDLQMessage
 }
 
 const listDLQMessagesBySourceBroker = `-- name: ListDLQMessagesBySourceBroker :many
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
 WHERE source_broker_id = $1
 ORDER BY last_failure DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListDLQMessagesBySourceBrokerParams struct {
-	SourceBrokerID int32 `json:"source_broker_id"`
-	Limit          int32 `json:"limit"`
-	Offset         int32 `json:"offset"`
+	SourceBrokerID string `json:"source_broker_id"`
+	Limit          int32  `json:"limit"`
+	Offset         int32  `json:"offset"`
 }
 
 func (q *Queries) ListDLQMessagesBySourceBroker(ctx context.Context, arg ListDLQMessagesBySourceBrokerParams) ([]DlqMessage, error) {
@@ -1332,7 +1739,6 @@ func (q *Queries) ListDLQMessagesBySourceBroker(ctx context.Context, arg ListDLQ
 		if err := rows.Scan(
 			&i.ID,
 			&i.MessageID,
-			&i.RouteID,
 			&i.TriggerID,
 			&i.PipelineID,
 			&i.SourceBrokerID,
@@ -1364,7 +1770,7 @@ func (q *Queries) ListDLQMessagesBySourceBroker(ctx context.Context, arg ListDLQ
 }
 
 const listDLQMessagesByStatus = `-- name: ListDLQMessagesByStatus :many
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
 WHERE status = $1
 ORDER BY last_failure DESC
 LIMIT $2 OFFSET $3
@@ -1388,7 +1794,6 @@ func (q *Queries) ListDLQMessagesByStatus(ctx context.Context, arg ListDLQMessag
 		if err := rows.Scan(
 			&i.ID,
 			&i.MessageID,
-			&i.RouteID,
 			&i.TriggerID,
 			&i.PipelineID,
 			&i.SourceBrokerID,
@@ -1419,8 +1824,100 @@ func (q *Queries) ListDLQMessagesByStatus(ctx context.Context, arg ListDLQMessag
 	return items, nil
 }
 
+const listDLQMessagesByTrigger = `-- name: ListDLQMessagesByTrigger :many
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages
+WHERE trigger_id = $1
+ORDER BY last_failure DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListDLQMessagesByTriggerParams struct {
+	TriggerID *string `json:"trigger_id"`
+	Limit     int32   `json:"limit"`
+	Offset    int32   `json:"offset"`
+}
+
+func (q *Queries) ListDLQMessagesByTrigger(ctx context.Context, arg ListDLQMessagesByTriggerParams) ([]DlqMessage, error) {
+	rows, err := q.db.Query(ctx, listDLQMessagesByTrigger, arg.TriggerID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DlqMessage{}
+	for rows.Next() {
+		var i DlqMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.MessageID,
+			&i.TriggerID,
+			&i.PipelineID,
+			&i.SourceBrokerID,
+			&i.DlqBrokerID,
+			&i.BrokerName,
+			&i.Queue,
+			&i.Exchange,
+			&i.RoutingKey,
+			&i.Headers,
+			&i.Body,
+			&i.ErrorMessage,
+			&i.FailureCount,
+			&i.FirstFailure,
+			&i.LastFailure,
+			&i.NextRetry,
+			&i.Status,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOAuth2Services = `-- name: ListOAuth2Services :many
+SELECT id, name, client_id, client_secret, token_url, auth_url, redirect_url, scopes, user_id, created_at, updated_at, grant_type FROM oauth2_services WHERE user_id = $1 ORDER BY created_at DESC
+`
+
+func (q *Queries) ListOAuth2Services(ctx context.Context, userID string) ([]Oauth2Service, error) {
+	rows, err := q.db.Query(ctx, listOAuth2Services, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Oauth2Service{}
+	for rows.Next() {
+		var i Oauth2Service
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.ClientID,
+			&i.ClientSecret,
+			&i.TokenUrl,
+			&i.AuthUrl,
+			&i.RedirectUrl,
+			&i.Scopes,
+			&i.UserID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GrantType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingDLQMessages = `-- name: ListPendingDLQMessages :many
-SELECT id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages 
+SELECT id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at FROM dlq_messages 
 WHERE status = 'pending' AND next_retry <= CURRENT_TIMESTAMP
 ORDER BY next_retry ASC
 LIMIT $1
@@ -1438,7 +1935,6 @@ func (q *Queries) ListPendingDLQMessages(ctx context.Context, limit int32) ([]Dl
 		if err := rows.Scan(
 			&i.ID,
 			&i.MessageID,
-			&i.RouteID,
 			&i.TriggerID,
 			&i.PipelineID,
 			&i.SourceBrokerID,
@@ -1470,7 +1966,7 @@ func (q *Queries) ListPendingDLQMessages(ctx context.Context, limit int32) ([]Dl
 }
 
 const listPipelines = `-- name: ListPipelines :many
-SELECT id, name, description, stages, active, created_at, updated_at FROM pipelines ORDER BY created_at DESC
+SELECT id, name, description, stages, active, created_at, updated_at, user_id FROM pipelines ORDER BY created_at DESC
 `
 
 func (q *Queries) ListPipelines(ctx context.Context) ([]Pipeline, error) {
@@ -1490,6 +1986,7 @@ func (q *Queries) ListPipelines(ctx context.Context) ([]Pipeline, error) {
 			&i.Active,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.UserID,
 		); err != nil {
 			return nil, err
 		}
@@ -1501,37 +1998,34 @@ func (q *Queries) ListPipelines(ctx context.Context) ([]Pipeline, error) {
 	return items, nil
 }
 
-const listRoutes = `-- name: ListRoutes :many
-SELECT id, name, endpoint, method, queue, exchange, routing_key, filters, headers, active, created_at, updated_at, pipeline_id, trigger_id, destination_broker_id, priority, condition_expression FROM routes ORDER BY priority ASC, created_at DESC
+const listPipelinesPaginated = `-- name: ListPipelinesPaginated :many
+SELECT id, name, description, stages, active, created_at, updated_at, user_id FROM pipelines ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
 `
 
-func (q *Queries) ListRoutes(ctx context.Context) ([]Route, error) {
-	rows, err := q.db.Query(ctx, listRoutes)
+type ListPipelinesPaginatedParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListPipelinesPaginated(ctx context.Context, arg ListPipelinesPaginatedParams) ([]Pipeline, error) {
+	rows, err := q.db.Query(ctx, listPipelinesPaginated, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Route{}
+	items := []Pipeline{}
 	for rows.Next() {
-		var i Route
+		var i Pipeline
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
-			&i.Endpoint,
-			&i.Method,
-			&i.Queue,
-			&i.Exchange,
-			&i.RoutingKey,
-			&i.Filters,
-			&i.Headers,
+			&i.Description,
+			&i.Stages,
 			&i.Active,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.PipelineID,
-			&i.TriggerID,
-			&i.DestinationBrokerID,
-			&i.Priority,
-			&i.ConditionExpression,
+			&i.UserID,
 		); err != nil {
 			return nil, err
 		}
@@ -1567,8 +2061,38 @@ func (q *Queries) ListSettings(ctx context.Context) ([]Setting, error) {
 	return items, nil
 }
 
+const listSettingsPaginated = `-- name: ListSettingsPaginated :many
+SELECT key, value, updated_at FROM settings ORDER BY key
+LIMIT $1 OFFSET $2
+`
+
+type ListSettingsPaginatedParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListSettingsPaginated(ctx context.Context, arg ListSettingsPaginatedParams) ([]Setting, error) {
+	rows, err := q.db.Query(ctx, listSettingsPaginated, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Setting{}
+	for rows.Next() {
+		var i Setting
+		if err := rows.Scan(&i.Key, &i.Value, &i.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTriggers = `-- name: ListTriggers :many
-SELECT id, name, type, config, status, active, error_message, last_execution, next_execution, created_at, updated_at FROM triggers ORDER BY created_at DESC
+SELECT id, name, type, config, status, active, error_message, last_execution, next_execution, pipeline_id, destination_broker_id, dlq_broker_id, dlq_enabled, dlq_retry_max, created_at, updated_at, user_id, deleted_at FROM triggers ORDER BY created_at DESC
 `
 
 func (q *Queries) ListTriggers(ctx context.Context) ([]Trigger, error) {
@@ -1590,8 +2114,107 @@ func (q *Queries) ListTriggers(ctx context.Context) ([]Trigger, error) {
 			&i.ErrorMessage,
 			&i.LastExecution,
 			&i.NextExecution,
+			&i.PipelineID,
+			&i.DestinationBrokerID,
+			&i.DlqBrokerID,
+			&i.DlqEnabled,
+			&i.DlqRetryMax,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.UserID,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTriggersByUser = `-- name: ListTriggersByUser :many
+SELECT id, name, type, config, status, active, error_message, last_execution, next_execution, pipeline_id, destination_broker_id, dlq_broker_id, dlq_enabled, dlq_retry_max, created_at, updated_at, user_id, deleted_at FROM triggers WHERE user_id = $1 ORDER BY created_at DESC
+`
+
+func (q *Queries) ListTriggersByUser(ctx context.Context, userID string) ([]Trigger, error) {
+	rows, err := q.db.Query(ctx, listTriggersByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Trigger{}
+	for rows.Next() {
+		var i Trigger
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Type,
+			&i.Config,
+			&i.Status,
+			&i.Active,
+			&i.ErrorMessage,
+			&i.LastExecution,
+			&i.NextExecution,
+			&i.PipelineID,
+			&i.DestinationBrokerID,
+			&i.DlqBrokerID,
+			&i.DlqEnabled,
+			&i.DlqRetryMax,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UserID,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTriggersPaginated = `-- name: ListTriggersPaginated :many
+SELECT id, name, type, config, status, active, error_message, last_execution, next_execution, pipeline_id, destination_broker_id, dlq_broker_id, dlq_enabled, dlq_retry_max, created_at, updated_at, user_id, deleted_at FROM triggers ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListTriggersPaginatedParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListTriggersPaginated(ctx context.Context, arg ListTriggersPaginatedParams) ([]Trigger, error) {
+	rows, err := q.db.Query(ctx, listTriggersPaginated, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Trigger{}
+	for rows.Next() {
+		var i Trigger
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Type,
+			&i.Config,
+			&i.Status,
+			&i.Active,
+			&i.ErrorMessage,
+			&i.LastExecution,
+			&i.NextExecution,
+			&i.PipelineID,
+			&i.DestinationBrokerID,
+			&i.DlqBrokerID,
+			&i.DlqEnabled,
+			&i.DlqRetryMax,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UserID,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1634,38 +2257,32 @@ func (q *Queries) ListUsers(ctx context.Context) ([]User, error) {
 	return items, nil
 }
 
-const listWebhookLogs = `-- name: ListWebhookLogs :many
-SELECT id, route_id, method, endpoint, headers, body, status_code, error, processed_at, trigger_id, pipeline_id, transformation_time_ms, broker_publish_time_ms FROM webhook_logs ORDER BY processed_at DESC LIMIT $1 OFFSET $2
+const listUsersPaginated = `-- name: ListUsersPaginated :many
+SELECT id, username, password_hash, is_default, created_at, updated_at FROM users ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
 `
 
-type ListWebhookLogsParams struct {
+type ListUsersPaginatedParams struct {
 	Limit  int32 `json:"limit"`
 	Offset int32 `json:"offset"`
 }
 
-func (q *Queries) ListWebhookLogs(ctx context.Context, arg ListWebhookLogsParams) ([]WebhookLog, error) {
-	rows, err := q.db.Query(ctx, listWebhookLogs, arg.Limit, arg.Offset)
+func (q *Queries) ListUsersPaginated(ctx context.Context, arg ListUsersPaginatedParams) ([]User, error) {
+	rows, err := q.db.Query(ctx, listUsersPaginated, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []WebhookLog{}
+	items := []User{}
 	for rows.Next() {
-		var i WebhookLog
+		var i User
 		if err := rows.Scan(
 			&i.ID,
-			&i.RouteID,
-			&i.Method,
-			&i.Endpoint,
-			&i.Headers,
-			&i.Body,
-			&i.StatusCode,
-			&i.Error,
-			&i.ProcessedAt,
-			&i.TriggerID,
-			&i.PipelineID,
-			&i.TransformationTimeMs,
-			&i.BrokerPublishTimeMs,
+			&i.Username,
+			&i.PasswordHash,
+			&i.IsDefault,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1700,17 +2317,17 @@ UPDATE broker_configs
 SET name = $2, type = $3, config = $4, active = $5, dlq_enabled = $6, dlq_broker_id = $7,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id
+RETURNING id, name, type, config, active, health_status, last_health_check, created_at, updated_at, dlq_enabled, dlq_broker_id, user_id
 `
 
 type UpdateBrokerConfigParams struct {
-	ID          int32  `json:"id"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Config      []byte `json:"config"`
-	Active      *bool  `json:"active"`
-	DlqEnabled  *bool  `json:"dlq_enabled"`
-	DlqBrokerID *int32 `json:"dlq_broker_id"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	Config      []byte  `json:"config"`
+	Active      *bool   `json:"active"`
+	DlqEnabled  *bool   `json:"dlq_enabled"`
+	DlqBrokerID *string `json:"dlq_broker_id"`
 }
 
 func (q *Queries) UpdateBrokerConfig(ctx context.Context, arg UpdateBrokerConfigParams) (BrokerConfig, error) {
@@ -1736,6 +2353,7 @@ func (q *Queries) UpdateBrokerConfig(ctx context.Context, arg UpdateBrokerConfig
 		&i.UpdatedAt,
 		&i.DlqEnabled,
 		&i.DlqBrokerID,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -1745,11 +2363,11 @@ UPDATE dlq_messages
 SET failure_count = $2, last_failure = $3, next_retry = $4, 
     error_message = $5, status = $6, metadata = $7, updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, message_id, route_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at
+RETURNING id, message_id, trigger_id, pipeline_id, source_broker_id, dlq_broker_id, broker_name, queue, exchange, routing_key, headers, body, error_message, failure_count, first_failure, last_failure, next_retry, status, metadata, created_at, updated_at
 `
 
 type UpdateDLQMessageParams struct {
-	ID           int32            `json:"id"`
+	ID           string           `json:"id"`
 	FailureCount *int32           `json:"failure_count"`
 	LastFailure  pgtype.Timestamp `json:"last_failure"`
 	NextRetry    pgtype.Timestamp `json:"next_retry"`
@@ -1772,7 +2390,6 @@ func (q *Queries) UpdateDLQMessage(ctx context.Context, arg UpdateDLQMessagePara
 	err := row.Scan(
 		&i.ID,
 		&i.MessageID,
-		&i.RouteID,
 		&i.TriggerID,
 		&i.PipelineID,
 		&i.SourceBrokerID,
@@ -1803,7 +2420,7 @@ WHERE id = $1
 `
 
 type UpdateDLQMessageStatusParams struct {
-	ID     int32   `json:"id"`
+	ID     string  `json:"id"`
 	Status *string `json:"status"`
 }
 
@@ -1812,16 +2429,66 @@ func (q *Queries) UpdateDLQMessageStatus(ctx context.Context, arg UpdateDLQMessa
 	return err
 }
 
+const updateOAuth2Service = `-- name: UpdateOAuth2Service :one
+UPDATE oauth2_services
+SET name = $2, client_id = $3, client_secret = $4, token_url = $5,
+    auth_url = $6, redirect_url = $7, scopes = $8, grant_type = $9, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING id, name, client_id, client_secret, token_url, auth_url, redirect_url, scopes, user_id, created_at, updated_at, grant_type
+`
+
+type UpdateOAuth2ServiceParams struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	ClientID     string  `json:"client_id"`
+	ClientSecret string  `json:"client_secret"`
+	TokenUrl     string  `json:"token_url"`
+	AuthUrl      *string `json:"auth_url"`
+	RedirectUrl  *string `json:"redirect_url"`
+	Scopes       *string `json:"scopes"`
+	GrantType    string  `json:"grant_type"`
+}
+
+func (q *Queries) UpdateOAuth2Service(ctx context.Context, arg UpdateOAuth2ServiceParams) (Oauth2Service, error) {
+	row := q.db.QueryRow(ctx, updateOAuth2Service,
+		arg.ID,
+		arg.Name,
+		arg.ClientID,
+		arg.ClientSecret,
+		arg.TokenUrl,
+		arg.AuthUrl,
+		arg.RedirectUrl,
+		arg.Scopes,
+		arg.GrantType,
+	)
+	var i Oauth2Service
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ClientID,
+		&i.ClientSecret,
+		&i.TokenUrl,
+		&i.AuthUrl,
+		&i.RedirectUrl,
+		&i.Scopes,
+		&i.UserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.GrantType,
+	)
+	return i, err
+}
+
 const updatePipeline = `-- name: UpdatePipeline :one
 UPDATE pipelines
 SET name = $2, description = $3, stages = $4, active = $5,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, name, description, stages, active, created_at, updated_at
+RETURNING id, name, description, stages, active, created_at, updated_at, user_id
 `
 
 type UpdatePipelineParams struct {
-	ID          int32   `json:"id"`
+	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
 	Stages      []byte  `json:"stages"`
@@ -1845,82 +2512,7 @@ func (q *Queries) UpdatePipeline(ctx context.Context, arg UpdatePipelineParams) 
 		&i.Active,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const updateRoute = `-- name: UpdateRoute :one
-UPDATE routes
-SET name = $2, endpoint = $3, method = $4, queue = $5, exchange = $6,
-    routing_key = $7, filters = $8, headers = $9, active = $10,
-    pipeline_id = $11, trigger_id = $12, destination_broker_id = $13,
-    priority = $14, condition_expression = $15, signature_config = $16,
-    signature_secret = $17, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1
-RETURNING id, name, endpoint, method, queue, exchange, routing_key, filters, headers, active, created_at, updated_at, pipeline_id, trigger_id, destination_broker_id, priority, condition_expression, signature_config, signature_secret
-`
-
-type UpdateRouteParams struct {
-	ID                  int32   `json:"id"`
-	Name                string  `json:"name"`
-	Endpoint            string  `json:"endpoint"`
-	Method              string  `json:"method"`
-	Queue               string  `json:"queue"`
-	Exchange            *string `json:"exchange"`
-	RoutingKey          string  `json:"routing_key"`
-	Filters             []byte  `json:"filters"`
-	Headers             []byte  `json:"headers"`
-	Active              *bool   `json:"active"`
-	PipelineID          *int32  `json:"pipeline_id"`
-	TriggerID           *int32  `json:"trigger_id"`
-	DestinationBrokerID *int32  `json:"destination_broker_id"`
-	Priority            *int32  `json:"priority"`
-	ConditionExpression *string `json:"condition_expression"`
-	SignatureConfig     []byte  `json:"signature_config"`
-	SignatureSecret     *string `json:"signature_secret"`
-}
-
-func (q *Queries) UpdateRoute(ctx context.Context, arg UpdateRouteParams) (Route, error) {
-	row := q.db.QueryRow(ctx, updateRoute,
-		arg.ID,
-		arg.Name,
-		arg.Endpoint,
-		arg.Method,
-		arg.Queue,
-		arg.Exchange,
-		arg.RoutingKey,
-		arg.Filters,
-		arg.Headers,
-		arg.Active,
-		arg.PipelineID,
-		arg.TriggerID,
-		arg.DestinationBrokerID,
-		arg.Priority,
-		arg.ConditionExpression,
-		arg.SignatureConfig,
-		arg.SignatureSecret,
-	)
-	var i Route
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Endpoint,
-		&i.Method,
-		&i.Queue,
-		&i.Exchange,
-		&i.RoutingKey,
-		&i.Filters,
-		&i.Headers,
-		&i.Active,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.PipelineID,
-		&i.TriggerID,
-		&i.DestinationBrokerID,
-		&i.Priority,
-		&i.ConditionExpression,
-		&i.SignatureConfig,
-		&i.SignatureSecret,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -1928,18 +2520,22 @@ func (q *Queries) UpdateRoute(ctx context.Context, arg UpdateRouteParams) (Route
 const updateTrigger = `-- name: UpdateTrigger :one
 UPDATE triggers
 SET name = $2, type = $3, config = $4, status = $5, active = $6,
+    dlq_broker_id = $7, dlq_enabled = $8, dlq_retry_max = $9,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, name, type, config, status, active, error_message, last_execution, next_execution, created_at, updated_at
+RETURNING id, name, type, config, status, active, error_message, last_execution, next_execution, pipeline_id, destination_broker_id, dlq_broker_id, dlq_enabled, dlq_retry_max, created_at, updated_at, user_id, deleted_at
 `
 
 type UpdateTriggerParams struct {
-	ID     int32   `json:"id"`
-	Name   string  `json:"name"`
-	Type   string  `json:"type"`
-	Config []byte  `json:"config"`
-	Status *string `json:"status"`
-	Active *bool   `json:"active"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	Config      []byte  `json:"config"`
+	Status      *string `json:"status"`
+	Active      *bool   `json:"active"`
+	DlqBrokerID *string `json:"dlq_broker_id"`
+	DlqEnabled  *bool   `json:"dlq_enabled"`
+	DlqRetryMax *int32  `json:"dlq_retry_max"`
 }
 
 func (q *Queries) UpdateTrigger(ctx context.Context, arg UpdateTriggerParams) (Trigger, error) {
@@ -1950,6 +2546,9 @@ func (q *Queries) UpdateTrigger(ctx context.Context, arg UpdateTriggerParams) (T
 		arg.Config,
 		arg.Status,
 		arg.Active,
+		arg.DlqBrokerID,
+		arg.DlqEnabled,
+		arg.DlqRetryMax,
 	)
 	var i Trigger
 	err := row.Scan(
@@ -1962,8 +2561,15 @@ func (q *Queries) UpdateTrigger(ctx context.Context, arg UpdateTriggerParams) (T
 		&i.ErrorMessage,
 		&i.LastExecution,
 		&i.NextExecution,
+		&i.PipelineID,
+		&i.DestinationBrokerID,
+		&i.DlqBrokerID,
+		&i.DlqEnabled,
+		&i.DlqRetryMax,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UserID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1976,7 +2582,7 @@ RETURNING id, username, password_hash, is_default, created_at, updated_at
 `
 
 type UpdateUserParams struct {
-	ID           int32  `json:"id"`
+	ID           string `json:"id"`
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
 }
@@ -2002,7 +2608,7 @@ WHERE id = $1
 `
 
 type UpdateUserCredentialsParams struct {
-	ID           int32  `json:"id"`
+	ID           string `json:"id"`
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
 }

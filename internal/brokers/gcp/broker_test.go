@@ -103,7 +103,7 @@ func TestConfigValidation(t *testing.T) {
 
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
-	
+
 	// Check defaults
 	assert.Equal(t, "", config.ProjectID)
 	assert.Equal(t, "", config.TopicID)
@@ -125,7 +125,7 @@ func TestConfigGetConnectionString(t *testing.T) {
 		ProjectID: "my-project",
 		TopicID:   "my-topic",
 	}
-	
+
 	expected := "pubsub://projects/my-project/topics/my-topic"
 	assert.Equal(t, expected, config.GetConnectionString())
 }

@@ -540,7 +540,7 @@ func TestLockRenewalInterval(t *testing.T) {
 			// This test verifies the renewal interval calculation logic
 			// by inspecting the logic directly since the actual interval
 			// is used in a private goroutine
-			
+
 			renewInterval := tt.expiration / 3
 			if renewInterval < time.Second {
 				renewInterval = time.Second
@@ -604,13 +604,13 @@ func testLockInterface(t *testing.T, lock Lock, ctx context.Context) {
 
 // Helper function to check if a string contains another string
 func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		   (len(substr) == 0 || 
-		    s == substr || 
-		    (len(s) > len(substr) && 
-		     (s[:len(substr)] == substr || 
-		      s[len(s)-len(substr):] == substr || 
-		      containsSubstring(s, substr))))
+	return len(s) >= len(substr) &&
+		(len(substr) == 0 ||
+			s == substr ||
+			(len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					containsSubstring(s, substr))))
 }
 
 func containsSubstring(s, substr string) bool {
@@ -629,7 +629,7 @@ func BenchmarkManager_AcquireLock(b *testing.B) {
 	defer manager.Close()
 
 	ctx := context.Background()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := fmt.Sprintf("bench-lock-%d", i)

@@ -11,11 +11,11 @@ import (
 
 // MockConnectionPool implements ConnectionPoolInterface for testing
 type MockConnectionPool struct {
-	clients         []rabbitmq.ClientInterface
-	closed          bool
-	newClientError  error
-	newClientFunc   func() (rabbitmq.ClientInterface, error)
-	mu              sync.Mutex
+	clients        []rabbitmq.ClientInterface
+	closed         bool
+	newClientError error
+	newClientFunc  func() (rabbitmq.ClientInterface, error)
+	mu             sync.Mutex
 }
 
 func NewMockConnectionPool() *MockConnectionPool {
@@ -28,19 +28,19 @@ func NewMockConnectionPool() *MockConnectionPool {
 func (m *MockConnectionPool) NewClient() (rabbitmq.ClientInterface, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.closed {
 		return nil, fmt.Errorf("connection pool is closed")
 	}
-	
+
 	if m.newClientError != nil {
 		return nil, m.newClientError
 	}
-	
+
 	if m.newClientFunc != nil {
 		return m.newClientFunc()
 	}
-	
+
 	client := NewMockClient()
 	m.clients = append(m.clients, client)
 	return client, nil
@@ -77,29 +77,29 @@ func (m *MockConnectionPool) GetClients() []rabbitmq.ClientInterface {
 
 // MockClient implements ClientInterface for testing
 type MockClient struct {
-	closed            bool
-	publishError      error
-	queueDeclareError error
+	closed               bool
+	publishError         error
+	queueDeclareError    error
 	exchangeDeclareError error
-	queueBindError    error
-	consumeError      error
-	
+	queueBindError       error
+	consumeError         error
+
 	// Track operations
-	publishedMessages    []PublishedMessage
-	declaredQueues       []DeclaredQueue
-	declaredExchanges    []DeclaredExchange
-	boundQueues          []BoundQueue
-	consumedQueues       []string
-	mu                   sync.Mutex
+	publishedMessages []PublishedMessage
+	declaredQueues    []DeclaredQueue
+	declaredExchanges []DeclaredExchange
+	boundQueues       []BoundQueue
+	consumedQueues    []string
+	mu                sync.Mutex
 }
 
 type PublishedMessage struct {
-	Exchange    string
-	RoutingKey  string
-	Mandatory   bool
-	Immediate   bool
-	Publishing  amqp.Publishing
-	Timestamp   time.Time
+	Exchange   string
+	RoutingKey string
+	Mandatory  bool
+	Immediate  bool
+	Publishing amqp.Publishing
+	Timestamp  time.Time
 }
 
 type DeclaredQueue struct {
@@ -149,15 +149,15 @@ func (m *MockClient) Close() {
 func (m *MockClient) Publish(exchange, routingKey string, mandatory, immediate bool, msg amqp.Publishing) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.closed {
 		return fmt.Errorf("client is closed")
 	}
-	
+
 	if m.publishError != nil {
 		return m.publishError
 	}
-	
+
 	m.publishedMessages = append(m.publishedMessages, PublishedMessage{
 		Exchange:   exchange,
 		RoutingKey: routingKey,
@@ -166,22 +166,22 @@ func (m *MockClient) Publish(exchange, routingKey string, mandatory, immediate b
 		Publishing: msg,
 		Timestamp:  time.Now(),
 	})
-	
+
 	return nil
 }
 
 func (m *MockClient) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.closed {
 		return amqp.Queue{}, fmt.Errorf("client is closed")
 	}
-	
+
 	if m.queueDeclareError != nil {
 		return amqp.Queue{}, m.queueDeclareError
 	}
-	
+
 	m.declaredQueues = append(m.declaredQueues, DeclaredQueue{
 		Name:       name,
 		Durable:    durable,
@@ -190,7 +190,7 @@ func (m *MockClient) QueueDeclare(name string, durable, autoDelete, exclusive, n
 		NoWait:     noWait,
 		Args:       args,
 	})
-	
+
 	return amqp.Queue{
 		Name:      name,
 		Messages:  0,
@@ -201,15 +201,15 @@ func (m *MockClient) QueueDeclare(name string, durable, autoDelete, exclusive, n
 func (m *MockClient) ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp.Table) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.closed {
 		return fmt.Errorf("client is closed")
 	}
-	
+
 	if m.exchangeDeclareError != nil {
 		return m.exchangeDeclareError
 	}
-	
+
 	m.declaredExchanges = append(m.declaredExchanges, DeclaredExchange{
 		Name:       name,
 		Kind:       kind,
@@ -219,22 +219,22 @@ func (m *MockClient) ExchangeDeclare(name, kind string, durable, autoDelete, int
 		NoWait:     noWait,
 		Args:       args,
 	})
-	
+
 	return nil
 }
 
 func (m *MockClient) QueueBind(name, key, exchange string, noWait bool, args amqp.Table) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.closed {
 		return fmt.Errorf("client is closed")
 	}
-	
+
 	if m.queueBindError != nil {
 		return m.queueBindError
 	}
-	
+
 	m.boundQueues = append(m.boundQueues, BoundQueue{
 		Name:     name,
 		Key:      key,
@@ -242,7 +242,7 @@ func (m *MockClient) QueueBind(name, key, exchange string, noWait bool, args amq
 		NoWait:   noWait,
 		Args:     args,
 	})
-	
+
 	return nil
 }
 
@@ -254,13 +254,13 @@ func (m *MockClient) PublishWebhook(queue, exchange, routingKey string, body []b
 			return err
 		}
 	}
-	
+
 	if exchange != "" {
 		err := m.ExchangeDeclare(exchange, "direct", true, false, false, false, nil)
 		if err != nil {
 			return err
 		}
-		
+
 		if queue != "" {
 			err = m.QueueBind(queue, routingKey, exchange, false, nil)
 			if err != nil {
@@ -268,7 +268,7 @@ func (m *MockClient) PublishWebhook(queue, exchange, routingKey string, body []b
 			}
 		}
 	}
-	
+
 	return m.Publish(exchange, routingKey, false, false, amqp.Publishing{
 		DeliveryMode: amqp.Persistent,
 		ContentType:  "application/json",
@@ -280,24 +280,24 @@ func (m *MockClient) PublishWebhook(queue, exchange, routingKey string, body []b
 func (m *MockClient) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.closed {
 		return nil, fmt.Errorf("client is closed")
 	}
-	
+
 	if m.consumeError != nil {
 		return nil, m.consumeError
 	}
-	
+
 	m.consumedQueues = append(m.consumedQueues, queue)
-	
+
 	// Return a channel that will be closed immediately to simulate no messages
 	ch := make(chan amqp.Delivery)
 	go func() {
 		// Simulate some messages if needed
 		close(ch)
 	}()
-	
+
 	return ch, nil
 }
 

@@ -1,8 +1,10 @@
 package aws
 
 import (
+	"encoding/json"
 	"fmt"
 	"webhook-router/internal/brokers"
+	"webhook-router/internal/common/errors"
 	"webhook-router/internal/common/factory"
 	"webhook-router/internal/crypto"
 )
@@ -37,7 +39,7 @@ func (f *SecureFactory) CreateBroker(config brokers.BrokerConfig) (brokers.Broke
 		// Create broker with secure config
 		return NewSecureBroker(cfg)
 	default:
-		return nil, fmt.Errorf("unsupported configuration type: %T", config)
+		return nil, errors.ConfigError("unsupported AWS configuration type")
 	}
 }
 
@@ -52,11 +54,11 @@ func (f *SecureFactory) CreateSecureConfig() *SecureConfig {
 // MigrateToSecureConfig converts an insecure Config to a SecureConfig
 func (f *SecureFactory) MigrateToSecureConfig(config *Config) (*SecureConfig, error) {
 	if f.encryptor == nil {
-		return nil, fmt.Errorf("encryptor not available for migration")
+		return nil, errors.ConfigError("encryptor not available for migration")
 	}
 
 	secureConfig := NewSecureConfig(f.encryptor)
-	
+
 	// Copy non-sensitive fields
 	secureConfig.Region = config.Region
 	secureConfig.QueueURL = config.QueueURL
@@ -74,8 +76,22 @@ func (f *SecureFactory) MigrateToSecureConfig(config *Config) (*SecureConfig, er
 		config.SessionToken,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt credentials during migration: %w", err)
+		return nil, errors.InternalError("failed to encrypt credentials during migration", err)
 	}
 
 	return secureConfig, nil
+}
+
+// ParseConfig implements brokers.BrokerFactory
+func (f *SecureFactory) ParseConfig(configJSON string) (brokers.BrokerConfig, error) {
+	var config Config
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return nil, errors.ConfigError(fmt.Sprintf("failed to parse AWS config: %v", err))
+	}
+	return &config, nil
+}
+
+// GetType implements brokers.BrokerFactory
+func (f *SecureFactory) GetType() string {
+	return "aws"
 }

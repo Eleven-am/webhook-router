@@ -32,22 +32,144 @@ func (m *MockStorage) ValidateUser(username, password string) (*storage.User, er
 	return args.Get(0).(*storage.User), args.Error(1)
 }
 
-func (m *MockStorage) UpdateUserCredentials(userID int, username, password string) error {
+func (m *MockStorage) CreateUser(username, password string) (*storage.User, error) {
+	args := m.Called(username, password)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*storage.User), args.Error(1)
+}
+
+func (m *MockStorage) GetUser(userID string) (*storage.User, error) {
+	args := m.Called(userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*storage.User), args.Error(1)
+}
+
+func (m *MockStorage) GetUserByUsername(username string) (*storage.User, error) {
+	args := m.Called(username)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*storage.User), args.Error(1)
+}
+
+func (m *MockStorage) GetUserCount() (int, error) {
+	args := m.Called()
+	return args.Int(0), args.Error(1)
+}
+
+func (m *MockStorage) UpdateUserCredentials(userID string, username, password string) error {
 	args := m.Called(userID, username, password)
 	return args.Error(0)
 }
 
-func (m *MockStorage) Query(query string, args ...interface{}) ([]map[string]interface{}, error) {
-	mockArgs := m.Called(query, args)
-	if mockArgs.Get(0) == nil {
-		return nil, mockArgs.Error(1)
-	}
-	return mockArgs.Get(0).([]map[string]interface{}), mockArgs.Error(1)
+// Implement all other required methods with minimal behavior
+func (m *MockStorage) Connect(config storage.StorageConfig) error                 { return nil }
+func (m *MockStorage) Close() error                                               { return nil }
+func (m *MockStorage) Health() error                                              { return nil }
+func (m *MockStorage) CheckEndpointExists(endpoint string) (bool, error)          { return false, nil }
+func (m *MockStorage) GetRoute(id string, userID string) (*storage.Route, error)  { return nil, nil }
+func (m *MockStorage) GetRoutesByUser(userID string) ([]*storage.Route, error)    { return nil, nil }
+func (m *MockStorage) GetRouteByEndpoint(endpoint string) (*storage.Route, error) { return nil, nil }
+func (m *MockStorage) FindMatchingRoutes(endpoint, method string) ([]*storage.Route, error) {
+	return nil, nil
+}
+func (m *MockStorage) ListPendingDLQMessages(limit int) ([]*storage.DLQMessage, error) {
+	return nil, nil
+}
+func (m *MockStorage) UpdateRoute(route *storage.Route, userID string) error { return nil }
+func (m *MockStorage) DeleteRoute(id string, userID string) error            { return nil }
+func (m *MockStorage) CreateRoute(route *storage.Route) error                { return nil }
+func (m *MockStorage) GetRoutes() ([]*storage.Route, error)                  { return nil, nil }
+func (m *MockStorage) GetRoutesPaginated(limit, offset int) ([]*storage.Route, int, error) {
+	return nil, 0, nil
+}
+func (m *MockStorage) IsDefaultUser(userID string) (bool, error)  { return false, nil }
+func (m *MockStorage) GetSetting(key string) (string, error)      { return "", nil }
+func (m *MockStorage) SetSetting(key, value string) error         { return nil }
+func (m *MockStorage) GetAllSettings() (map[string]string, error) { return nil, nil }
+func (m *MockStorage) LogWebhook(log *storage.WebhookLog) error   { return nil }
+func (m *MockStorage) GetStats() (*storage.Stats, error)          { return nil, nil }
+func (m *MockStorage) GetWebhookLogs(routeID *string, limit int, offset int) ([]*storage.WebhookLog, error) {
+	return nil, nil
+}
+func (m *MockStorage) GetRouteStats(routeID string) (map[string]interface{}, error) { return nil, nil }
+func (m *MockStorage) CreateTrigger(trigger *storage.Trigger) error                 { return nil }
+func (m *MockStorage) GetTrigger(id string) (*storage.Trigger, error)               { return nil, nil }
+func (m *MockStorage) UpdateTrigger(trigger *storage.Trigger) error                 { return nil }
+func (m *MockStorage) DeleteTrigger(id string) error                                { return nil }
+func (m *MockStorage) GetTriggers(filters storage.TriggerFilters) ([]*storage.Trigger, error) {
+	return nil, nil
+}
+func (m *MockStorage) GetTriggersPaginated(filters storage.TriggerFilters, limit, offset int) ([]*storage.Trigger, int, error) {
+	return nil, 0, nil
+}
+func (m *MockStorage) CreatePipeline(pipeline *storage.Pipeline) error  { return nil }
+func (m *MockStorage) GetPipeline(id string) (*storage.Pipeline, error) { return nil, nil }
+func (m *MockStorage) UpdatePipeline(pipeline *storage.Pipeline) error  { return nil }
+func (m *MockStorage) DeletePipeline(id string) error                   { return nil }
+func (m *MockStorage) GetPipelines() ([]*storage.Pipeline, error)       { return nil, nil }
+func (m *MockStorage) GetPipelinesPaginated(limit, offset int) ([]*storage.Pipeline, int, error) {
+	return nil, 0, nil
+}
+func (m *MockStorage) CreateBroker(config *storage.BrokerConfig) error    { return nil }
+func (m *MockStorage) GetBroker(id string) (*storage.BrokerConfig, error) { return nil, nil }
+func (m *MockStorage) UpdateBroker(config *storage.BrokerConfig) error    { return nil }
+func (m *MockStorage) DeleteBroker(id string) error                       { return nil }
+func (m *MockStorage) GetBrokers() ([]*storage.BrokerConfig, error)       { return nil, nil }
+func (m *MockStorage) GetBrokersPaginated(limit, offset int) ([]*storage.BrokerConfig, int, error) {
+	return nil, 0, nil
+}
+func (m *MockStorage) CreateDLQMessage(message *storage.DLQMessage) error   { return nil }
+func (m *MockStorage) GetDLQMessage(id string) (*storage.DLQMessage, error) { return nil, nil }
+func (m *MockStorage) UpdateDLQMessage(message *storage.DLQMessage) error   { return nil }
+func (m *MockStorage) DeleteDLQMessage(id string) error                     { return nil }
+func (m *MockStorage) GetDLQMessages(filters map[string]interface{}, limit, offset int) ([]*storage.DLQMessage, error) {
+	return nil, nil
+}
+func (m *MockStorage) GetDLQStats() (*storage.DLQStats, error)               { return nil, nil }
+func (m *MockStorage) GetDLQStatsByRoute() ([]*storage.DLQRouteStats, error) { return nil, nil }
+func (m *MockStorage) GetDLQStatsByError() ([]*storage.DLQErrorStats, error) { return nil, nil }
+func (m *MockStorage) BeginTransaction() (storage.Transaction, error)        { return nil, nil }
+func (m *MockStorage) DeleteOldDLQMessages(before time.Time) error           { return nil }
+func (m *MockStorage) GetDLQMessageByMessageID(messageID string) (*storage.DLQMessage, error) {
+	return nil, nil
+}
+func (m *MockStorage) ListDLQMessages(limit, offset int) ([]*storage.DLQMessage, error) {
+	return nil, nil
+}
+func (m *MockStorage) ListDLQMessagesByRoute(routeID string, limit, offset int) ([]*storage.DLQMessage, error) {
+	return nil, nil
+}
+func (m *MockStorage) ListDLQMessagesByStatus(status string, limit, offset int) ([]*storage.DLQMessage, error) {
+	return nil, nil
+}
+func (m *MockStorage) ListDLQMessagesWithCount(limit, offset int) ([]*storage.DLQMessage, int, error) {
+	return nil, 0, nil
+}
+func (m *MockStorage) ListDLQMessagesByRouteWithCount(routeID string, limit, offset int) ([]*storage.DLQMessage, int, error) {
+	return nil, 0, nil
+}
+func (m *MockStorage) UpdateDLQMessageStatus(id string, status string) error   { return nil }
+func (m *MockStorage) Transaction(fn func(tx storage.Transaction) error) error { return nil }
+
+// MockRedisClient is a mock implementation of the Redis client interface
+type MockRedisClient struct {
+	mock.Mock
 }
 
-// Implement all other required methods with minimal behavior
-func (m *MockStorage) Connect(config storage.StorageConfig) error { return nil }
-func (m *MockStorage) Close() error { return nil }
+func (m *MockRedisClient) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
+	args := m.Called(ctx, key, value, expiration)
+	return args.Error(0)
+}
+
+func (m *MockRedisClient) Get(ctx context.Context, key string) (string, error) {
+	args := m.Called(ctx, key)
+	return args.String(0), args.Error(1)
+}
 
 // setupAuthTest creates a standardized test setup for auth tests
 func setupAuthTest(t *testing.T) (*auth.Auth, *MockStorage, *MockRedisClient) {
@@ -63,70 +185,11 @@ func setupAuthTest(t *testing.T) (*auth.Auth, *MockStorage, *MockRedisClient) {
 // createTestUser creates a standard test user for consistent testing
 func createTestUser() *storage.User {
 	return &storage.User{
-		ID:        1,
+		ID:        "test-user-id",
 		Username:  "testuser",
 		IsDefault: false,
 	}
 }
-func (m *MockStorage) Health() error { return nil }
-func (m *MockStorage) CreateRoute(route *storage.Route) error { return nil }
-func (m *MockStorage) GetRoute(id int) (*storage.Route, error) { return nil, nil }
-func (m *MockStorage) GetRoutes() ([]*storage.Route, error) { return nil, nil }
-func (m *MockStorage) UpdateRoute(route *storage.Route) error { return nil }
-func (m *MockStorage) DeleteRoute(id int) error { return nil }
-func (m *MockStorage) FindMatchingRoutes(endpoint, method string) ([]*storage.Route, error) { return nil, nil }
-func (m *MockStorage) IsDefaultUser(userID int) (bool, error) { return false, nil }
-func (m *MockStorage) GetSetting(key string) (string, error) { return "", nil }
-func (m *MockStorage) SetSetting(key, value string) error { return nil }
-func (m *MockStorage) GetAllSettings() (map[string]string, error) { return nil, nil }
-func (m *MockStorage) LogWebhook(log *storage.WebhookLog) error { return nil }
-func (m *MockStorage) GetStats() (*storage.Stats, error) { return nil, nil }
-func (m *MockStorage) GetRouteStats(routeID int) (map[string]interface{}, error) { return nil, nil }
-func (m *MockStorage) CreateTrigger(trigger *storage.Trigger) error { return nil }
-func (m *MockStorage) GetTrigger(id int) (*storage.Trigger, error) { return nil, nil }
-func (m *MockStorage) GetTriggers(filters storage.TriggerFilters) ([]*storage.Trigger, error) { return nil, nil }
-func (m *MockStorage) UpdateTrigger(trigger *storage.Trigger) error { return nil }
-func (m *MockStorage) DeleteTrigger(id int) error { return nil }
-func (m *MockStorage) CreatePipeline(pipeline *storage.Pipeline) error { return nil }
-func (m *MockStorage) GetPipeline(id int) (*storage.Pipeline, error) { return nil, nil }
-func (m *MockStorage) GetPipelines() ([]*storage.Pipeline, error) { return nil, nil }
-func (m *MockStorage) UpdatePipeline(pipeline *storage.Pipeline) error { return nil }
-func (m *MockStorage) DeletePipeline(id int) error { return nil }
-func (m *MockStorage) CreateBroker(broker *storage.BrokerConfig) error { return nil }
-func (m *MockStorage) GetBroker(id int) (*storage.BrokerConfig, error) { return nil, nil }
-func (m *MockStorage) GetBrokers() ([]*storage.BrokerConfig, error) { return nil, nil }
-func (m *MockStorage) UpdateBroker(broker *storage.BrokerConfig) error { return nil }
-func (m *MockStorage) DeleteBroker(id int) error { return nil }
-func (m *MockStorage) CreateDLQMessage(message *storage.DLQMessage) error { return nil }
-func (m *MockStorage) GetDLQMessage(id int) (*storage.DLQMessage, error) { return nil, nil }
-func (m *MockStorage) GetDLQMessageByMessageID(messageID string) (*storage.DLQMessage, error) { return nil, nil }
-func (m *MockStorage) ListPendingDLQMessages(limit int) ([]*storage.DLQMessage, error) { return nil, nil }
-func (m *MockStorage) ListDLQMessages(limit, offset int) ([]*storage.DLQMessage, error) { return nil, nil }
-func (m *MockStorage) ListDLQMessagesByRoute(routeID int, limit, offset int) ([]*storage.DLQMessage, error) { return nil, nil }
-func (m *MockStorage) ListDLQMessagesByStatus(status string, limit, offset int) ([]*storage.DLQMessage, error) { return nil, nil }
-func (m *MockStorage) UpdateDLQMessage(message *storage.DLQMessage) error { return nil }
-func (m *MockStorage) UpdateDLQMessageStatus(id int, status string) error { return nil }
-func (m *MockStorage) DeleteDLQMessage(id int) error { return nil }
-func (m *MockStorage) DeleteOldDLQMessages(before time.Time) error { return nil }
-func (m *MockStorage) GetDLQStats() (*storage.DLQStats, error) { return nil, nil }
-func (m *MockStorage) GetDLQStatsByRoute() ([]*storage.DLQRouteStats, error) { return nil, nil }
-func (m *MockStorage) Transaction(fn func(tx storage.Transaction) error) error { return nil }
-
-// MockRedisClient is a mock implementation of the Redis client
-type MockRedisClient struct {
-	mock.Mock
-}
-
-func (m *MockRedisClient) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
-	args := m.Called(ctx, key, value, expiration)
-	return args.Error(0)
-}
-
-func (m *MockRedisClient) Get(ctx context.Context, key string) (string, error) {
-	args := m.Called(ctx, key)
-	return args.String(0), args.Error(1)
-}
-
 func TestNew(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -176,19 +239,19 @@ func TestGenerateJWT(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		userID    int
+		userID    string
 		username  string
 		isDefault bool
 	}{
 		{
 			name:      "regular user",
-			userID:    1,
+			userID:    "test-user-id",
 			username:  "testuser",
 			isDefault: false,
 		},
 		{
 			name:      "default user",
-			userID:    2,
+			userID:    "admin-user-id",
 			username:  "admin",
 			isDefault: true,
 		},
@@ -227,15 +290,15 @@ func TestValidateJWT(t *testing.T) {
 	authService := auth.New(mockStorage, cfg, mockRedis)
 
 	// Generate a valid token
-	validToken, _ := authService.GenerateJWT(1, "testuser", false)
+	validToken, _ := authService.GenerateJWT("test-user-id", "testuser", false)
 
 	// Generate a token with different secret
 	wrongAuth := auth.New(mockStorage, &config.Config{JWTSecret: "different-secret-key-that-is-wrong"}, nil)
-	wrongSecretToken, _ := wrongAuth.GenerateJWT(1, "testuser", false)
+	wrongSecretToken, _ := wrongAuth.GenerateJWT("test-user-id", "testuser", false)
 
 	// Generate an expired token
 	expiredClaims := &auth.Claims{
-		UserID:   1,
+		UserID:   "test-user-id",
 		Username: "testuser",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Hour)),
@@ -313,7 +376,7 @@ func TestValidateJWT(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, claims)
-				assert.Equal(t, 1, claims.UserID)
+				assert.Equal(t, "test-user-id", claims.UserID)
 				assert.Equal(t, "testuser", claims.Username)
 			}
 		})
@@ -328,13 +391,13 @@ func TestValidateJWT_NoRedis(t *testing.T) {
 	// Create auth without Redis client
 	authService := auth.New(mockStorage, cfg, nil)
 
-	validToken, _ := authService.GenerateJWT(1, "testuser", false)
+	validToken, _ := authService.GenerateJWT("test-user-id", "testuser", false)
 
 	// Should work without Redis
 	claims, err := authService.ValidateJWT(validToken)
 	assert.NoError(t, err)
 	assert.NotNil(t, claims)
-	assert.Equal(t, 1, claims.UserID)
+	assert.Equal(t, "test-user-id", claims.UserID)
 }
 
 func TestLogin(t *testing.T) {
@@ -358,7 +421,7 @@ func TestLogin(t *testing.T) {
 			username: "testuser",
 			password: "password123",
 			mockUser: &storage.User{
-				ID:        1,
+				ID:        "test-user-id",
 				Username:  "testuser",
 				IsDefault: false,
 			},
@@ -378,7 +441,7 @@ func TestLogin(t *testing.T) {
 			username: "admin",
 			password: "admin123",
 			mockUser: &storage.User{
-				ID:        2,
+				ID:        "admin-user-id",
 				Username:  "admin",
 				IsDefault: true,
 			},
@@ -430,11 +493,11 @@ func TestLogout(t *testing.T) {
 	authService := auth.New(mockStorage, cfg, mockRedis)
 
 	// Generate tokens for testing
-	validToken, _ := authService.GenerateJWT(1, "testuser", false)
-	
+	validToken, _ := authService.GenerateJWT("test-user-id", "testuser", false)
+
 	// Generate an expired token
 	expiredClaims := &auth.Claims{
-		UserID:   1,
+		UserID:   "test-user-id",
 		Username: "testuser",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Hour)),
@@ -500,7 +563,7 @@ func TestLogout(t *testing.T) {
 			// Reset mock expectations
 			mockRedis.ExpectedCalls = nil
 			mockRedis.Calls = nil
-			
+
 			tt.setupMocks()
 
 			err := authService.Logout(tt.token)
@@ -524,7 +587,7 @@ func TestLogout_NoRedis(t *testing.T) {
 	// Create auth without Redis client
 	authService := auth.New(mockStorage, cfg, nil)
 
-	validToken, _ := authService.GenerateJWT(1, "testuser", false)
+	validToken, _ := authService.GenerateJWT("test-user-id", "testuser", false)
 
 	// Should succeed without Redis (stateless logout)
 	err := authService.Logout(validToken)
@@ -539,19 +602,19 @@ func TestValidateSession(t *testing.T) {
 	}
 	authService := auth.New(mockStorage, cfg, mockRedis)
 
-	validToken, _ := authService.GenerateJWT(1, "testuser", false)
+	validToken, _ := authService.GenerateJWT("test-user-id", "testuser", false)
 
 	tests := []struct {
 		name           string
 		token          string
 		expectedValid  bool
-		expectedUserID int
+		expectedUserID string
 	}{
 		{
 			name:           "valid token",
 			token:          validToken,
 			expectedValid:  true,
-			expectedUserID: 1,
+			expectedUserID: "test-user-id",
 		},
 		{
 			name:          "invalid token",
@@ -593,8 +656,8 @@ func TestRequireAuth(t *testing.T) {
 	}
 	authService := auth.New(mockStorage, cfg, mockRedis)
 
-	validToken, _ := authService.GenerateJWT(1, "testuser", false)
-	adminToken, _ := authService.GenerateJWT(2, "admin", true)
+	validToken, _ := authService.GenerateJWT("test-user-id", "testuser", false)
+	adminToken, _ := authService.GenerateJWT("admin-user-id", "admin", true)
 
 	// Create a test handler that will be wrapped
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -602,7 +665,7 @@ func TestRequireAuth(t *testing.T) {
 		userID := r.Header.Get("X-User-ID")
 		username := r.Header.Get("X-Username")
 		isDefault := r.Header.Get("X-Is-Default")
-		
+
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "UserID: %s, Username: %s, IsDefault: %s", userID, username, isDefault)
 	})
@@ -610,22 +673,22 @@ func TestRequireAuth(t *testing.T) {
 	protectedHandler := authService.RequireAuth(testHandler)
 
 	tests := []struct {
-		name               string
-		authHeader         string
-		cookieToken        string
-		path               string
-		expectedStatus     int
-		expectedLocation   string
-		expectedUserID     string
-		expectedIsDefault  string
-		setupMocks         func()
+		name              string
+		authHeader        string
+		cookieToken       string
+		path              string
+		expectedStatus    int
+		expectedLocation  string
+		expectedUserID    string
+		expectedIsDefault string
+		setupMocks        func()
 	}{
 		{
 			name:              "valid bearer token",
 			authHeader:        "Bearer " + validToken,
 			path:              "/api/test",
 			expectedStatus:    http.StatusOK,
-			expectedUserID:    "1",
+			expectedUserID:    "test-user-id",
 			expectedIsDefault: "",
 			setupMocks: func() {
 				blacklistKey := fmt.Sprintf("jwt:blacklist:%s", validToken)
@@ -637,7 +700,7 @@ func TestRequireAuth(t *testing.T) {
 			cookieToken:       validToken,
 			path:              "/dashboard",
 			expectedStatus:    http.StatusOK,
-			expectedUserID:    "1",
+			expectedUserID:    "test-user-id",
 			expectedIsDefault: "",
 			setupMocks: func() {
 				blacklistKey := fmt.Sprintf("jwt:blacklist:%s", validToken)
@@ -649,7 +712,7 @@ func TestRequireAuth(t *testing.T) {
 			authHeader:        "Bearer " + adminToken,
 			path:              "/api/admin",
 			expectedStatus:    http.StatusOK,
-			expectedUserID:    "2",
+			expectedUserID:    "admin-user-id",
 			expectedIsDefault: "true",
 			setupMocks: func() {
 				blacklistKey := fmt.Sprintf("jwt:blacklist:%s", adminToken)
@@ -657,10 +720,10 @@ func TestRequireAuth(t *testing.T) {
 			},
 		},
 		{
-			name:             "missing auth - API endpoint",
-			path:             "/api/test",
-			expectedStatus:   http.StatusUnauthorized,
-			setupMocks:       func() {},
+			name:           "missing auth - API endpoint",
+			path:           "/api/test",
+			expectedStatus: http.StatusUnauthorized,
+			setupMocks:     func() {},
 		},
 		{
 			name:             "missing auth - web endpoint",
@@ -696,7 +759,7 @@ func TestRequireAuth(t *testing.T) {
 			// Reset mock expectations
 			mockRedis.ExpectedCalls = nil
 			mockRedis.Calls = nil
-			
+
 			tt.setupMocks()
 
 			req := httptest.NewRequest("GET", tt.path, nil)
@@ -759,7 +822,7 @@ func TestChangePassword(t *testing.T) {
 			username:    "testuser",
 			newPassword: "newpassword123",
 			queryResult: []map[string]interface{}{
-				{"id": int64(1)},
+				{"id": "test-user-id"},
 			},
 			queryError:    nil,
 			updateError:   nil,
@@ -788,7 +851,7 @@ func TestChangePassword(t *testing.T) {
 			username:    "testuser",
 			newPassword: "newpassword123",
 			queryResult: []map[string]interface{}{
-				{"id": int64(1)},
+				{"id": "test-user-id"},
 			},
 			queryError:    nil,
 			updateError:   fmt.Errorf("update failed"),
@@ -799,7 +862,7 @@ func TestChangePassword(t *testing.T) {
 			username:    "testuser",
 			newPassword: "newpassword123",
 			queryResult: []map[string]interface{}{
-				{"id": "not-an-int"},
+				{"id": 123}, // Returning int instead of string
 			},
 			queryError:    nil,
 			expectedError: true,
@@ -812,9 +875,11 @@ func TestChangePassword(t *testing.T) {
 			mockStorage.On("Query", "SELECT id FROM users WHERE username = ?", []interface{}{tt.username}).
 				Return(tt.queryResult, tt.queryError).Once()
 
-			if tt.queryError == nil && len(tt.queryResult) > 0 && tt.queryResult[0]["id"] != "not-an-int" {
-				mockStorage.On("UpdateUserCredentials", 1, tt.username, tt.newPassword).
-					Return(tt.updateError).Once()
+			if tt.queryError == nil && len(tt.queryResult) > 0 {
+				if userIDStr, ok := tt.queryResult[0]["id"].(string); ok {
+					mockStorage.On("UpdateUserCredentials", userIDStr, tt.username, tt.newPassword).
+						Return(tt.updateError).Once()
+				}
 			}
 
 			err := authService.ChangePassword(tt.username, tt.newPassword)

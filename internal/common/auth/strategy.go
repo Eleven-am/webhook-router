@@ -45,7 +45,7 @@ type AuthStrategy interface {
 	//   - APIKey: "key_name", "key_value"
 	//   - HMAC: "secret", "algorithm" (optional)
 	Authenticate(r *http.Request, settings map[string]string) error
-	
+
 	// GetType returns the unique identifier for this authentication strategy.
 	// Used for strategy registration and configuration matching.
 	GetType() string
@@ -78,34 +78,34 @@ func (s *BasicAuthStrategy) GetType() string {
 func (s *BasicAuthStrategy) Authenticate(r *http.Request, settings map[string]string) error {
 	username := settings["username"]
 	password := settings["password"]
-	
+
 	if username == "" || password == "" {
 		return errors.ConfigError("basic auth requires username and password")
 	}
-	
+
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return errors.AuthError("missing Authorization header")
 	}
-	
+
 	if !strings.HasPrefix(authHeader, "Basic ") {
 		return errors.AuthError("invalid Authorization header format")
 	}
-	
+
 	payload, err := base64.StdEncoding.DecodeString(authHeader[6:])
 	if err != nil {
 		return errors.AuthError("invalid basic auth encoding")
 	}
-	
+
 	pair := strings.SplitN(string(payload), ":", 2)
 	if len(pair) != 2 {
 		return errors.AuthError("invalid basic auth format")
 	}
-	
+
 	if pair[0] != username || pair[1] != password {
 		return errors.AuthError("invalid credentials")
 	}
-	
+
 	return nil
 }
 
@@ -137,21 +137,21 @@ func (s *BearerAuthStrategy) Authenticate(r *http.Request, settings map[string]s
 	if token == "" {
 		return errors.ConfigError("bearer auth requires token")
 	}
-	
+
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return errors.AuthError("missing Authorization header")
 	}
-	
+
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		return errors.AuthError("invalid Authorization header format")
 	}
-	
+
 	providedToken := authHeader[7:]
 	if providedToken != token {
 		return errors.AuthError("invalid token")
 	}
-	
+
 	return nil
 }
 
@@ -166,7 +166,7 @@ func (s *BearerAuthStrategy) Authenticate(r *http.Request, settings map[string]s
 //
 // Optional settings:
 //   - "location": Where to look for the key ("header", "query", "body")
-//                 Defaults to "header" if not specified
+//     Defaults to "header" if not specified
 //
 // Security considerations:
 //   - API keys should be transmitted over HTTPS only
@@ -188,19 +188,19 @@ func (s *APIKeyAuthStrategy) Authenticate(r *http.Request, settings map[string]s
 	if apiKey == "" {
 		return errors.ConfigError("apikey auth requires api_key")
 	}
-	
+
 	location := settings["location"]
 	if location == "" {
 		location = "header"
 	}
-	
+
 	keyName := settings["key_name"]
 	if keyName == "" {
 		keyName = "X-API-Key"
 	}
-	
+
 	var providedKey string
-	
+
 	switch location {
 	case "header":
 		providedKey = r.Header.Get(keyName)
@@ -209,15 +209,15 @@ func (s *APIKeyAuthStrategy) Authenticate(r *http.Request, settings map[string]s
 	default:
 		return errors.ConfigError("invalid api key location: must be 'header' or 'query'")
 	}
-	
+
 	if providedKey == "" {
 		return errors.AuthError(fmt.Sprintf("missing API key in %s: %s", location, keyName))
 	}
-	
+
 	if providedKey != apiKey {
 		return errors.AuthError("invalid API key")
 	}
-	
+
 	return nil
 }
 
@@ -240,8 +240,9 @@ func (s *APIKeyAuthStrategy) Authenticate(r *http.Request, settings map[string]s
 //   - Validates signature format and encoding
 //
 // Signature format:
-//   The signature should be provided as "sha256=<hex_signature>" or
-//   "sha256=<base64_signature>" in the configured header.
+//
+//	The signature should be provided as "sha256=<hex_signature>" or
+//	"sha256=<base64_signature>" in the configured header.
 type HMACAuthStrategy struct{}
 
 // GetType returns the authentication type identifier.
@@ -258,37 +259,37 @@ func (s *HMACAuthStrategy) Authenticate(r *http.Request, settings map[string]str
 	if secret == "" {
 		return errors.ConfigError("hmac auth requires secret")
 	}
-	
+
 	signatureHeader := settings["signature_header"]
 	if signatureHeader == "" {
 		signatureHeader = "X-Signature"
 	}
-	
+
 	algorithm := settings["algorithm"]
 	if algorithm == "" {
 		algorithm = "sha256"
 	}
-	
+
 	if algorithm != "sha256" {
 		return errors.ConfigError("only sha256 algorithm is currently supported")
 	}
-	
+
 	providedSignature := r.Header.Get(signatureHeader)
 	if providedSignature == "" {
 		return errors.AuthError(fmt.Sprintf("missing signature header: %s", signatureHeader))
 	}
-	
+
 	// Read request body
 	body, err := readBody(r)
 	if err != nil {
 		return errors.InternalError("failed to read request body", err)
 	}
-	
+
 	// Calculate expected signature
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write(body)
 	expectedSignature := hex.EncodeToString(h.Sum(nil))
-	
+
 	// Support both hex and base64 encoded signatures
 	if providedSignature != expectedSignature {
 		// Try base64
@@ -296,11 +297,11 @@ func (s *HMACAuthStrategy) Authenticate(r *http.Request, settings map[string]str
 			providedSignature = hex.EncodeToString(decoded)
 		}
 	}
-	
+
 	if !hmac.Equal([]byte(providedSignature), []byte(expectedSignature)) {
 		return errors.AuthError("invalid signature")
 	}
-	
+
 	return nil
 }
 
@@ -317,7 +318,7 @@ type AuthenticatorRegistry struct {
 //
 // The registry is pre-populated with all built-in authentication strategies:
 //   - "basic": BasicAuthStrategy
-//   - "bearer": BearerAuthStrategy  
+//   - "bearer": BearerAuthStrategy
 //   - "apikey": APIKeyAuthStrategy
 //   - "hmac": HMACAuthStrategy
 //
@@ -350,7 +351,7 @@ func (a *AuthenticatorRegistry) Authenticate(authType string, r *http.Request, s
 	if !exists {
 		return errors.ConfigError(fmt.Sprintf("unsupported auth type: %s", authType))
 	}
-	
+
 	return strategy.Authenticate(r, settings)
 }
 
@@ -376,13 +377,13 @@ func readBody(r *http.Request) ([]byte, error) {
 	// 1. Use io.TeeReader to avoid consuming the body
 	// 2. Implement body size limits
 	// 3. Handle different content types
-	
+
 	// For now, we'll assume the body has been read and stored elsewhere
 	// This would typically be done by middleware
-	
+
 	if bodyBytes, ok := r.Context().Value("body").([]byte); ok {
 		return bodyBytes, nil
 	}
-	
+
 	return nil, fmt.Errorf("body not available in context")
 }

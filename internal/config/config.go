@@ -29,8 +29,12 @@
 //   - REDIS_POOL_SIZE: Redis connection pool size (default: 10)
 //
 // Security Configuration:
-//   - JWT_SECRET: JWT signing secret (required, minimum 32 characters)
-//   - CONFIG_ENCRYPTION_KEY: Encryption key for sensitive data (32 characters if provided)
+//   - ENCRYPTION_KEY: Master encryption key for JWT signing and sensitive data encryption (required, minimum 32 characters)
+//   - JWT_SECRET: (Deprecated) JWT signing secret - use ENCRYPTION_KEY instead
+//   - CONFIG_ENCRYPTION_KEY: (Deprecated) Encryption key for sensitive data - use ENCRYPTION_KEY instead
+//
+// Frontend Configuration:
+//   - FRONTEND_BASE_URL: Base URL for frontend application (default: http://localhost:5173)
 //
 // Rate Limiting:
 //   - RATE_LIMIT_ENABLED: Enable rate limiting (default: true)
@@ -40,6 +44,18 @@
 // Message Queue:
 //   - RABBITMQ_URL: RabbitMQ connection URL
 //   - DEFAULT_QUEUE: Default queue name (default: webhooks)
+//
+// Email/SMTP Configuration:
+//   - SMTP_ENABLED: Enable SMTP email sending (default: false)
+//   - SMTP_HOST: SMTP server hostname (required if SMTP_ENABLED)
+//   - SMTP_PORT: SMTP server port (default: 587)
+//   - SMTP_USERNAME: SMTP authentication username
+//   - SMTP_PASSWORD: SMTP authentication password
+//   - SMTP_FROM: Sender email address (default: noreply@webhook-router.local)
+//   - SMTP_FROM_NAME: Sender display name (default: Webhook Router)
+//   - SMTP_USE_TLS: Use STARTTLS (default: true)
+//   - SMTP_USE_SSL: Use implicit SSL/TLS (default: false)
+//   - SMTP_SKIP_VERIFY: Skip TLS certificate verification (default: false, not recommended)
 //
 // Example usage:
 //
@@ -58,10 +74,10 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 	"time"
+	"webhook-router/internal/common/errors"
 )
 
 // Config holds all configuration values for the webhook router application.
@@ -77,18 +93,18 @@ type Config struct {
 	RabbitMQURL  string // RabbitMQ connection URL
 	DefaultQueue string // Default message queue name
 	LogLevel     string // Logging level (debug, info, warn, error)
-	
+
 	// Redis configuration for distributed coordination
-	RedisAddress    string // Redis server address (host:port)
-	RedisPassword   string // Redis authentication password
-	RedisDB         string // Redis database number (0-15)
-	RedisPoolSize   string // Redis connection pool size
-	
+	RedisAddress  string // Redis server address (host:port)
+	RedisPassword string // Redis authentication password
+	RedisDB       string // Redis database number (0-15)
+	RedisPoolSize string // Redis connection pool size
+
 	// Rate limiting configuration
 	RateLimitEnabled bool   // Whether rate limiting is enabled
 	RateLimitDefault string // Default requests per window
 	RateLimitWindow  string // Rate limiting time window (e.g., "60s", "1m")
-	
+
 	// Database configuration for PostgreSQL
 	DatabaseType     string // Database type: "sqlite" or "postgres"
 	PostgresHost     string // PostgreSQL host address
@@ -97,12 +113,30 @@ type Config struct {
 	PostgresUser     string // PostgreSQL username
 	PostgresPassword string // PostgreSQL password
 	PostgresSSLMode  string // PostgreSQL SSL mode (disable, require, etc.)
-	
+
+	// Migration-specific database configuration
+	MigrationDatabaseURL string // Direct PostgreSQL URL for migrations (bypasses PgBouncer)
+
 	// JWT authentication configuration
-	JWTSecret        string // Secret key for JWT token signing (required)
-	
+	JWTSecret string // Secret key for JWT token signing (required)
+
 	// Encryption configuration
-	EncryptionKey    string // Key for encrypting sensitive configuration data
+	EncryptionKey string // Key for encrypting sensitive configuration data
+
+	// Frontend configuration
+	FrontendBaseURL string // Base URL for frontend application (for password reset links, etc.)
+
+	// SMTP configuration for email notifications
+	SMTPEnabled    bool   // Whether SMTP email sending is enabled
+	SMTPHost       string // SMTP server hostname
+	SMTPPort       string // SMTP server port (usually 25, 465, 587, or 2525)
+	SMTPUsername   string // SMTP authentication username
+	SMTPPassword   string // SMTP authentication password
+	SMTPFrom       string // Default sender email address
+	SMTPFromName   string // Default sender name
+	SMTPUseTLS     bool   // Whether to use TLS (STARTTLS)
+	SMTPUseSSL     bool   // Whether to use SSL/TLS (implicit TLS)
+	SMTPSkipVerify bool   // Whether to skip TLS certificate verification (not recommended for production)
 }
 
 // Load creates a new Config instance with values loaded from environment variables.
@@ -130,32 +164,48 @@ func Load() *Config {
 		RabbitMQURL:  getEnv("RABBITMQ_URL", ""),
 		DefaultQueue: getEnv("DEFAULT_QUEUE", "webhooks"),
 		LogLevel:     getEnv("LOG_LEVEL", "info"),
-		
+
 		// Redis configuration
-		RedisAddress:    getEnv("REDIS_ADDRESS", "localhost:6379"),
-		RedisPassword:   getEnv("REDIS_PASSWORD", ""),
-		RedisDB:         getEnv("REDIS_DB", "0"),
-		RedisPoolSize:   getEnv("REDIS_POOL_SIZE", "10"),
-		
+		RedisAddress:  getEnv("REDIS_ADDRESS", "localhost:6379"),
+		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+		RedisDB:       getEnv("REDIS_DB", "0"),
+		RedisPoolSize: getEnv("REDIS_POOL_SIZE", "10"),
+
 		// Rate limiting configuration
 		RateLimitEnabled: getBoolEnv("RATE_LIMIT_ENABLED", true),
 		RateLimitDefault: getEnv("RATE_LIMIT_DEFAULT", "100"),
 		RateLimitWindow:  getEnv("RATE_LIMIT_WINDOW", "60s"),
-		
+
 		// Database configuration
-		DatabaseType:     getEnv("DATABASE_TYPE", "sqlite"),
-		PostgresHost:     getEnv("POSTGRES_HOST", "localhost"),
-		PostgresPort:     getEnv("POSTGRES_PORT", "5432"),
-		PostgresDB:       getEnv("POSTGRES_DB", "webhook_router"),
-		PostgresUser:     getEnv("POSTGRES_USER", "postgres"),
-		PostgresPassword: getEnv("POSTGRES_PASSWORD", ""),
-		PostgresSSLMode:  getEnv("POSTGRES_SSL_MODE", "disable"),
-		
-		// JWT configuration
-		JWTSecret:        getEnv("JWT_SECRET", ""),
-		
-		// Encryption configuration
-		EncryptionKey:    getEnv("CONFIG_ENCRYPTION_KEY", ""),
+		DatabaseType:         getEnv("DATABASE_TYPE", "sqlite"),
+		PostgresHost:         getEnv("POSTGRES_HOST", "localhost"),
+		PostgresPort:         getEnv("POSTGRES_PORT", "5432"),
+		PostgresDB:           getEnv("POSTGRES_DB", "webhook_router"),
+		PostgresUser:         getEnv("POSTGRES_USER", "postgres"),
+		PostgresPassword:     getEnv("POSTGRES_PASSWORD", ""),
+		PostgresSSLMode:      getEnv("POSTGRES_SSL_MODE", "disable"),
+		MigrationDatabaseURL: getEnv("MIGRATION_DATABASE_URL", ""),
+
+		// JWT configuration - using ENCRYPTION_KEY for backwards compatibility
+		JWTSecret: getEnv("ENCRYPTION_KEY", getEnv("JWT_SECRET", "")),
+
+		// Encryption configuration - using ENCRYPTION_KEY as primary, CONFIG_ENCRYPTION_KEY for backwards compatibility
+		EncryptionKey: getEnv("ENCRYPTION_KEY", getEnv("CONFIG_ENCRYPTION_KEY", "")),
+
+		// Frontend configuration
+		FrontendBaseURL: getEnv("FRONTEND_BASE_URL", "http://localhost:5173"),
+
+		// SMTP configuration
+		SMTPEnabled:    getBoolEnv("SMTP_ENABLED", false),
+		SMTPHost:       getEnv("SMTP_HOST", ""),
+		SMTPPort:       getEnv("SMTP_PORT", "587"),
+		SMTPUsername:   getEnv("SMTP_USERNAME", ""),
+		SMTPPassword:   getEnv("SMTP_PASSWORD", ""),
+		SMTPFrom:       getEnv("SMTP_FROM", "noreply@webhook-router.local"),
+		SMTPFromName:   getEnv("SMTP_FROM_NAME", "Webhook Router"),
+		SMTPUseTLS:     getBoolEnv("SMTP_USE_TLS", true),
+		SMTPUseSSL:     getBoolEnv("SMTP_USE_SSL", false),
+		SMTPSkipVerify: getBoolEnv("SMTP_SKIP_VERIFY", false),
 	}
 }
 
@@ -219,71 +269,93 @@ func getBoolEnv(key string, defaultValue bool) bool {
 //	}
 //	// Configuration is safe to use
 func (c *Config) Validate() error {
-	// Validate required fields
+	// Validate required fields - JWTSecret is now populated from ENCRYPTION_KEY
 	if c.JWTSecret == "" {
-		return fmt.Errorf("JWT_SECRET environment variable is required")
+		return errors.ConfigError("ENCRYPTION_KEY environment variable is required (or JWT_SECRET for backwards compatibility)")
 	}
-	
+
 	// Validate JWT secret length
 	if len(c.JWTSecret) < 32 {
-		return fmt.Errorf("JWT_SECRET must be at least 32 characters long for security")
+		return errors.ConfigError("ENCRYPTION_KEY must be at least 32 characters long for security")
 	}
-	
+
 	// Validate port
 	if port, err := strconv.Atoi(c.Port); err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("PORT must be a valid port number between 1 and 65535")
+		return errors.ConfigError("PORT must be a valid port number between 1 and 65535")
 	}
-	
+
 	// Validate database type
 	switch c.DatabaseType {
 	case "sqlite", "postgres", "postgresql":
 		// Valid database types
 	default:
-		return fmt.Errorf("DATABASE_TYPE must be 'sqlite' or 'postgres'")
+		return errors.ConfigError("DATABASE_TYPE must be 'sqlite' or 'postgres'")
 	}
-	
+
 	// Validate PostgreSQL config if using PostgreSQL
 	if c.DatabaseType == "postgres" || c.DatabaseType == "postgresql" {
 		if c.PostgresHost == "" {
-			return fmt.Errorf("POSTGRES_HOST is required when using PostgreSQL")
+			return errors.ConfigError("POSTGRES_HOST is required when using PostgreSQL")
 		}
 		if c.PostgresDB == "" {
-			return fmt.Errorf("POSTGRES_DB is required when using PostgreSQL")
+			return errors.ConfigError("POSTGRES_DB is required when using PostgreSQL")
 		}
 		if c.PostgresUser == "" {
-			return fmt.Errorf("POSTGRES_USER is required when using PostgreSQL")
+			return errors.ConfigError("POSTGRES_USER is required when using PostgreSQL")
 		}
 		// Validate PostgreSQL port
 		if port, err := strconv.Atoi(c.PostgresPort); err != nil || port < 1 || port > 65535 {
-			return fmt.Errorf("POSTGRES_PORT must be a valid port number")
+			return errors.ConfigError("POSTGRES_PORT must be a valid port number")
 		}
 	}
-	
+
 	// Validate Redis config if provided
 	if c.RedisAddress != "" {
 		if db, err := strconv.Atoi(c.RedisDB); err != nil || db < 0 || db > 15 {
-			return fmt.Errorf("REDIS_DB must be a number between 0 and 15")
+			return errors.ConfigError("REDIS_DB must be a number between 0 and 15")
 		}
 		if poolSize, err := strconv.Atoi(c.RedisPoolSize); err != nil || poolSize < 1 {
-			return fmt.Errorf("REDIS_POOL_SIZE must be a positive number")
+			return errors.ConfigError("REDIS_POOL_SIZE must be a positive number")
 		}
 	}
-	
+
 	// Validate rate limit config
 	if c.RateLimitEnabled {
 		if limit, err := strconv.Atoi(c.RateLimitDefault); err != nil || limit < 1 {
-			return fmt.Errorf("RATE_LIMIT_DEFAULT must be a positive number")
+			return errors.ConfigError("RATE_LIMIT_DEFAULT must be a positive number")
 		}
 		// Validate rate limit window format
 		if _, err := time.ParseDuration(c.RateLimitWindow); err != nil {
-			return fmt.Errorf("RATE_LIMIT_WINDOW must be a valid duration (e.g., '60s', '1m')")
+			return errors.ConfigError("RATE_LIMIT_WINDOW must be a valid duration (e.g., '60s', '1m')")
 		}
 	}
-	
+
 	// Validate encryption key if provided
-	if c.EncryptionKey != "" && len(c.EncryptionKey) != 32 {
-		return fmt.Errorf("CONFIG_ENCRYPTION_KEY must be exactly 32 characters (256 bits) when provided")
+	if c.EncryptionKey != "" && len(c.EncryptionKey) < 32 {
+		return errors.ConfigError("ENCRYPTION_KEY must be at least 32 characters (256 bits) when provided")
 	}
-	
+
+	// Validate SMTP configuration if enabled
+	if c.SMTPEnabled {
+		if c.SMTPHost == "" {
+			return errors.ConfigError("SMTP_HOST is required when SMTP_ENABLED is true")
+		}
+
+		// Validate SMTP port
+		if port, err := strconv.Atoi(c.SMTPPort); err != nil || port < 1 || port > 65535 {
+			return errors.ConfigError("SMTP_PORT must be a valid port number between 1 and 65535")
+		}
+
+		// Validate from email address format (basic check)
+		if c.SMTPFrom == "" {
+			return errors.ConfigError("SMTP_FROM is required when SMTP_ENABLED is true")
+		}
+
+		// Warn about conflicting SSL/TLS settings
+		if c.SMTPUseSSL && c.SMTPUseTLS {
+			return errors.ConfigError("SMTP_USE_SSL and SMTP_USE_TLS cannot both be true - choose one")
+		}
+	}
+
 	return nil
 }

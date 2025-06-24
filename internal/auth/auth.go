@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -27,7 +26,7 @@ type Auth struct {
 }
 
 type Claims struct {
-	UserID    int    `json:"user_id"`
+	UserID    string `json:"user_id"`
 	Username  string `json:"username"`
 	IsDefault bool   `json:"is_default"`
 	jwt.RegisteredClaims
@@ -35,15 +34,15 @@ type Claims struct {
 
 // Session struct kept for compatibility with existing handlers
 type Session struct {
-	UserID    int
+	UserID    string
 	Username  string
 	IsDefault bool
 	ExpiresAt time.Time
 }
 
-func New(storage storage.Storage, cfg *config.Config, redisClient RedisClient) *Auth {
+func New(storage storage.Storage, cfg *config.Config, redisClient RedisClient) (*Auth, error) {
 	if cfg.JWTSecret == "" {
-		log.Fatal("JWT_SECRET environment variable is required")
+		return nil, errors.ConfigError("JWT_SECRET environment variable is required")
 	}
 	jwtSecret := []byte(cfg.JWTSecret)
 
@@ -51,10 +50,10 @@ func New(storage storage.Storage, cfg *config.Config, redisClient RedisClient) *
 		storage:     storage,
 		jwtSecret:   jwtSecret,
 		redisClient: redisClient,
-	}
+	}, nil
 }
 
-func (a *Auth) GenerateJWT(userID int, username string, isDefault bool) (string, error) {
+func (a *Auth) GenerateJWT(userID string, username string, isDefault bool) (string, error) {
 	claims := &Claims{
 		UserID:    userID,
 		Username:  username,
@@ -99,6 +98,30 @@ func (a *Auth) ValidateJWT(tokenString string) (*Claims, error) {
 	}
 
 	return nil, errors.AuthError("invalid token")
+}
+
+func (a *Auth) CreateAccount(username, password string) (string, *Session, error) {
+	// Create the user account
+	user, err := a.storage.CreateUser(username, password)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Generate JWT token
+	tokenString, err := a.GenerateJWT(user.ID, user.Username, user.IsDefault)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Create session struct for compatibility
+	session := &Session{
+		UserID:    user.ID,
+		Username:  user.Username,
+		IsDefault: user.IsDefault,
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+
+	return tokenString, session, nil
 }
 
 func (a *Auth) Login(username, password string) (string, *Session, error) {
@@ -172,19 +195,20 @@ func (a *Auth) ValidateSession(token string) (*Session, bool) {
 	return session, true
 }
 
+// RequireAuth middleware supports both Bearer token and HTTP-only cookie authentication
 func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var token string
 
-		// Try to get JWT from Authorization header first
+		// First, try to get JWT from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
 		} else {
-			// Fallback to cookie for web interface
+			// Fallback to HTTP-only cookie for web interface
 			cookie, err := r.Cookie("token")
 			if err != nil {
-				a.redirectToLogin(w, r)
+				a.handleUnauthorized(w, r)
 				return
 			}
 			token = cookie.Value
@@ -192,12 +216,12 @@ func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 
 		session, valid := a.ValidateSession(token)
 		if !valid {
-			a.redirectToLogin(w, r)
+			a.handleUnauthorized(w, r)
 			return
 		}
 
 		// Add session info to request headers for handlers to use
-		r.Header.Set("X-User-ID", fmt.Sprintf("%d", session.UserID))
+		r.Header.Set("X-User-ID", session.UserID)
 		r.Header.Set("X-Username", session.Username)
 		if session.IsDefault {
 			r.Header.Set("X-Is-Default", "true")
@@ -207,37 +231,98 @@ func (a *Auth) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
-func (a *Auth) redirectToLogin(w http.ResponseWriter, r *http.Request) {
-	// For API endpoints, return 401
-	if strings.HasPrefix(r.URL.Path, "/api") {
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": "Authentication required"}`))
-		return
-	}
-
-	// For web endpoints, redirect to login
-	http.Redirect(w, r, "/login", http.StatusFound)
+func (a *Auth) handleUnauthorized(w http.ResponseWriter, r *http.Request) {
+	// Always return 401 JSON response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	w.Write([]byte(`{"error": "Authentication required"}`))
 }
 
 // CleanupExpiredSessions is no longer needed with stateless JWT
 // Tokens expire automatically and don't need cleanup
 
 func (a *Auth) ChangePassword(username, newPassword string) error {
-	// Get user to find their ID
-	rows, err := a.storage.Query("SELECT id FROM users WHERE username = ?", username)
+	// Get user by username
+	user, err := a.storage.GetUserByUsername(username)
 	if err != nil {
-		return errors.InternalError("failed to query user", err)
-	}
-	if len(rows) == 0 {
 		return errors.AuthError("user not found")
-	}
-
-	userID, ok := rows[0]["id"].(int64)
-	if !ok {
-		return errors.InternalError("invalid user ID type", nil)
 	}
 
 	// Update password using the storage's UpdateUserCredentials method
 	// The method will handle password hashing and setting is_default to false
-	return a.storage.UpdateUserCredentials(int(userID), username, newPassword)
+	return a.storage.UpdateUserCredentials(user.ID, username, newPassword)
+}
+
+// GeneratePasswordResetToken generates a password reset token for the given email
+func (a *Auth) GeneratePasswordResetToken(email string) (string, error) {
+	// Find user by email (we'll need to update the schema to include email)
+	// For now, we'll use username as email
+	user, err := a.storage.GetUserByUsername(email)
+	if err != nil {
+		return "", errors.AuthError("user not found")
+	}
+
+	// Create reset token with 1-hour expiration
+	claims := &Claims{
+		UserID:   user.ID,
+		Username: email,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Subject:   "password-reset",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(a.jwtSecret)
+	if err != nil {
+		return "", errors.InternalError("failed to generate reset token", err)
+	}
+
+	// Store the token in Redis with 1 hour expiration for validation
+	ctx := context.Background()
+	key := fmt.Sprintf("reset_token:%s", user.ID)
+	if err := a.redisClient.Set(ctx, key, tokenString, time.Hour); err != nil {
+		return "", errors.InternalError("failed to store reset token", err)
+	}
+
+	return tokenString, nil
+}
+
+// ResetPassword resets the user's password using a valid reset token
+func (a *Auth) ResetPassword(tokenString, newPassword string) error {
+	// Parse and validate the token
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return a.jwtSecret, nil
+	})
+
+	if err != nil || !token.Valid {
+		return errors.AuthError("invalid or expired reset token")
+	}
+
+	claims, ok := token.Claims.(*Claims)
+	if !ok || claims.Subject != "password-reset" {
+		return errors.AuthError("invalid reset token type")
+	}
+
+	// Verify the token hasn't been used
+	ctx := context.Background()
+	key := fmt.Sprintf("reset_token:%s", claims.UserID)
+	storedToken, err := a.redisClient.Get(ctx, key)
+	if err != nil || storedToken != tokenString {
+		return errors.AuthError("reset token has already been used or is invalid")
+	}
+
+	// Update the password
+	if err := a.storage.UpdateUserCredentials(claims.UserID, claims.Username, newPassword); err != nil {
+		return errors.InternalError("failed to update password", err)
+	}
+
+	// Delete the reset token so it can't be reused
+	a.redisClient.Set(ctx, key, "", 0) // Set with 0 expiration to delete
+
+	return nil
 }

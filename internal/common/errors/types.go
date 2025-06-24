@@ -1,6 +1,7 @@
 package errors
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -39,15 +40,15 @@ type AppError struct {
 // Error implements the error interface
 func (e *AppError) Error() string {
 	parts := []string{string(e.Type), e.Message}
-	
+
 	if e.Code != "" {
 		parts = append(parts, fmt.Sprintf("code=%s", e.Code))
 	}
-	
+
 	if e.Cause != nil {
 		parts = append(parts, fmt.Sprintf("cause=%v", e.Cause))
 	}
-	
+
 	if len(e.Context) > 0 {
 		contextParts := make([]string, 0, len(e.Context))
 		for k, v := range e.Context {
@@ -55,7 +56,7 @@ func (e *AppError) Error() string {
 		}
 		parts = append(parts, fmt.Sprintf("context={%s}", strings.Join(contextParts, ", ")))
 	}
-	
+
 	return strings.Join(parts, ": ")
 }
 
@@ -150,12 +151,13 @@ func IsType(err error, errType ErrorType) bool {
 	if err == nil {
 		return false
 	}
-	
-	appErr, ok := err.(*AppError)
+
+	var appErr *AppError
+	ok := errors.As(err, &appErr)
 	if !ok {
 		return false
 	}
-	
+
 	return appErr.Type == errType
 }
 
@@ -164,11 +166,12 @@ func GetType(err error) ErrorType {
 	if err == nil {
 		return ""
 	}
-	
-	appErr, ok := err.(*AppError)
+
+	var appErr *AppError
+	ok := errors.As(err, &appErr)
 	if !ok {
 		return ErrTypeInternal
 	}
-	
+
 	return appErr.Type
 }

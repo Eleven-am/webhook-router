@@ -28,7 +28,7 @@ func TestValidateRequired(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateRequired(tt.field, tt.value, tt.fieldName)
@@ -68,7 +68,7 @@ func TestValidateNonNegative(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateNonNegative(tt.value, tt.fieldName)
@@ -84,7 +84,7 @@ func TestValidateNonNegative(t *testing.T) {
 
 func TestValidateInSet(t *testing.T) {
 	validValues := []string{"apple", "banana", "cherry"}
-	
+
 	tests := []struct {
 		name      string
 		value     string
@@ -110,7 +110,7 @@ func TestValidateInSet(t *testing.T) {
 			wantError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateInSet(tt.value, validValues, tt.fieldName)
@@ -150,7 +150,7 @@ func TestValidateConditional(t *testing.T) {
 			wantError: false, // Validator not called when condition is false
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateConditional(tt.condition, tt.validator)
@@ -200,7 +200,7 @@ func TestRunValidators(t *testing.T) {
 			wantError:  false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := RunValidators(tt.validators...)
@@ -235,28 +235,28 @@ func TestCopyStringMap(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			copied := CopyStringMap(tt.original)
-			
+
 			if tt.original == nil {
 				if copied != nil {
 					t.Errorf("CopyStringMap() with nil input should return nil")
 				}
 				return
 			}
-			
+
 			if len(copied) != len(tt.original) {
 				t.Errorf("CopyStringMap() length = %d, want %d", len(copied), len(tt.original))
 			}
-			
+
 			for k, v := range tt.original {
 				if copied[k] != v {
 					t.Errorf("CopyStringMap() value for key %s = %s, want %s", k, copied[k], v)
 				}
 			}
-			
+
 			// Verify it's a deep copy by modifying the copy
 			if len(copied) > 0 {
 				for k := range copied {
@@ -291,7 +291,7 @@ func TestDefaultValue(t *testing.T) {
 			expected:   5,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := DefaultValue(tt.current, tt.defaultVal)
@@ -322,7 +322,7 @@ func TestDefaultString(t *testing.T) {
 			expected:   "current",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := DefaultString(tt.current, tt.defaultVal)
@@ -335,7 +335,7 @@ func TestDefaultString(t *testing.T) {
 
 func TestSliceContains(t *testing.T) {
 	slice := []string{"apple", "banana", "cherry"}
-	
+
 	tests := []struct {
 		name     string
 		value    string
@@ -357,7 +357,7 @@ func TestSliceContains(t *testing.T) {
 			expected: false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := SliceContains(slice, tt.value)
@@ -370,15 +370,15 @@ func TestSliceContains(t *testing.T) {
 
 func TestFilterSlice(t *testing.T) {
 	numbers := []int{1, 2, 3, 4, 5, 6}
-	
+
 	// Filter even numbers
 	evens := FilterSlice(numbers, func(n int) bool { return n%2 == 0 })
 	expected := []int{2, 4, 6}
-	
+
 	if len(evens) != len(expected) {
 		t.Errorf("FilterSlice() length = %d, want %d", len(evens), len(expected))
 	}
-	
+
 	for i, v := range evens {
 		if v != expected[i] {
 			t.Errorf("FilterSlice() item %d = %d, want %d", i, v, expected[i])
@@ -388,15 +388,15 @@ func TestFilterSlice(t *testing.T) {
 
 func TestMapSlice(t *testing.T) {
 	numbers := []int{1, 2, 3}
-	
+
 	// Double each number
 	doubled := MapSlice(numbers, func(n int) int { return n * 2 })
 	expected := []int{2, 4, 6}
-	
+
 	if len(doubled) != len(expected) {
 		t.Errorf("MapSlice() length = %d, want %d", len(doubled), len(expected))
 	}
-	
+
 	for i, v := range doubled {
 		if v != expected[i] {
 			t.Errorf("MapSlice() item %d = %d, want %d", i, v, expected[i])
@@ -408,7 +408,7 @@ func TestSafeAccess(t *testing.T) {
 	m := map[string]int{
 		"existing": 42,
 	}
-	
+
 	tests := []struct {
 		name       string
 		key        string
@@ -428,7 +428,7 @@ func TestSafeAccess(t *testing.T) {
 			expected:   99,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := SafeAccess(m, tt.key, tt.defaultVal)
@@ -459,7 +459,7 @@ func TestWrapError(t *testing.T) {
 			expected: "test context: original error",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := WrapError(tt.err, tt.context)
@@ -503,7 +503,7 @@ func TestCoalesceString(t *testing.T) {
 			expected: "first",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := CoalesceString(tt.values...)
@@ -520,7 +520,7 @@ func TestValidationError(t *testing.T) {
 		Message: "is required",
 		Value:   "",
 	}
-	
+
 	expected := "validation failed for field 'test_field': is required"
 	if err.Error() != expected {
 		t.Errorf("ValidationError.Error() = %s, want %s", err.Error(), expected)

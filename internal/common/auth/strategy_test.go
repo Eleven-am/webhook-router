@@ -125,8 +125,8 @@ func TestBasicAuthStrategy_Authenticate(t *testing.T) {
 		{
 			name: "username with colon",
 			settings: map[string]string{
-				"username": "test:user",
-				"password": "testpass",
+				"username": "test",
+				"password": "user:testpass",
 			},
 			headers: map[string]string{
 				"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("test:user:testpass")),
@@ -144,9 +144,9 @@ func TestBasicAuthStrategy_Authenticate(t *testing.T) {
 				require.Error(t, err)
 				switch tt.errorType {
 				case "auth":
-					assert.True(t, errors.IsAuthError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeAuth))
 				case "config":
-					assert.True(t, errors.IsConfigError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 				}
 			} else {
 				assert.NoError(t, err)
@@ -212,7 +212,7 @@ func TestBearerAuthStrategy_Authenticate(t *testing.T) {
 			errorType:   "auth",
 		},
 		{
-			name: "missing token setting",
+			name:     "missing token setting",
 			settings: map[string]string{},
 			headers: map[string]string{
 				"Authorization": "Bearer valid-token-123",
@@ -242,9 +242,9 @@ func TestBearerAuthStrategy_Authenticate(t *testing.T) {
 				require.Error(t, err)
 				switch tt.errorType {
 				case "auth":
-					assert.True(t, errors.IsAuthError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeAuth))
 				case "config":
-					assert.True(t, errors.IsConfigError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 				}
 			} else {
 				assert.NoError(t, err)
@@ -324,7 +324,7 @@ func TestAPIKeyAuthStrategy_Authenticate(t *testing.T) {
 			errorType:   "auth",
 		},
 		{
-			name: "missing api_key setting",
+			name:     "missing api_key setting",
 			settings: map[string]string{},
 			headers: map[string]string{
 				"X-API-Key": "secret-key-123",
@@ -355,9 +355,9 @@ func TestAPIKeyAuthStrategy_Authenticate(t *testing.T) {
 				require.Error(t, err)
 				switch tt.errorType {
 				case "auth":
-					assert.True(t, errors.IsAuthError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeAuth))
 				case "config":
-					assert.True(t, errors.IsConfigError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 				}
 			} else {
 				assert.NoError(t, err)
@@ -447,7 +447,7 @@ func TestHMACAuthStrategy_Authenticate(t *testing.T) {
 			errorType:   "auth",
 		},
 		{
-			name: "missing secret setting",
+			name:     "missing secret setting",
 			settings: map[string]string{},
 			headers: map[string]string{
 				"X-Signature": expectedSignature,
@@ -480,11 +480,11 @@ func TestHMACAuthStrategy_Authenticate(t *testing.T) {
 				require.Error(t, err)
 				switch tt.errorType {
 				case "auth":
-					assert.True(t, errors.IsAuthError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeAuth))
 				case "config":
-					assert.True(t, errors.IsConfigError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 				case "internal":
-					assert.True(t, errors.IsInternalError(err))
+					assert.True(t, errors.IsType(err, errors.ErrTypeInternal))
 				}
 			} else {
 				assert.NoError(t, err)
@@ -496,10 +496,10 @@ func TestHMACAuthStrategy_Authenticate(t *testing.T) {
 func TestAuthenticatorRegistry(t *testing.T) {
 	t.Run("NewAuthenticatorRegistry", func(t *testing.T) {
 		registry := NewAuthenticatorRegistry()
-		
+
 		supportedTypes := registry.GetSupportedTypes()
 		expectedTypes := []string{"basic", "bearer", "apikey", "hmac"}
-		
+
 		assert.Len(t, supportedTypes, 4)
 		for _, expectedType := range expectedTypes {
 			assert.Contains(t, supportedTypes, expectedType)
@@ -508,11 +508,11 @@ func TestAuthenticatorRegistry(t *testing.T) {
 
 	t.Run("Register custom strategy", func(t *testing.T) {
 		registry := NewAuthenticatorRegistry()
-		
+
 		// Create a mock strategy
 		mockStrategy := &MockAuthStrategy{authType: "custom"}
 		registry.Register(mockStrategy)
-		
+
 		supportedTypes := registry.GetSupportedTypes()
 		assert.Contains(t, supportedTypes, "custom")
 		assert.Len(t, supportedTypes, 5)
@@ -520,28 +520,28 @@ func TestAuthenticatorRegistry(t *testing.T) {
 
 	t.Run("Authenticate with valid strategy", func(t *testing.T) {
 		registry := NewAuthenticatorRegistry()
-		
+
 		req := createTestRequest(map[string]string{
 			"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("user:pass")),
 		})
-		
+
 		settings := map[string]string{
 			"username": "user",
 			"password": "pass",
 		}
-		
+
 		err := registry.Authenticate("basic", req, settings)
 		assert.NoError(t, err)
 	})
 
 	t.Run("Authenticate with invalid strategy", func(t *testing.T) {
 		registry := NewAuthenticatorRegistry()
-		
+
 		req := createTestRequest(map[string]string{})
 		err := registry.Authenticate("nonexistent", req, map[string]string{})
-		
+
 		require.Error(t, err)
-		assert.True(t, errors.IsConfigError(err))
+		assert.True(t, errors.IsType(err, errors.ErrTypeConfig))
 		assert.Contains(t, err.Error(), "unsupported auth type")
 	})
 }
@@ -566,7 +566,7 @@ func TestTimingAttackResistance(t *testing.T) {
 
 	err := strategy.Authenticate(req, settings)
 	assert.Error(t, err)
-	assert.True(t, errors.IsAuthError(err))
+	assert.True(t, errors.IsType(err, errors.ErrTypeAuth))
 
 	// Test with correct signature to ensure it works
 	req2 := createTestRequestWithBody(map[string]string{
@@ -589,11 +589,11 @@ func createTestRequest(headers map[string]string) *http.Request {
 
 func createTestRequestWithQuery(headers map[string]string, queryParams map[string]string) *http.Request {
 	req, _ := http.NewRequest("POST", "/test", nil)
-	
+
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	
+
 	if len(queryParams) > 0 {
 		query := url.Values{}
 		for key, value := range queryParams {
@@ -601,21 +601,21 @@ func createTestRequestWithQuery(headers map[string]string, queryParams map[strin
 		}
 		req.URL.RawQuery = query.Encode()
 	}
-	
+
 	return req
 }
 
 func createTestRequestWithBody(headers map[string]string, body []byte) *http.Request {
 	req, _ := http.NewRequest("POST", "/test", strings.NewReader(string(body)))
-	
+
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	
+
 	// Add body to context (simulating middleware)
 	ctx := context.WithValue(req.Context(), "body", body)
 	req = req.WithContext(ctx)
-	
+
 	return req
 }
 

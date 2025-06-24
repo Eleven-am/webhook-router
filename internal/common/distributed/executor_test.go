@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestSimpleTask(t *testing.T) {
@@ -22,7 +20,7 @@ func TestSimpleTask(t *testing.T) {
 		})
 
 		assert.Equal(t, "test-task", task.ID())
-		
+
 		err := task.Execute(context.Background())
 		assert.NoError(t, err)
 		assert.True(t, executed)
@@ -143,7 +141,7 @@ func TestSimpleExecutor_NonDistributed(t *testing.T) {
 		executor := NewSimpleExecutor("test-node", nil, ExecutorOptions{
 			EnableDistributed: false,
 		})
-		
+
 		err := executor.Close()
 		assert.NoError(t, err)
 
@@ -163,10 +161,10 @@ func TestSimpleExecutor_Distributed(t *testing.T) {
 			isLeader: true,
 			locks:    make(map[string]*MockLock),
 		}
-		
+
 		executor := NewSimpleExecutor("test-node", coordinator, ExecutorOptions{
 			EnableDistributed:      true,
-			LockTimeout:           time.Second,
+			LockTimeout:            time.Second,
 			LeaderElectionInterval: 100 * time.Millisecond,
 		})
 		defer executor.Close()
@@ -193,14 +191,14 @@ func TestSimpleExecutor_Distributed(t *testing.T) {
 
 	t.Run("task execution blocked by existing lock", func(t *testing.T) {
 		coordinator := &MockCoordinator{
-			isLeader:    true,
-			locks:       make(map[string]*MockLock),
-			lockFails:   true, // Simulate lock acquisition failure
+			isLeader:  true,
+			locks:     make(map[string]*MockLock),
+			lockFails: true, // Simulate lock acquisition failure
 		}
-		
+
 		executor := NewSimpleExecutor("test-node", coordinator, ExecutorOptions{
 			EnableDistributed:      true,
-			LockTimeout:           100 * time.Millisecond,
+			LockTimeout:            100 * time.Millisecond,
 			LeaderElectionInterval: time.Second,
 		})
 		defer executor.Close()
@@ -212,7 +210,7 @@ func TestSimpleExecutor_Distributed(t *testing.T) {
 		})
 
 		err := executor.Execute(context.Background(), task)
-		assert.NoError(t, err) // No error, just skipped
+		assert.NoError(t, err)    // No error, just skipped
 		assert.False(t, executed) // Task should not have been executed
 	})
 
@@ -221,10 +219,10 @@ func TestSimpleExecutor_Distributed(t *testing.T) {
 			isLeader: false, // Not leader
 			locks:    make(map[string]*MockLock),
 		}
-		
+
 		executor := NewSimpleExecutor("test-node", coordinator, ExecutorOptions{
 			EnableDistributed:      true,
-			LockTimeout:           time.Second,
+			LockTimeout:            time.Second,
 			LeaderElectionInterval: 100 * time.Millisecond,
 		})
 		defer executor.Close()
@@ -249,10 +247,10 @@ func TestSimpleExecutor_Distributed(t *testing.T) {
 			isLeader: false,
 			locks:    make(map[string]*MockLock),
 		}
-		
+
 		executor := NewSimpleExecutor("test-node", coordinator, ExecutorOptions{
 			EnableDistributed:      true,
-			LockTimeout:           time.Second,
+			LockTimeout:            time.Second,
 			LeaderElectionInterval: 50 * time.Millisecond,
 		})
 		defer executor.Close()
@@ -350,7 +348,7 @@ func TestConcurrentExecution(t *testing.T) {
 	for i := 0; i < numTasks; i++ {
 		go func(id int) {
 			defer wg.Done()
-			
+
 			task := NewSimpleTask(
 				fmt.Sprintf("concurrent-task-%d", id),
 				func(ctx context.Context) error {

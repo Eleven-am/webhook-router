@@ -97,7 +97,7 @@ func TestNewBroker(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			broker, err := NewBroker(tt.config)
-			
+
 			if tt.wantErr {
 				assert.Error(t, err)
 				if tt.errMsg != "" {
@@ -180,11 +180,11 @@ func TestBrokerPublish(t *testing.T) {
 		{
 			name: "publish with exchange",
 			message: &brokers.Message{
-				Queue:      "test_stream",
-				Exchange:   "test_exchange",
-				Body:       []byte(`{"test": "exchange"}`),
-				Timestamp:  time.Now(),
-				MessageID:  "test-exchange",
+				Queue:     "test_stream",
+				Exchange:  "test_exchange",
+				Body:      []byte(`{"test": "exchange"}`),
+				Timestamp: time.Now(),
+				MessageID: "test-exchange",
 			},
 			wantErr:      false,
 			checkMessage: true,
@@ -198,19 +198,19 @@ func TestBrokerPublish(t *testing.T) {
 			}
 
 			err := broker.Publish(tt.message)
-			
+
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
-				
+
 				if tt.checkMessage {
 					// Verify message was added to stream
 					ctx := context.Background()
 					result, err := broker.client.XRange(ctx, tt.message.Queue, "-", "+").Result()
 					require.NoError(t, err)
 					assert.Greater(t, len(result), 0)
-					
+
 					// Check the last message
 					lastMsg := result[len(result)-1]
 					assert.Equal(t, string(tt.message.Body), lastMsg.Values["body"])
@@ -246,7 +246,7 @@ func TestBrokerSubscribe(t *testing.T) {
 	t.Run("successful subscription", func(t *testing.T) {
 		receivedMessages := make([]*brokers.IncomingMessage, 0)
 		var mu sync.Mutex
-		
+
 		handler := func(msg *brokers.IncomingMessage) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -273,7 +273,7 @@ func TestBrokerSubscribe(t *testing.T) {
 			Timestamp: time.Now(),
 			MessageID: "test-sub-123",
 		}
-		
+
 		err = broker.Publish(testMessage)
 		require.NoError(t, err)
 
@@ -340,13 +340,13 @@ func TestBrokerHealth(t *testing.T) {
 			}
 
 			err = broker.Health()
-			
+
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
-			
+
 			// Clean up if client was created for this test
 			if broker.client != nil && tt.name != "closed connection" {
 				broker.Close()
@@ -432,7 +432,7 @@ func TestBrokerConnect(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := broker.Connect(tt.config)
-			
+
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -498,7 +498,7 @@ func TestMessageSerialization(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	
+
 	for i, msg := range messages {
 		t.Run(fmt.Sprintf("message_%d", i), func(t *testing.T) {
 			err := broker.Publish(&msg)
@@ -507,7 +507,7 @@ func TestMessageSerialization(t *testing.T) {
 			// Read back from stream
 			result, err := broker.client.XRange(ctx, msg.Queue, "-", "+").Result()
 			require.NoError(t, err)
-			
+
 			// Find our message
 			var found bool
 			for _, streamMsg := range result {
@@ -517,7 +517,7 @@ func TestMessageSerialization(t *testing.T) {
 					if msg.RoutingKey != "" {
 						assert.Equal(t, msg.RoutingKey, streamMsg.Values["routing_key"])
 					}
-					
+
 					// Check headers were added as fields
 					if len(msg.Headers) > 0 {
 						for key, value := range msg.Headers {
@@ -550,7 +550,7 @@ func TestConcurrentPublish(t *testing.T) {
 
 	numGoroutines := 10
 	messagesPerGoroutine := 10
-	
+
 	var wg sync.WaitGroup
 	errors := make(chan error, numGoroutines*messagesPerGoroutine)
 
@@ -558,7 +558,7 @@ func TestConcurrentPublish(t *testing.T) {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			
+
 			for j := 0; j < messagesPerGoroutine; j++ {
 				msg := &brokers.Message{
 					Queue:      "test_stream",
@@ -567,7 +567,7 @@ func TestConcurrentPublish(t *testing.T) {
 					MessageID:  fmt.Sprintf("msg-%d-%d", goroutineID, j),
 					RoutingKey: fmt.Sprintf("route.%d", goroutineID),
 				}
-				
+
 				if err := broker.Publish(msg); err != nil {
 					errors <- err
 				}

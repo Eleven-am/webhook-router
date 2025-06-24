@@ -108,15 +108,15 @@ type RouteRequest struct {
 // Each destination includes configuration for health checking, retry logic,
 // and circuit breaker behavior to ensure reliable request delivery.
 type RouteDestination struct {
-	ID           string                 `json:"id"`             // Unique destination identifier
-	Type         string                 `json:"type"`           // Destination type: broker, http, webhook, pipeline
-	Name         string                 `json:"name"`           // Human-readable destination name
-	Config       map[string]interface{} `json:"config"`         // Destination-specific configuration (URLs, credentials, etc.)
-	Priority     int                    `json:"priority"`       // Routing priority (higher number = higher priority)
-	Weight       int                    `json:"weight"`         // Weight for load balancing (higher = more traffic)
-	HealthCheck  HealthCheckConfig      `json:"health_check"`   // Health check configuration
-	Retry        RetryConfig            `json:"retry"`          // Retry behavior configuration
-	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker"` // Circuit breaker configuration for fault tolerance
+	ID             string                 `json:"id"`              // Unique destination identifier
+	Type           string                 `json:"type"`            // Destination type: broker, http, webhook, pipeline_old
+	Name           string                 `json:"name"`            // Human-readable destination name
+	Config         map[string]interface{} `json:"config"`          // Destination-specific configuration (URLs, credentials, etc.)
+	Priority       int                    `json:"priority"`        // Routing priority (higher number = higher priority)
+	Weight         int                    `json:"weight"`          // Weight for load balancing (higher = more traffic)
+	HealthCheck    HealthCheckConfig      `json:"health_check"`    // Health check configuration
+	Retry          RetryConfig            `json:"retry"`           // Retry behavior configuration
+	CircuitBreaker CircuitBreakerConfig   `json:"circuit_breaker"` // Circuit breaker configuration for fault tolerance
 }
 
 // HealthCheckConfig defines health monitoring settings for destinations.
@@ -166,17 +166,17 @@ type CircuitBreakerConfig struct {
 // of conditions that must be met for the rule to match a request.
 // When a rule matches, its destinations become candidates for routing.
 type RouteRule struct {
-	ID            string            `json:"id"`             // Unique rule identifier
-	Name          string            `json:"name"`           // Human-readable rule name
-	Priority      int               `json:"priority"`       // Rule priority (higher = evaluated first)
-	Enabled       bool              `json:"enabled"`        // Whether the rule is active
-	Conditions    []RuleCondition   `json:"conditions"`     // Conditions that must be met for rule to match
-	Destinations  []RouteDestination `json:"destinations"`   // Target destinations for matched requests
+	ID            string              `json:"id"`             // Unique rule identifier
+	Name          string              `json:"name"`           // Human-readable rule name
+	Priority      int                 `json:"priority"`       // Rule priority (higher = evaluated first)
+	Enabled       bool                `json:"enabled"`        // Whether the rule is active
+	Conditions    []RuleCondition     `json:"conditions"`     // Conditions that must be met for rule to match
+	Destinations  []RouteDestination  `json:"destinations"`   // Target destinations for matched requests
 	LoadBalancing LoadBalancingConfig `json:"load_balancing"` // Load balancing strategy for multiple destinations
-	Tags          []string          `json:"tags"`           // Tags for categorization and filtering
-	Description   string            `json:"description"`    // Optional rule description
-	CreatedAt     time.Time         `json:"created_at"`     // When the rule was created
-	UpdatedAt     time.Time         `json:"updated_at"`     // When the rule was last modified
+	Tags          []string            `json:"tags"`           // Tags for categorization and filtering
+	Description   string              `json:"description"`    // Optional rule description
+	CreatedAt     time.Time           `json:"created_at"`     // When the rule was created
+	UpdatedAt     time.Time           `json:"updated_at"`     // When the rule was last modified
 }
 
 // RuleCondition defines a single condition that must be evaluated
@@ -227,31 +227,31 @@ type RouteResult struct {
 type Router interface {
 	// Route processes a request and returns routing decisions based on configured rules
 	Route(ctx context.Context, request *RouteRequest) (*RouteResult, error)
-	
+
 	// AddRule adds a new routing rule to the router
 	AddRule(rule *RouteRule) error
-	
+
 	// UpdateRule updates an existing routing rule identified by its ID
 	UpdateRule(rule *RouteRule) error
-	
+
 	// RemoveRule removes a routing rule by its ID
 	RemoveRule(ruleID string) error
-	
+
 	// GetRule returns a specific routing rule by its ID
 	GetRule(ruleID string) (*RouteRule, error)
-	
+
 	// GetRules returns all configured routing rules
 	GetRules() ([]*RouteRule, error)
-	
+
 	// Health returns the health status of the router and its components
 	Health() error
-	
+
 	// Start initializes and starts the router with the given context
 	Start(ctx context.Context) error
-	
+
 	// Stop gracefully shuts down the router
 	Stop() error
-	
+
 	// GetMetrics returns performance and operational metrics for the router
 	GetMetrics() (*RouterMetrics, error)
 }
@@ -290,13 +290,13 @@ type DestinationManager interface {
 	// SelectDestination selects an appropriate destination from the available options
 	// based on the configured load balancing strategy and current destination health
 	SelectDestination(destinations []RouteDestination, strategy LoadBalancingConfig, request *RouteRequest) (*RouteDestination, error)
-	
+
 	// UpdateDestinationHealth updates the health status of a specific destination
 	UpdateDestinationHealth(destinationID string, healthy bool) error
-	
+
 	// GetDestinationHealth returns the current health status of a destination
 	GetDestinationHealth(destinationID string) (bool, error)
-	
+
 	// RecordDestinationMetrics records performance metrics for a destination
 	// including request latency and success/failure status
 	RecordDestinationMetrics(destinationID string, latency time.Duration, success bool) error
@@ -310,16 +310,16 @@ type DestinationManager interface {
 type RuleEngine interface {
 	// EvaluateRule evaluates if a request matches all conditions in a routing rule
 	EvaluateRule(rule *RouteRule, request *RouteRequest) (bool, error)
-	
+
 	// EvaluateCondition evaluates a single rule condition against a request
 	EvaluateCondition(condition *RuleCondition, request *RouteRequest) (bool, error)
-	
+
 	// CompileRule pre-processes a rule for faster evaluation (e.g., regex compilation)
 	CompileRule(rule *RouteRule) error
-	
+
 	// GetSupportedOperators returns a list of all supported comparison operators
 	GetSupportedOperators() []string
-	
+
 	// GetSupportedConditionTypes returns a list of all supported condition types
 	GetSupportedConditionTypes() []string
 }
@@ -332,14 +332,14 @@ type RuleEngine interface {
 type Executor interface {
 	// Execute routes a request to all selected destinations using their configured protocols
 	Execute(ctx context.Context, request *RouteRequest, destinations []RouteDestination) error
-	
+
 	// ExecuteWithBroker routes a request to a destination using a message broker
 	ExecuteWithBroker(ctx context.Context, request *RouteRequest, broker brokers.Broker, destination RouteDestination) error
-	
+
 	// ExecuteWithHTTP routes a request to a destination using HTTP protocol
 	ExecuteWithHTTP(ctx context.Context, request *RouteRequest, destination RouteDestination) error
-	
-	// ExecuteWithPipeline routes a request through a data processing pipeline
+
+	// ExecuteWithPipeline routes a request through a data processing pipeline_old
 	ExecuteWithPipeline(ctx context.Context, request *RouteRequest, destination RouteDestination) error
 }
 
@@ -347,7 +347,7 @@ type Executor interface {
 // including the router, rule engine, destination manager, and executor.
 //
 // The engine provides a high-level interface for processing requests through
-// the complete routing pipeline from rule evaluation to request delivery.
+// the complete routing pipeline_old from rule evaluation to request delivery.
 type RoutingEngine struct {
 	router      Router             // Core router for rule management and request routing
 	ruleEngine  RuleEngine         // Rule evaluation engine
@@ -380,11 +380,11 @@ func (re *RoutingEngine) Start(ctx context.Context) error {
 	if re.isRunning {
 		return ErrEngineAlreadyRunning
 	}
-	
+
 	if err := re.router.Start(ctx); err != nil {
 		return err
 	}
-	
+
 	re.isRunning = true
 	return nil
 }
@@ -395,32 +395,32 @@ func (re *RoutingEngine) Stop() error {
 	if !re.isRunning {
 		return ErrEngineNotRunning
 	}
-	
+
 	if err := re.router.Stop(); err != nil {
 		return err
 	}
-	
+
 	re.isRunning = false
 	return nil
 }
 
-// ProcessRequest processes a complete routing request through the entire pipeline
+// ProcessRequest processes a complete routing request through the entire pipeline_old
 // including rule evaluation, destination selection, and request execution.
 // Returns the routing result with performance metrics and matched rules.
 func (re *RoutingEngine) ProcessRequest(ctx context.Context, request *RouteRequest) (*RouteResult, error) {
 	if !re.isRunning {
 		return nil, ErrEngineNotRunning
 	}
-	
+
 	start := time.Now()
-	
+
 	// Route the request
 	result, err := re.router.Route(ctx, request)
 	if err != nil {
 		re.metrics.FailedRoutes++
 		return nil, err
 	}
-	
+
 	// Execute routing to destinations
 	if len(result.Destinations) > 0 {
 		if err := re.executor.Execute(ctx, request, result.Destinations); err != nil {
@@ -428,17 +428,17 @@ func (re *RoutingEngine) ProcessRequest(ctx context.Context, request *RouteReque
 			return nil, err
 		}
 	}
-	
+
 	// Update metrics
 	re.metrics.TotalRequests++
 	re.metrics.SuccessfulRoutes++
 	result.ProcessingTime = time.Since(start)
-	
+
 	// Update rule hit counts
 	for _, rule := range result.MatchedRules {
 		re.metrics.RuleHitCounts[rule.ID]++
 	}
-	
+
 	return result, nil
 }
 

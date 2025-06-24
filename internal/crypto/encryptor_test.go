@@ -39,7 +39,7 @@ func TestNewConfigEncryptor(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			encryptor, err := NewConfigEncryptor(tt.key)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("NewConfigEncryptor() expected error but got none")
@@ -49,17 +49,17 @@ func TestNewConfigEncryptor(t *testing.T) {
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("NewConfigEncryptor() unexpected error = %v", err)
 				return
 			}
-			
+
 			if encryptor == nil {
 				t.Errorf("NewConfigEncryptor() returned nil encryptor")
 				return
 			}
-			
+
 			// Verify key is always 32 bytes
 			if len(encryptor.key) != 32 {
 				t.Errorf("NewConfigEncryptor() key length = %d, want 32", len(encryptor.key))
@@ -114,19 +114,19 @@ func TestConfigEncryptor_Encrypt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ciphertext, err := encryptor.Encrypt(tt.plaintext)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("Encrypt() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("Encrypt() unexpected error = %v", err)
 				return
 			}
-			
+
 			// For empty string, expect empty result
 			if tt.plaintext == "" {
 				if ciphertext != "" {
@@ -134,17 +134,17 @@ func TestConfigEncryptor_Encrypt(t *testing.T) {
 				}
 				return
 			}
-			
+
 			// Verify result is base64 encoded
 			if _, err := base64.StdEncoding.DecodeString(ciphertext); err != nil {
 				t.Errorf("Encrypt() result is not valid base64: %v", err)
 			}
-			
+
 			// Verify ciphertext is different from plaintext
 			if ciphertext == tt.plaintext {
 				t.Errorf("Encrypt() ciphertext should be different from plaintext")
 			}
-			
+
 			// Verify ciphertext is not empty for non-empty plaintext
 			if ciphertext == "" {
 				t.Errorf("Encrypt() returned empty ciphertext for non-empty plaintext")
@@ -160,9 +160,9 @@ func TestConfigEncryptor_Decrypt(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		plaintext  string
-		wantError  bool
+		name      string
+		plaintext string
+		wantError bool
 	}{
 		{
 			name:      "normal text",
@@ -198,22 +198,22 @@ func TestConfigEncryptor_Decrypt(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to encrypt: %v", err)
 			}
-			
+
 			// Then decrypt
 			decrypted, err := encryptor.Decrypt(ciphertext)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("Decrypt() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("Decrypt() unexpected error = %v", err)
 				return
 			}
-			
+
 			// Verify decrypted matches original
 			if decrypted != tt.plaintext {
 				t.Errorf("Decrypt() = %q, want %q", decrypted, tt.plaintext)
@@ -263,19 +263,19 @@ func TestConfigEncryptor_DecryptInvalidData(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := encryptor.Decrypt(tt.ciphertext)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("Decrypt() expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("Decrypt() unexpected error = %v", err)
 				return
 			}
-			
+
 			// For empty ciphertext, expect empty result
 			if tt.ciphertext == "" && result != "" {
 				t.Errorf("Decrypt() empty ciphertext should return empty string, got %q", result)
@@ -307,13 +307,13 @@ func TestConfigEncryptor_EncryptDecryptRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Encrypt() error = %v", err)
 			}
-			
+
 			// Decrypt
 			decrypted, err := encryptor.Decrypt(ciphertext)
 			if err != nil {
 				t.Fatalf("Decrypt() error = %v", err)
 			}
-			
+
 			// Verify round trip
 			if decrypted != plaintext {
 				t.Errorf("Round trip failed: got %q, want %q", decrypted, plaintext)
@@ -327,32 +327,32 @@ func TestConfigEncryptor_DifferentEncryptors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create encryptor1: %v", err)
 	}
-	
+
 	encryptor2, err := NewConfigEncryptor("key2-32-bytes-long-for-testing!")
 	if err != nil {
 		t.Fatalf("Failed to create encryptor2: %v", err)
 	}
 
 	plaintext := "secret data"
-	
+
 	// Encrypt with first encryptor
 	ciphertext, err := encryptor1.Encrypt(plaintext)
 	if err != nil {
 		t.Fatalf("Encrypt() error = %v", err)
 	}
-	
+
 	// Try to decrypt with second encryptor (different key)
 	_, err = encryptor2.Decrypt(ciphertext)
 	if err == nil {
 		t.Errorf("Decrypt() with different key should fail but didn't")
 	}
-	
+
 	// Verify first encryptor can still decrypt
 	decrypted, err := encryptor1.Decrypt(ciphertext)
 	if err != nil {
 		t.Fatalf("Decrypt() with original key failed: %v", err)
 	}
-	
+
 	if decrypted != plaintext {
 		t.Errorf("Decrypt() = %q, want %q", decrypted, plaintext)
 	}
@@ -365,7 +365,7 @@ func TestConfigEncryptor_EncryptionIsRandom(t *testing.T) {
 	}
 
 	plaintext := "test data for randomness"
-	
+
 	// Encrypt same plaintext multiple times
 	ciphertexts := make([]string, 10)
 	for i := 0; i < 10; i++ {
@@ -375,7 +375,7 @@ func TestConfigEncryptor_EncryptionIsRandom(t *testing.T) {
 		}
 		ciphertexts[i] = ciphertext
 	}
-	
+
 	// Verify all ciphertexts are different (due to random nonce)
 	for i := 0; i < len(ciphertexts); i++ {
 		for j := i + 1; j < len(ciphertexts); j++ {
@@ -384,7 +384,7 @@ func TestConfigEncryptor_EncryptionIsRandom(t *testing.T) {
 			}
 		}
 	}
-	
+
 	// Verify all can be decrypted to same plaintext
 	for i, ciphertext := range ciphertexts {
 		decrypted, err := encryptor.Decrypt(ciphertext)
@@ -433,7 +433,7 @@ func TestConfigEncryptor_EncryptJSON(t *testing.T) {
 				"user": map[string]interface{}{
 					"name": "test",
 					"settings": map[string]interface{}{
-						"theme": "dark",
+						"theme":         "dark",
 						"notifications": true,
 					},
 				},
@@ -477,9 +477,9 @@ func BenchmarkConfigEncryptor_Encrypt(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create encryptor: %v", err)
 	}
-	
+
 	plaintext := "benchmark test data for encryption performance"
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := encryptor.Encrypt(plaintext)
@@ -494,13 +494,13 @@ func BenchmarkConfigEncryptor_Decrypt(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create encryptor: %v", err)
 	}
-	
+
 	plaintext := "benchmark test data for decryption performance"
 	ciphertext, err := encryptor.Encrypt(plaintext)
 	if err != nil {
 		b.Fatalf("Failed to encrypt test data: %v", err)
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := encryptor.Decrypt(ciphertext)
@@ -515,16 +515,16 @@ func BenchmarkConfigEncryptor_EncryptDecrypt(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create encryptor: %v", err)
 	}
-	
+
 	plaintext := "benchmark test data for full round trip performance"
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ciphertext, err := encryptor.Encrypt(plaintext)
 		if err != nil {
 			b.Fatalf("Encrypt() error = %v", err)
 		}
-		
+
 		_, err = encryptor.Decrypt(ciphertext)
 		if err != nil {
 			b.Fatalf("Decrypt() error = %v", err)

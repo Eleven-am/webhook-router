@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"webhook-router/internal/common/errors"
 )
 
 type Client struct {
@@ -23,7 +24,7 @@ type Config struct {
 
 func NewClient(config *Config) (*Client, error) {
 	if config == nil {
-		return nil, fmt.Errorf("redis config is required")
+		return nil, errors.ConfigError("redis config is required")
 	}
 
 	if config.Address == "" {
@@ -44,7 +45,7 @@ func NewClient(config *Config) (*Client, error) {
 	defer cancel()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+		return nil, errors.ConnectionError("failed to connect to Redis", err)
 	}
 
 	return &Client{
@@ -63,34 +64,41 @@ func (c *Client) Health() error {
 	return c.rdb.Ping(ctx).Err()
 }
 
+// GetGoRedisClient returns the underlying go-redis client for use with external libraries
+// like redsync that need direct access to the redis.Client.
+func (c *Client) GetGoRedisClient() *redis.Client {
+	return c.rdb
+}
+
 // Rate limiting methods
 func (c *Client) CheckRateLimit(ctx context.Context, key string, limit int, window time.Duration) (bool, int, error) {
 	pipe := c.rdb.TxPipeline()
-	
+
 	// Use a sliding window counter
 	now := time.Now().Unix()
 	windowStart := now - int64(window.Seconds())
-	
+
 	// Remove old entries
 	pipe.ZRemRangeByScore(ctx, key, "0", fmt.Sprintf("%d", windowStart))
-	
-	// Count current entries
+
+	// Add current request with unique member (timestamp + random component)
+	member := fmt.Sprintf("%d-%d", now, time.Now().UnixNano())
+	pipe.ZAdd(ctx, key, &redis.Z{Score: float64(now), Member: member})
+
+	// Count current entries (including the one we just added)
 	countCmd := pipe.ZCard(ctx, key)
-	
-	// Add current request
-	pipe.ZAdd(ctx, key, &redis.Z{Score: float64(now), Member: now})
-	
+
 	// Set expiration
 	pipe.Expire(ctx, key, window*2) // Keep data a bit longer than window
-	
+
 	_, err := pipe.Exec(ctx)
 	if err != nil {
-		return false, 0, fmt.Errorf("failed to check rate limit: %w", err)
+		return false, 0, errors.InternalError("failed to check rate limit", err)
 	}
-	
+
 	count := int(countCmd.Val())
-	allowed := count < limit
-	
+	allowed := count <= limit
+
 	return allowed, count, nil
 }
 
@@ -98,7 +106,7 @@ func (c *Client) CheckRateLimit(ctx context.Context, key string, limit int, wind
 func (c *Client) AcquireLock(ctx context.Context, key string, expiration time.Duration) (bool, error) {
 	result, err := c.rdb.SetNX(ctx, fmt.Sprintf("lock:%s", key), "locked", expiration).Result()
 	if err != nil {
-		return false, fmt.Errorf("failed to acquire lock: %w", err)
+		return false, errors.InternalError("failed to acquire lock", err)
 	}
 	return result, nil
 }
@@ -106,7 +114,7 @@ func (c *Client) AcquireLock(ctx context.Context, key string, expiration time.Du
 func (c *Client) ReleaseLock(ctx context.Context, key string) error {
 	_, err := c.rdb.Del(ctx, fmt.Sprintf("lock:%s", key)).Result()
 	if err != nil {
-		return fmt.Errorf("failed to release lock: %w", err)
+		return errors.InternalError("failed to release lock", err)
 	}
 	return nil
 }
@@ -115,40 +123,53 @@ func (c *Client) ExtendLock(ctx context.Context, key string, expiration time.Dur
 	lockKey := fmt.Sprintf("lock:%s", key)
 	exists, err := c.rdb.Exists(ctx, lockKey).Result()
 	if err != nil {
-		return fmt.Errorf("failed to check lock existence: %w", err)
+		return errors.InternalError("failed to check lock existence", err)
 	}
 	if exists == 0 {
-		return fmt.Errorf("lock does not exist")
+		return errors.NotFoundError("lock")
 	}
-	
+
 	_, err = c.rdb.Expire(ctx, lockKey, expiration).Result()
 	if err != nil {
-		return fmt.Errorf("failed to extend lock: %w", err)
+		return errors.InternalError("failed to extend lock", err)
 	}
 	return nil
 }
 
-// Key-value operations for configuration and state
-func (c *Client) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
-	var data []byte
-	var err error
-	
+// marshalValue converts various value types to []byte for Redis storage
+func (c *Client) marshalValue(value interface{}) ([]byte, error) {
 	switch v := value.(type) {
 	case string:
-		data = []byte(v)
+		return []byte(v), nil
 	case []byte:
-		data = v
+		return v, nil
 	default:
-		data, err = json.Marshal(v)
+		data, err := json.Marshal(v)
 		if err != nil {
-			return fmt.Errorf("failed to marshal value: %w", err)
+			return nil, errors.InternalError("failed to marshal value", err)
 		}
+		return data, nil
 	}
-	
+}
+
+// Key-value operations for configuration and state
+func (c *Client) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return errors.ConfigError("redis client not initialized")
+	}
+
+	data, err := c.marshalValue(value)
+	if err != nil {
+		return err
+	}
+
 	return c.rdb.Set(ctx, key, data, expiration).Err()
 }
 
 func (c *Client) Get(ctx context.Context, key string) (string, error) {
+	if c == nil || c.rdb == nil {
+		return "", errors.ConfigError("redis client not initialized")
+	}
 	return c.rdb.Get(ctx, key).Result()
 }
 
@@ -171,21 +192,11 @@ func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
 
 // Pub/Sub methods for distributed coordination
 func (c *Client) Publish(ctx context.Context, channel string, message interface{}) error {
-	var data []byte
-	var err error
-	
-	switch v := message.(type) {
-	case string:
-		data = []byte(v)
-	case []byte:
-		data = v
-	default:
-		data, err = json.Marshal(v)
-		if err != nil {
-			return fmt.Errorf("failed to marshal message: %w", err)
-		}
+	data, err := c.marshalValue(message)
+	if err != nil {
+		return err
 	}
-	
+
 	return c.rdb.Publish(ctx, channel, data).Err()
 }
 

@@ -249,9 +249,9 @@ func TestConnectionManager_TypeValidation(t *testing.T) {
 		config.On("Validate").Return(nil)
 		config.On("GetConnectionString").Return("mock://localhost:5672")
 		mockConnect.On("Connect", config).Return(nil)
-		
+
 		err := cm.ValidateAndConnect(
-			config, // pointer
+			config,              // pointer
 			&MockBrokerConfig{}, // pointer expected
 			mockConnect.Connect,
 		)
@@ -262,7 +262,7 @@ func TestConnectionManager_TypeValidation(t *testing.T) {
 
 		// Pointer config with non-pointer expected type should fail
 		err = cm.ValidateAndConnect(
-			config, // pointer
+			config,             // pointer
 			MockBrokerConfig{}, // non-pointer expected
 			mockConnect.Connect,
 		)
@@ -278,7 +278,7 @@ func TestConnectionManager_TypeValidation(t *testing.T) {
 		var interfaceConfig brokers.BrokerConfig = NewMockBrokerConfig("localhost", 5672, true)
 		interfaceConfig.(*MockBrokerConfig).On("Validate").Return(nil)
 		interfaceConfig.(*MockBrokerConfig).On("GetConnectionString").Return("mock://localhost:5672")
-		
+
 		mockConnect := &MockConnectFunction{}
 		mockConnect.On("Connect", mock.Anything).Return(nil)
 

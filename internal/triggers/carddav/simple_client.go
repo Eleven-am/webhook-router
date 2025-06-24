@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	
+
 	commonhttp "webhook-router/internal/common/http"
 	"webhook-router/internal/models"
 )
@@ -25,9 +25,9 @@ type SimpleClient struct {
 func NewSimpleClient(serverURL, username, password string) *SimpleClient {
 	return &SimpleClient{
 		httpClient: commonhttp.NewHTTPClientWithTimeout(30 * time.Second),
-		url:      strings.TrimSuffix(serverURL, "/"),
-		username: username,
-		password: password,
+		url:        strings.TrimSuffix(serverURL, "/"),
+		username:   username,
+		password:   password,
 	}
 }
 
@@ -41,46 +41,46 @@ func (c *SimpleClient) QueryContacts(ctx context.Context) ([]*models.Contact, er
     <C:address-data/>
   </D:prop>
 </C:addressbook-query>`
-	
+
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, "REPORT", c.url, strings.NewReader(reportBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	// Set headers
 	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	req.Header.Set("Depth", "1")
 	req.SetBasicAuth(c.username, c.password)
-	
+
 	// Execute request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusMultiStatus {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	// Parse response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-	
+
 	return c.parseMultiStatusResponse(string(body))
 }
 
 // parseMultiStatusResponse extracts contacts from WebDAV multistatus response
 func (c *SimpleClient) parseMultiStatusResponse(xmlResponse string) ([]*models.Contact, error) {
 	var contacts []*models.Contact
-	
+
 	// Extract ETags for change detection
 	etagMap := make(map[string]string)
-	
+
 	// Simple extraction of ETags
 	responseBlocks := strings.Split(xmlResponse, "<D:response>")
 	for _, block := range responseBlocks[1:] {
@@ -91,7 +91,7 @@ func (c *SimpleClient) parseMultiStatusResponse(xmlResponse string) ([]*models.C
 			continue
 		}
 		href := block[hrefStart+8 : hrefEnd]
-		
+
 		// Extract etag
 		etagStart := strings.Index(block, "<D:getetag>")
 		etagEnd := strings.Index(block, "</D:getetag>")
@@ -102,11 +102,11 @@ func (c *SimpleClient) parseMultiStatusResponse(xmlResponse string) ([]*models.C
 			etagMap[href] = etag
 		}
 	}
-	
+
 	// Extract vCard data
 	addrDataStart := "<C:address-data>"
 	addrDataEnd := "</C:address-data>"
-	
+
 	startIdx := 0
 	for {
 		start := strings.Index(xmlResponse[startIdx:], addrDataStart)
@@ -114,20 +114,20 @@ func (c *SimpleClient) parseMultiStatusResponse(xmlResponse string) ([]*models.C
 			break
 		}
 		start += startIdx + len(addrDataStart)
-		
+
 		end := strings.Index(xmlResponse[start:], addrDataEnd)
 		if end == -1 {
 			break
 		}
 		end += start
-		
+
 		vcardData := xmlResponse[start:end]
 		// Unescape XML entities
 		vcardData = strings.ReplaceAll(vcardData, "&lt;", "<")
 		vcardData = strings.ReplaceAll(vcardData, "&gt;", ">")
 		vcardData = strings.ReplaceAll(vcardData, "&amp;", "&")
 		vcardData = strings.ReplaceAll(vcardData, "&#13;", "\r")
-		
+
 		// Parse vCard
 		contact, err := ParseVCard(strings.NewReader(vcardData))
 		if err == nil && contact != nil {
@@ -140,10 +140,10 @@ func (c *SimpleClient) parseMultiStatusResponse(xmlResponse string) ([]*models.C
 			}
 			contacts = append(contacts, contact)
 		}
-		
+
 		startIdx = end
 	}
-	
+
 	return contacts, nil
 }
 
@@ -174,46 +174,46 @@ func (c *SimpleClient) SyncCollection(ctx context.Context) ([]*models.Contact, s
   </D:prop>
 </D:sync-collection>`, c.syncToken)
 	}
-	
+
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, "REPORT", c.url, strings.NewReader(syncBody))
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create sync request: %w", err)
 	}
-	
+
 	// Set headers
 	req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	req.Header.Set("Depth", "1")
 	req.SetBasicAuth(c.username, c.password)
-	
+
 	// Execute request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("sync request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// Check if sync-collection is supported
 	if resp.StatusCode == http.StatusNotImplemented || resp.StatusCode == http.StatusBadRequest {
 		// Fall back to regular query
 		contacts, err := c.QueryContacts(ctx)
 		return contacts, "", err
 	}
-	
+
 	if resp.StatusCode != http.StatusMultiStatus {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, "", fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	// Parse response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to read response: %w", err)
 	}
-	
+
 	// Extract new sync token
 	newToken := c.extractSyncToken(string(body))
-	
+
 	// Parse contacts
 	contacts, err := c.parseMultiStatusResponse(string(body))
 	return contacts, newToken, err
@@ -227,12 +227,12 @@ func (c *SimpleClient) extractSyncToken(xmlResponse string) string {
 		return ""
 	}
 	tokenStart += len("<D:sync-token>")
-	
+
 	tokenEnd := strings.Index(xmlResponse[tokenStart:], "</D:sync-token>")
 	if tokenEnd == -1 {
 		return ""
 	}
-	
+
 	return xmlResponse[tokenStart : tokenStart+tokenEnd]
 }
 

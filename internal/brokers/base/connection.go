@@ -30,7 +30,7 @@ func (cm *ConnectionManager) ValidateAndConnect(
 	// Type assertion to ensure config matches expected type
 	expectedConfigType := reflect.TypeOf(expectedType)
 	actualConfigType := reflect.TypeOf(config)
-	
+
 	if expectedConfigType != actualConfigType {
 		return errors.ConfigError("invalid config type for " + cm.baseBroker.Name() + " broker")
 	}

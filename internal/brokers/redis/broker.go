@@ -22,8 +22,8 @@ import (
 // and automatic acknowledgment handling.
 type Broker struct {
 	*base.BaseBroker
-	client           *redis.Client
-	ctx              context.Context
+	client            *redis.Client
+	ctx               context.Context
 	connectionManager *base.ConnectionManager
 }
 
@@ -60,14 +60,13 @@ func NewBroker(config *Config) (*Broker, error) {
 	return broker, nil
 }
 
-
 // Connect establishes a connection to Redis using the provided configuration.
 // It validates the configuration, creates a new Redis client, and closes any existing connection.
 // Returns an error if the configuration is invalid or connection fails.
 func (b *Broker) Connect(config brokers.BrokerConfig) error {
 	return b.connectionManager.ValidateAndConnect(config, (*Config)(nil), func(validatedConfig brokers.BrokerConfig) error {
 		redisConfig := validatedConfig.(*Config)
-		
+
 		// Close existing connection
 		if b.client != nil {
 			b.client.Close()
@@ -109,9 +108,9 @@ func (b *Broker) Publish(message *brokers.Message) error {
 
 	// Build stream record
 	fields := map[string]interface{}{
-		"body":        string(message.Body),
-		"timestamp":   message.Timestamp.UnixNano(),
-		"message_id":  message.MessageID,
+		"body":       string(message.Body),
+		"timestamp":  message.Timestamp.UnixNano(),
+		"message_id": message.MessageID,
 	}
 
 	// Add routing key as a field if specified
@@ -138,11 +137,11 @@ func (b *Broker) Publish(message *brokers.Message) error {
 	var result *redis.StringCmd
 	if config.StreamMaxLen > 0 {
 		result = b.client.XAdd(b.ctx, &redis.XAddArgs{
-			Stream:   streamName,
-			MaxLen:   config.StreamMaxLen,
-			Approx:   true, // Use approximate trimming for better performance
-			ID:       "*",  // Auto-generate ID
-			Values:   fields,
+			Stream: streamName,
+			MaxLen: config.StreamMaxLen,
+			Approx: true, // Use approximate trimming for better performance
+			ID:     "*",  // Auto-generate ID
+			Values: fields,
 		})
 	} else {
 		result = b.client.XAdd(b.ctx, &redis.XAddArgs{
@@ -153,7 +152,7 @@ func (b *Broker) Publish(message *brokers.Message) error {
 	}
 
 	if err := result.Err(); err != nil {
-		return fmt.Errorf("failed to publish message to Redis stream: %w", err)
+		return errors.InternalError("failed to publish message to Redis stream", err)
 	}
 
 	b.GetLogger().Info("Message published to Redis stream",
@@ -180,7 +179,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 	// Create consumer group if it doesn't exist
 	err := b.client.XGroupCreateMkStream(b.ctx, streamName, config.ConsumerGroup, "0").Err()
 	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
-		return fmt.Errorf("failed to create consumer group: %w", err)
+		return errors.InternalError("failed to create consumer group", err)
 	}
 
 	// Create wrapped handler with standardized error logging
@@ -199,6 +198,15 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 				)
 				return
 			default:
+				// Check if client is still valid
+				if b.client == nil {
+					b.GetLogger().Warn("Redis client is nil, exiting subscription",
+						logging.Field{"stream", streamName},
+						logging.Field{"consumer_group", config.ConsumerGroup},
+					)
+					return
+				}
+
 				// Read from stream with short timeout to allow context checking
 				streams, err := b.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 					Group:    config.ConsumerGroup,
@@ -219,7 +227,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 					)
 					continue
 				}
-				
+
 				// Process received messages
 				for _, stream := range streams {
 					for _, message := range stream.Messages {
@@ -251,9 +259,9 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 						}
 
 						messageData := base.MessageData{
-							ID:        message.ID,
-							Headers:   headers,
-							Body:      body,
+							ID:      message.ID,
+							Headers: headers,
+							Body:    body,
 							Timestamp: func() time.Time {
 								if timestamp > 0 {
 									return time.Unix(0, timestamp)
@@ -261,7 +269,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 								return time.Now()
 							}(),
 							Metadata: map[string]interface{}{
-								"stream":        streamName,
+								"stream":         streamName,
 								"consumer_group": config.ConsumerGroup,
 								"consumer_name":  config.ConsumerName,
 								"routing_key":    routingKey,
@@ -295,7 +303,7 @@ func (b *Broker) Subscribe(ctx context.Context, topic string, handler brokers.Me
 // Returns an error if the broker is not connected or Redis is unreachable.
 func (b *Broker) Health() error {
 	if b.client == nil {
-		return fmt.Errorf("Redis client not initialized")
+		return errors.ConfigError("Redis client not initialized")
 	}
 
 	// Test connection with ping

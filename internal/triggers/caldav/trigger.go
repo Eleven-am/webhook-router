@@ -2,50 +2,51 @@ package caldav
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
-	
+
 	"webhook-router/internal/common/base"
 	"webhook-router/internal/common/errors"
+	commonhttp "webhook-router/internal/common/http"
 	"webhook-router/internal/common/logging"
 	"webhook-router/internal/common/utils"
 	"webhook-router/internal/models"
+	"webhook-router/internal/oauth2"
 	"webhook-router/internal/triggers"
 )
 
 // Trigger implements the CalDAV polling trigger using BaseTrigger
 type Trigger struct {
 	*base.BaseTrigger
-	config      *Config
-	client      *SimpleClient
-	eventCount  int64
-	errorCount  int64
-	mu          sync.RWMutex
-	builder     *triggers.TriggerBuilder
+	config     *Config
+	client     *SimpleClient
+	eventCount int64
+	errorCount int64
+	mu         sync.RWMutex
+	builder    *triggers.TriggerBuilder
 }
 
 func NewTrigger(config *Config) (*Trigger, error) {
 	if err := config.Validate(); err != nil {
-		return nil, errors.ConfigError(fmt.Sprintf("invalid CalDAV config: %v", err))
+		return nil, errors.ConfigError("invalid CalDAV config: " + err.Error())
 	}
-	
+
 	builder := triggers.NewTriggerBuilder("caldav", config)
-	
-	// Create CalDAV client
+
+	// Create CalDAV client (will configure auth later if OAuth2 is used)
 	client := NewSimpleClient(config.URL, config.Username, config.Password)
-	
+
 	trigger := &Trigger{
-		config:      config,
-		client:      client,
-		eventCount:  0,
-		errorCount:  0,
-		builder:     builder,
+		config:     config,
+		client:     client,
+		eventCount: 0,
+		errorCount: 0,
+		builder:    builder,
 	}
-	
+
 	// Initialize BaseTrigger
 	trigger.BaseTrigger = base.NewBaseTrigger("caldav", config, nil)
-	
+
 	return trigger, nil
 }
 
@@ -53,7 +54,7 @@ func NewTrigger(config *Config) (*Trigger, error) {
 func (t *Trigger) Start(ctx context.Context, handler triggers.TriggerHandler) error {
 	// Update BaseTrigger with the adapted handler
 	t.BaseTrigger = t.builder.BuildBaseTrigger(handler)
-	
+
 	// Use the BaseTrigger's Start method with our run function
 	return t.BaseTrigger.Start(ctx, func(ctx context.Context) error {
 		return t.run(ctx, handler)
@@ -66,7 +67,7 @@ func (t *Trigger) Stop() error {
 	if err := t.BaseTrigger.Stop(); err != nil {
 		return err
 	}
-	
+
 	t.builder.Logger().Info("CalDAV trigger stopped",
 		logging.Field{"url", t.config.URL},
 	)
@@ -78,7 +79,7 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 		logging.Field{"url", t.config.URL},
 		logging.Field{"poll_interval", t.config.PollInterval},
 	)
-	
+
 	// Start polling loop
 	return t.pollLoop(ctx, handler)
 }
@@ -87,10 +88,10 @@ func (t *Trigger) run(ctx context.Context, handler triggers.TriggerHandler) erro
 func (t *Trigger) pollLoop(ctx context.Context, handler triggers.TriggerHandler) error {
 	ticker := time.NewTicker(t.config.PollInterval)
 	defer ticker.Stop()
-	
+
 	// Initial poll
 	t.poll(ctx, handler)
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -116,7 +117,7 @@ func (t *Trigger) checkCalendars(ctx context.Context, handler triggers.TriggerHa
 	// Try sync-collection first for efficient change detection
 	syncToken := t.config.SyncTokens[t.config.URL]
 	t.client.SetSyncToken(syncToken)
-	
+
 	events, newToken, err := t.client.SyncCollection(ctx)
 	if err == nil && newToken != "" {
 		// Sync successful, update token
@@ -128,15 +129,15 @@ func (t *Trigger) checkCalendars(ctx context.Context, handler triggers.TriggerHa
 		// Fallback to regular query
 		start, end, err := t.config.GetTimeRange()
 		if err != nil {
-			return fmt.Errorf("failed to get time range: %w", err)
+			return errors.InternalError("failed to get time range", err)
 		}
-		
+
 		events, err = t.client.QueryEvents(ctx, start, end)
 		if err != nil {
-			return fmt.Errorf("failed to query events: %w", err)
+			return errors.InternalError("failed to query events", err)
 		}
 	}
-	
+
 	// Process events
 	for _, event := range events {
 		// Check if we've already processed this event
@@ -146,7 +147,7 @@ func (t *Trigger) checkCalendars(ctx context.Context, handler triggers.TriggerHa
 				continue
 			}
 		}
-		
+
 		if err := t.processEvent(event, handler); err != nil {
 			t.builder.Logger().Error("Failed to process event", err,
 				logging.Field{"uid", event.UID},
@@ -156,13 +157,12 @@ func (t *Trigger) checkCalendars(ctx context.Context, handler triggers.TriggerHa
 			t.config.ProcessedUIDs[event.UID] = time.Now()
 		}
 	}
-	
+
 	// Update last sync time
 	t.config.LastSync = time.Now()
-	
+
 	return nil
 }
-
 
 // processEvent processes a single calendar event
 func (t *Trigger) processEvent(calEvent *models.CalendarEvent, handler triggers.TriggerHandler) error {
@@ -181,7 +181,7 @@ func (t *Trigger) processEvent(calEvent *models.CalendarEvent, handler triggers.
 		"updated":     calEvent.Updated,
 		"metadata":    calEvent.Metadata,
 	}
-	
+
 	// Add optional fields
 	if calEvent.Organizer != nil {
 		eventData["organizer"] = calEvent.Organizer
@@ -198,7 +198,7 @@ func (t *Trigger) processEvent(calEvent *models.CalendarEvent, handler triggers.
 	if len(calEvent.Categories) > 0 {
 		eventData["categories"] = calEvent.Categories
 	}
-	
+
 	// Create trigger event
 	event := &triggers.TriggerEvent{
 		ID:          utils.GenerateEventID("caldav", t.config.ID),
@@ -217,14 +217,14 @@ func (t *Trigger) processEvent(calEvent *models.CalendarEvent, handler triggers.
 			URL:  t.config.URL,
 		},
 	}
-	
+
 	// Call handler
 	if err := handler(event); err != nil {
 		return errors.InternalError("handler error", err)
 	}
-	
+
 	t.eventCount++
-	
+
 	return nil
 }
 
@@ -233,7 +233,7 @@ func (t *Trigger) NextExecution() *time.Time {
 	if !t.IsRunning() || t.LastExecution() == nil {
 		return nil
 	}
-	
+
 	next := t.LastExecution().Add(t.config.PollInterval)
 	return &next
 }
@@ -243,7 +243,7 @@ func (t *Trigger) Health() error {
 	if !t.IsRunning() {
 		return errors.InternalError("trigger is not running", nil)
 	}
-	
+
 	return nil
 }
 
@@ -252,4 +252,49 @@ func (t *Trigger) Config() triggers.TriggerConfig {
 	return t.config
 }
 
+// oauth2ManagerAdapter adapts oauth2.Manager to commonhttp.OAuth2ManagerInterface
+type oauth2ManagerAdapter struct {
+	manager *oauth2.Manager
+}
 
+func (a *oauth2ManagerAdapter) GetToken(ctx context.Context, serviceID string) (*commonhttp.OAuth2Token, error) {
+	token, err := a.manager.GetToken(ctx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &commonhttp.OAuth2Token{
+		AccessToken: token.AccessToken,
+		TokenType:   token.TokenType,
+		Expiry:      token.Expiry,
+	}, nil
+}
+
+// SetOAuthManager sets the OAuth2 manager for authentication
+func (t *Trigger) SetOAuthManager(manager *oauth2.Manager) {
+	// Set in BaseTrigger
+	t.BaseTrigger.SetOAuth2Manager(manager)
+
+	// Update the client if we're using OAuth2
+	if t.config.UseOAuth2 && t.config.OAuth2ServiceID != "" && t.client != nil {
+		// Create adapter for OAuth2Manager
+		adapter := &oauth2ManagerAdapter{manager: manager}
+		t.client.SetOAuth2Manager(adapter, t.config.OAuth2ServiceID)
+	}
+}
+
+// GetOAuth2ID returns the OAuth2 service ID if configured
+func (t *Trigger) GetOAuth2ID() string {
+	if t.config.UseOAuth2 {
+		return t.config.OAuth2ServiceID
+	}
+	return ""
+}
+
+// SetOAuth2ID sets the OAuth2 service ID
+func (t *Trigger) SetOAuth2ID(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.config.OAuth2ServiceID = id
+	t.config.UseOAuth2 = id != ""
+}

@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package kafka
@@ -148,29 +149,6 @@ func TestIntegrationSecurityProtocols(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	// This test would require different Kafka configurations
-	// Uncomment and adjust broker addresses based on your setup
-
-	/*
-	t.Run("SASL_PLAINTEXT", func(t *testing.T) {
-		config := &Config{
-			Brokers:          []string{"localhost:9093"},
-			SecurityProtocol: "SASL_PLAINTEXT",
-			SASLMechanism:    "PLAIN",
-			SASLUsername:     "test-user",
-			SASLPassword:     "test-password",
-			ClientID:         "test-sasl-client",
-			GroupID:          "test-sasl-group",
-		}
-
-		broker, err := NewBroker(config)
-		if err != nil {
-			t.Skip("SASL broker not available:", err)
-		}
-		defer broker.Close()
-
-		err = broker.Health()
-		assert.NoError(t, err)
-	})
-	*/
+	// SASL authentication tests can be added here when needed
+	// They require specific Kafka broker configurations
 }

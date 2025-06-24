@@ -26,14 +26,14 @@ import (
 //
 // Parameters:
 //   - prefix: String prefix to identify the event source (can be empty)
-//   - triggerID: Numeric identifier for the trigger that generated this event
+//   - triggerID: String identifier for the trigger that generated this event
 //
 // Returns a unique string ID suitable for event tracking and correlation.
 //
 // Note: If prefix contains hyphens, parsing the ID later may be ambiguous.
 // Consider using prefixes without hyphens for easier parsing.
-func GenerateEventID(prefix string, triggerID int) string {
-	return fmt.Sprintf("%s-%d-%d", prefix, triggerID, time.Now().UnixNano())
+func GenerateEventID(prefix string, triggerID string) string {
+	return fmt.Sprintf("%s-%s-%d", prefix, triggerID, time.Now().UnixNano())
 }
 
 // GenerateRandomID generates a cryptographically secure random hex ID.
@@ -76,11 +76,11 @@ func GenerateUUID() (string, error) {
 	if _, err := rand.Read(uuid); err != nil {
 		return "", err
 	}
-	
+
 	// Set version (4) and variant bits
 	uuid[6] = (uuid[6] & 0x0f) | 0x40
 	uuid[8] = (uuid[8] & 0x3f) | 0x80
-	
+
 	return fmt.Sprintf("%x-%x-%x-%x-%x",
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:]), nil
 }

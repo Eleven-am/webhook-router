@@ -12,7 +12,7 @@ import (
 type Registry struct {
 	// factories maps protocol type names to their corresponding factory implementations
 	factories map[string]ProtocolFactory
-	
+
 	// mu provides thread-safe access to the factories map
 	mu sync.RWMutex
 }

@@ -169,7 +169,7 @@ func TestValidateAuthConfig(t *testing.T) {
 				Settings: make(map[string]string),
 			},
 			expectError: true,
-			errorText:   "authentication type",
+			errorText:   "authentication.type must be one of",
 		},
 	}
 
@@ -177,7 +177,7 @@ func TestValidateAuthConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := validation.NewValidator()
 			ValidateAuthConfig(tt.auth, v)
-			
+
 			err := v.Error()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -200,15 +200,15 @@ func TestValidateAuthConfig_DefaultSetting(t *testing.T) {
 				"api_key": "very-long-api-key-here",
 			},
 		}
-		
+
 		v := validation.NewValidator()
 		ValidateAuthConfig(auth, v)
-		
+
 		assert.NoError(t, v.Error())
 		assert.Equal(t, "header", auth.Settings["location"])
 		assert.Equal(t, "X-API-Key", auth.Settings["key_name"])
 	})
-	
+
 	t.Run("hmac sets default algorithm and header", func(t *testing.T) {
 		auth := &AuthConfig{
 			Type:     "hmac",
@@ -217,15 +217,15 @@ func TestValidateAuthConfig_DefaultSetting(t *testing.T) {
 				"secret": "very-long-hmac-secret-that-is-secure-enough",
 			},
 		}
-		
+
 		v := validation.NewValidator()
 		ValidateAuthConfig(auth, v)
-		
+
 		assert.NoError(t, v.Error())
 		assert.Equal(t, "sha256", auth.Settings["algorithm"])
 		assert.Equal(t, "X-Signature", auth.Settings["signature_header"])
 	})
-	
+
 	t.Run("oauth2 sets default scope", func(t *testing.T) {
 		auth := &AuthConfig{
 			Type:     "oauth2",
@@ -236,10 +236,10 @@ func TestValidateAuthConfig_DefaultSetting(t *testing.T) {
 				"token_url":     "https://example.com/token",
 			},
 		}
-		
+
 		v := validation.NewValidator()
 		ValidateAuthConfig(auth, v)
-		
+
 		assert.NoError(t, v.Error())
 		assert.Equal(t, "", auth.Settings["scope"])
 	})
@@ -360,7 +360,7 @@ func TestValidateJSONCondition(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := validation.NewValidator()
 			ValidateJSONCondition(tt.condition, v, "test_field")
-			
+
 			err := v.Error()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -435,7 +435,7 @@ func TestValidateErrorHandling(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := validation.NewValidator()
 			ValidateErrorHandling(tt.config, v, "test_field")
-			
+
 			err := v.Error()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -488,7 +488,7 @@ func TestValidateHTTPMethods(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := validation.NewValidator()
 			ValidateHTTPMethods(tt.methods, v, "methods")
-			
+
 			err := v.Error()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -543,7 +543,7 @@ func TestValidateHTTPHeaders(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := validation.NewValidator()
 			ValidateHTTPHeaders(tt.headers, v, "headers")
-			
+
 			err := v.Error()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -634,7 +634,7 @@ func TestValidateRateLimit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := validation.NewValidator()
 			ValidateRateLimit(tt.config, v, "rate_limit")
-			
+
 			err := v.Error()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -712,7 +712,7 @@ func TestValidateValidationConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			v := validation.NewValidator()
 			ValidateValidationConfig(tt.config, v, "validation")
-			
+
 			err := v.Error()
 			if tt.expectError {
 				assert.Error(t, err)

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
+
+	"webhook-router/internal/common/pagination"
+	"webhook-router/internal/storage"
 
 	"github.com/gorilla/mux"
 )
@@ -50,36 +52,43 @@ func (h *Handlers) GetDLQStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// ListDLQMessages returns messages in the DLQ
+// ListDLQMessages returns messages in the DLQ with pagination
 // @Summary List DLQ messages
-// @Description Returns a list of messages currently in the Dead Letter Queue
+// @Description Returns a paginated list of messages currently in the Dead Letter Queue
 // @Tags dlq
 // @Produce json
 // @Security SessionAuth
-// @Param limit query int false "Number of messages to return" default(100)
-// @Param route_id query int false "Filter by route ID"
+// @Param page query int false "Page number (default: 1)"
+// @Param per_page query int false "Items per page (default: 20, max: 100)"
+// @Param trigger_id query string false "Filter by trigger ID"
 // @Param status query string false "Filter by status (pending, abandoned)"
-// @Success 200 {array} map[string]interface{} "DLQ messages"
+// @Success 200 {object} pagination.Response[storage.DLQMessage] "Paginated DLQ messages"
 // @Failure 503 {string} string "DLQ not configured"
 // @Router /api/dlq/messages [get]
 func (h *Handlers) ListDLQMessages(w http.ResponseWriter, r *http.Request) {
-	// Get DLQ messages from storage
-	messages, err := h.storage.ListDLQMessages(100, 0)
+	params := pagination.ParseParams(r)
+
+	// Check for trigger_id filter
+	triggerID := r.URL.Query().Get("trigger_id")
+
+	var messages []*storage.DLQMessage
+	var totalCount int
+	var err error
+
+	if triggerID != "" {
+		// Get DLQ messages filtered by trigger
+		messages, totalCount, err = h.storage.ListDLQMessagesByTriggerWithCount(triggerID, params.Limit, params.Offset)
+	} else {
+		// Get all DLQ messages
+		messages, totalCount, err = h.storage.ListDLQMessagesWithCount(params.Limit, params.Offset)
+	}
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get DLQ messages: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	stats, err := h.storage.GetDLQStats()
-	if err != nil {
-		h.logger.Error("Failed to get DLQ stats", err)
-	}
-
-	response := map[string]interface{}{
-		"messages": messages,
-		"stats":    stats,
-	}
-
+	response := pagination.NewResponse(messages, params.Page, params.PerPage, totalCount)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -123,17 +132,10 @@ func (h *Handlers) RetryDLQMessages(w http.ResponseWriter, r *http.Request) {
 // @Router /api/dlq/messages/{id} [delete]
 func (h *Handlers) DeleteDLQMessage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	messageIDStr := vars["id"]
-
-	// Convert message ID to int
-	messageID, err := strconv.Atoi(messageIDStr)
-	if err != nil {
-		http.Error(w, "Invalid message ID", http.StatusBadRequest)
-		return
-	}
+	messageID := vars["id"]
 
 	// Delete from storage
-	err = h.storage.DeleteDLQMessage(messageID)
+	err := h.storage.DeleteDLQMessage(messageID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to delete message: %v", err), http.StatusInternalServerError)
 		return

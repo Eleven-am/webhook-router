@@ -59,9 +59,9 @@ type RedisLockClient interface {
 //
 // Manager is safe for concurrent use by multiple goroutines.
 type Manager struct {
-	redis      RedisLockClient        // Redis client for distributed coordination
-	localLocks map[string]*LocalLock  // Local tracking of acquired locks
-	mutex      sync.RWMutex           // Protects localLocks map
+	redis      RedisLockClient       // Redis client for distributed coordination
+	localLocks map[string]*LocalLock // Local tracking of acquired locks
+	mutex      sync.RWMutex          // Protects localLocks map
 }
 
 // LocalLock represents a distributed lock that has been acquired by this instance.
@@ -86,17 +86,17 @@ type LocalLock struct {
 type Lock interface {
 	// Key returns the unique identifier for this lock.
 	Key() string
-	
+
 	// Extend updates the lock's expiration time. The lock manager's
 	// automatic renewal process will use the new expiration duration
 	// for future renewals.
 	Extend(ctx context.Context, expiration time.Duration) error
-	
+
 	// Release explicitly releases the lock, stopping automatic renewal
 	// and removing it from Redis. The lock should not be used after
 	// calling Release.
 	Release(ctx context.Context) error
-	
+
 	// IsHeld returns true if the lock is currently held by this instance.
 	// This checks the local state and does not query Redis.
 	IsHeld() bool
